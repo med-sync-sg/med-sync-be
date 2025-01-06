@@ -1,9 +1,8 @@
 import os
-from app.models.models import db, Concept, Term
 from app import app
 import pandas as pd
 from sqlalchemy import create_engine
-from utils import constants
+from app.utils import constants
 from os import environ 
 
 DB_USER = environ.get('DB_USER')
@@ -12,24 +11,16 @@ DB_HOST = environ.get('DB_HOST')
 DB_PORT = environ.get('DB_PORT')
 DB_NAME = environ.get('DB_NAME')
 # Path to MRCONSO.RRF
-UMLS_ROOT_DIRECTORY = os.path("umls")
+UMLS_ROOT_DIRECTORY = os.path.join("umls", "2024AB", "META")
 
 # Define column names as per UMLS documentation
-mrconso_cols = [
-    'CUI', 'LAT', 'TS', 'LUI', 'STT', 'SUI', 'ISPREF', 'AUI', 'SAUI',
-    'SCUI', 'SDUI', 'SAB', 'TTY', 'CODE', 'STR', 'SRL', 'SUPPRESS', 'CVF'
-]
-
-def load_all():
-    with app.app_context():
-        concepts = load_concepts()
-        semantic_types = load_semantic_types()
-        relationships = load_relationships()
-        concepts_with_relationships = combine_data()
+columns = ["CUI", "LAT", "TS", "LUI", "STT", "SUI", "ISPREF",
+            "AUI", "SAUI", "SCUI", "SDUI", "SAB", "TTY", "CODE",
+            "STR", "SRL", "SUPPRESS", "CVF"]
 
 def load_concepts():
     # MRCONSO.RRF
-    concepts = pd.read_csv(os.path.join(UMLS_ROOT_DIRECTORY, "MRCONSO.RRF"), sep='|', names=mrconso_cols, header=None)
+    concepts = pd.read_csv(os.path.join(UMLS_ROOT_DIRECTORY, "MRCONSO.RRF"), sep='|', names=columns, index_col=False)
     # Remove the last empty column caused by trailing delimiter
     concepts = concepts.drop(concepts.columns[-1], axis=1)
     concepts = concepts.loc[concepts["LAT"] == "ENG"]
@@ -54,12 +45,15 @@ def load_relationships():
 
 def combine_data(concepts, semantic_types, relationships):
     # MRREL.RRF
+    print(concepts.head())
+    print(semantic_types.head())
+    
     concepts_with_types = pd.merge(concepts, semantic_types, on='CUI')
+
+    # concepts_with_types = concepts_with_types[concepts_with_types['TUI'].isin(relevant_types)]
     concepts_with_types = concepts_with_types.drop_duplicates(subset=["CUI"])
-    concepts_with_types = concepts_with_types.groupby('CUI').agg({
-        'STR': lambda x: ', '.join(x.astype(str)),
-        'TUI': lambda x: ', '.join(x.astype(str))
-    }).reset_index()
+
+    relationships_df = relationships.merge(concepts_with_types, left_on="CUI1", right_on="CUI")
     
     wanted_rela_labels = ["diagnostic_criteria_of", "defining_characteristic_of"]
     print(f'Relevant labels for RELA columns: {wanted_rela_labels}')
@@ -71,6 +65,4 @@ def combine_data(concepts, semantic_types, relationships):
 
 def connect_to_docker_psql():
     engine = create_engine(f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}")
-
-if __name__ == '__main__':
-    load_all()
+    return engine

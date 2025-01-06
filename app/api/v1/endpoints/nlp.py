@@ -1,10 +1,10 @@
-import spacy
 from spacy.matcher import PhraseMatcher
 import pandas as pd
 import ahocorasick
+import spacy
 from spacy import Language
-from spacy.language import Doc
 from fastapi import APIRouter
+from spacy.tokens import Doc
 
 router = APIRouter()
 
@@ -12,7 +12,7 @@ router = APIRouter()
 @Language.component(name="ahocorasick")
 def ahocorasick_ner(doc: Doc):
     matches = []
-    A = build_automaton(doc)
+    A = build_automaton()
     for end_index, data in A.iter(doc.text.lower()):
         term = data['term']
         start_char = end_index - len(term) + 1
@@ -25,7 +25,7 @@ def ahocorasick_ner(doc: Doc):
     return doc
 
 @router.get("/nlp/ner-tag") 
-def process_text(text: str) -> spacy.Doc:
+def process_text(text: str) -> Doc:
     nlp = spacy.load("en_core_web_trf")
     nlp.add_pipe("ahocorasick", last=True)
 
@@ -34,7 +34,7 @@ def process_text(text: str) -> spacy.Doc:
     
     for ent in doc.ents:
         print(f"Entity: {ent.text}, Label: {ent.label_}")
-        
+    
     return doc
 
 
