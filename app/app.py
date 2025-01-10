@@ -9,7 +9,7 @@ import threading
 import torch
 import whisper
 import numpy as np
-from main import load_umls
+import argparse
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Backend Connection", version="1.0.0")
@@ -20,6 +20,18 @@ connected_clients: List[WebSocket] = []
 
 app = create_app()
 engine = connect_to_docker_psql()
+
+parser = argparse.ArgumentParser(
+    prog="MedSyncBE",
+    description="Runs the backend server locally for MedSync"
+)
+
+# Doesn't work yet.
+parser.add_argument("--load_umls", help="Choose whether to load UMLS files (for testing)", action="store_true")
+
+args = parser.parse_args()
+
+load_umls = False
 
 if load_umls == True:
     concepts_df = load_concepts()
