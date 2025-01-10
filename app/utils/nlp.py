@@ -24,7 +24,6 @@ def ahocorasick_ner(doc: Doc):
     doc.ents = list(doc.ents) + matches
     return doc
 
-@router.get("/nlp/ner-tag") 
 def process_text(text: str) -> Doc:
     nlp = spacy.load("en_core_web_trf")
     nlp.add_pipe("ahocorasick", last=True)
@@ -53,3 +52,9 @@ def build_automaton(df: pd.DataFrame):
     A.make_automaton()
     
     return A
+
+def summarize_text():
+    pass
+
+def classify_text():
+    pass

@@ -3,11 +3,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from typing import List
 from app.utils.import_umls import connect_to_docker_psql, load_concepts, load_relationships, load_semantic_types, combine_data
+from app.utils.nlp import process_text
 import queue
 import threading
 import torch
 import whisper
 import numpy as np
+from main import load_umls
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Backend Connection", version="1.0.0")
@@ -17,12 +19,13 @@ def create_app() -> FastAPI:
 connected_clients: List[WebSocket] = []
 
 app = create_app()
-# engine = connect_to_docker_psql()
+engine = connect_to_docker_psql()
 
-# concepts_df = load_concepts()
-# relationships_df = load_relationships()
-# semantic_df = load_semantic_types()
-# combined_df = combine_data(concepts_df, semantic_df, relationships_df)
+if load_umls == True:
+    concepts_df = load_concepts()
+    relationships_df = load_relationships()
+    semantic_df = load_semantic_types()
+    combined_df = combine_data(concepts_df, semantic_df, relationships_df)
 
 # Add CORS middleware
 app.add_middleware(
@@ -37,14 +40,14 @@ app.add_middleware(
 model = whisper.load_model("medium")
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-
+    full_transcript = ""
     audio_queue = queue.Queue()
     def preprocess_audio(buffer):
         audio_data = np.frombuffer(buffer, dtype=np.int16).astype(np.float32)
         audio_data /= 32768.0  # Now the range is [-1.0, +1.0]
         return audio_data
 
-    def transcribe_stream(audio_queue):
+    async def transcribe_stream(audio_queue: queue.Queue, websocket: WebSocket):
         buffer = bytes()
         while True:
             data = audio_queue.get()
@@ -63,6 +66,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     text = result["text"]
                     if text.strip():  # Only print non-empty transcriptions
                         print("TRANSCRIBED TEXT:", text)
+                        full_transcript = full_transcript + text.strip()
+                        doc = process_text(text.strip())
+                        await websocket.send_json({"transcript": full_transcript, "doc": doc})
+
                 except Exception as e:
                     print("Error during transcription:", e)
                 
@@ -73,7 +80,7 @@ async def websocket_endpoint(websocket: WebSocket):
     connected_clients.append(websocket)
     print("Client connected")
     
-    transcription_thread = threading.Thread(target=transcribe_stream, daemon=True, args=(audio_queue,))
+    transcription_thread = threading.Thread(target=transcribe_stream, daemon=True, args=(audio_queue, websocket))
     transcription_thread.start()
     
     try:
@@ -85,10 +92,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     if audio_chunk == None:
                         audio_queue.put(None)
                     audio_queue.put(audio_chunk)
-                    
                 except Exception as e:
                     print(f"Error processing audio chunk: {e}")
             else:
+                doc = process_text(full_transcript)
+                await websocket.send_json(doc.to_json())
                 print("Non-audio data received")
 
     except WebSocketDisconnect:

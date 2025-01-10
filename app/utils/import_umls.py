@@ -45,9 +45,6 @@ def load_relationships():
 
 def combine_data(concepts, semantic_types, relationships):
     # MRREL.RRF
-    print(concepts.head())
-    print(semantic_types.head())
-    
     concepts_with_types = pd.merge(concepts, semantic_types, on='CUI')
 
     # concepts_with_types = concepts_with_types[concepts_with_types['TUI'].isin(relevant_types)]
