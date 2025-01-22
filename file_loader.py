@@ -23,14 +23,15 @@ def load_test_transcripts():
 def load():
     transcript_files = load_test_transcripts()
     number = 1
-    for file in transcript_files:
-        text = get_transcript_text(file)
-        tagged_doc = process_text(text)
-        html = displacy.render(tagged_doc)
-        with open(os.path.join(TAGGED_DOCS_PATH + '_{number}'), "w") as f:
-            f.write(html)
-        f.close()
-        number = number + 1
+    file = transcript_files[0]
+    # for file in transcript_files:
+    text = get_transcript_text(file)
+    tagged_doc = process_text(text)
+    html = displacy.render(tagged_doc)
+    with open(os.path.join(TAGGED_DOCS_PATH + '_{number}'), "w") as f:
+        f.write(html)
+    f.close()
+    # number = number + 1
         
         
 load()

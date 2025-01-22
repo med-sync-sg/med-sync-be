@@ -2,7 +2,7 @@
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from typing import List
-from app.utils.import_umls import connect_to_docker_psql, DataStore
+from app.utils.import_umls import DataStore
 from app.utils.nlp import process_text
 import queue
 import threading
@@ -20,17 +20,12 @@ def create_app() -> FastAPI:
 connected_clients: List[WebSocket] = []
 
 app = create_app()
-engine = connect_to_docker_psql()
 
 # parser = argparse.ArgumentParser(
 #     prog="MedSyncBE",
 #     description="Runs the backend server locally for MedSync"
 # )
 
-# Doesn't work yet.
-# parser.add_argument("--load_umls", help="Choose whether to load UMLS files (for testing)", action="store_true")
-
-# args = parser.parse_args()
 
 load_umls = True
 
