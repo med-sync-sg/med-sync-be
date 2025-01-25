@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
+from datetime import date
 
 class Diagnosis(BaseModel):
     description: str
@@ -18,5 +19,5 @@ class ConsultationNote(BaseModel):
     schema_version: int = 1
     consultation_id: str
     patient_id: str
-    encounter_date: str
+    encounter_date: date
     sections: List[Section] = Field(default_factory=list)
