@@ -1,39 +1,31 @@
-import json
-from pydantic import BaseModel, Field
-from typing import Union, Optional, List, Any
+from sqlalchemy import Column, String
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.declarative import declarative_base
+from app.schemas import ConsultationNote
 
-def generate_primary_concern_template():
-    root = Entry(key="Primary Concern", value="Main concern of the patient for this visit", root=None, parent_entry=None, child_entries=[])
-    symptoms = Entry(key="Symptoms", value="N/A", parent_entry=root, root=root, child_entries=[]) # The direct child Entry should have the symptom name as the key and other details as its values or child_entries
-    recent_medications = Entry(key="Recent Medications", value="N/A", parent_entry=root, root=root, child_entries=[])
-    vitals = Entry(key="Vitals", value="N/A", parent_entry=root, root=root, child_entries=[])
-    others = Entry(key="others", value="", parent_entry=root, root=root, child_entries=[])
-    root.add_child(symptoms)
-    root.add_child(recent_medications)
-    root.add_child(vitals)
-    root.add_child(others)
-    return root
+Base = declarative_base()
 
+class ConsultationNoteRecord(Base):
+    __tablename__ = "consultation_notes"
 
-class Entry(BaseModel):
-    key: str = Field(default="")
-    value: str | List[str] = Field(default="")
-    root: 'Entry' | None = Field(default=None)
-    parent_entry: 'Entry' | None = Field(default=None)
-    child_entries: List['Entry'] | 'Entry' | None = Field(default=None)
-    
-    def add_child(self, child: 'Entry'):
-        if child == None:
-            raise ValueError("The child cannot be None.")
-        self.child_entries.append(child)
-
-class Section(BaseModel):
-    section_name: str = Field(default="")
-    data: Entry = Field(default=None)
-    
-class PrimaryConcernSection(Section):
-    section_name: str = Field(default="Primary Concern")
-    data: Entry = Field(default_factory=generate_primary_concern_template)
+    consultation_id = Column(String, primary_key=True)
+    patient_id = Column(String)
+    # The entire Pydantic-defined note structure stored as JSON
+    note_data = Column(JSONB)
     
     
+def save_consultation_note(session, note: ConsultationNote):
+    record = ConsultationNoteRecord(
+        consultation_id=note.consultation_id,
+        patient_id=note.patient_id,
+        note_data=note.dict()  # serialize to a Python dict for storage
+    )
+    session.add(record)
+    session.commit()
     
+def get_consultation_note(session, consultation_id: str) -> ConsultationNote:
+    record = session.query(ConsultationNoteRecord).filter_by(consultation_id=consultation_id).first()
+    if record is None:
+        raise ValueError("Not found")
+    # Re-construct the Pydantic model from the stored dict
+    return ConsultationNote(**record.note_data)
