@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 from datetime import date, datetime
 import json
+from sqlalchemy import Engine
 
 class Diagnosis(BaseModel):
     description: str
@@ -33,8 +34,7 @@ class ChiefComplaintContent(BaseModel):
     duration: Optional[str] = None
     severity: Optional[str] = None
     modifying_factors: Optional[List[str]] = None
-
-
+    
 class ChiefComplaintSection(Section):
     """
     Specialized section. 
@@ -44,6 +44,17 @@ class ChiefComplaintSection(Section):
     section_type: str = "chief_complaint"
     content: ChiefComplaintContent
 
+class PatientInformationContent(BaseModel):
+    """Structure for the 'content' of a PatientInformationSection."""
+    name: str
+    age: int
+    gender: Optional[str]
+    sex: str
+    
+class PatientInformationSection(Section):
+    section_type: str = "patient_information"
+    content: PatientInformationContent
+
 class ConsultationNote(BaseModel):
     schema_version: int = 1
     consultation_id: str
@@ -51,7 +62,7 @@ class ConsultationNote(BaseModel):
     encounter_date: date
     sections: List[Section] = Field(default_factory=list)
     
-def insert_section(conn, section: Section, note_id: str):
+def insert_section(conn: Engine, section: Section, note_id: str):
     """
     Insert a generic or specialized Section (including ChiefComplaintSection)
     into the sections table.
@@ -97,6 +108,15 @@ def fetch_section(conn, section_db_id: int) -> Section:
             # Parse the content with ChiefComplaintContent
             cc_content = ChiefComplaintContent(**content_dict)
             return ChiefComplaintSection(
+                section_id=sec_id,
+                title=title,
+                section_type=sec_type,
+                metadata=metadata_dict,
+                content=cc_content
+            )
+        elif sec_type == "patient_information":
+            cc_content = PatientInformationContent(**content_dict)
+            return PatientInformationSection(
                 section_id=sec_id,
                 title=title,
                 section_type=sec_type,
