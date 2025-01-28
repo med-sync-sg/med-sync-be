@@ -23,12 +23,6 @@ connected_clients: List[WebSocket] = []
 
 app = create_app()
 
-# parser = argparse.ArgumentParser(
-#     prog="MedSyncBE",
-#     description="Runs the backend server locally for MedSync"
-# )
-
-
 load_umls = True
 
 if load_umls == True:

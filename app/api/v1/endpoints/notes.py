@@ -4,10 +4,6 @@ from typing import Dict
 
 router = APIRouter()
 
-class User(BaseModel):
-    id: int
-    name: str
-
 @router.get("/note/{note_id}")
 def get_note(note_id: int):
     pass

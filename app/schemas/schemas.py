@@ -4,6 +4,19 @@ from datetime import date, datetime
 import json
 from sqlalchemy import Engine
 
+candidate_topics = {
+    "ChiefComplaint": "This text describes the patient’s primary symptoms or issues that prompted the visit, such as pain, discomfort, or concern, usually stated at the beginning of a consultation. Examples: 'I have had severe headaches for 2 days...', 'I'm having some real bad diarrhea...'",
+    "PatientInformation" : "This text describes the demographic and personal details such as age, occupation, address, occupation, and many other details.",
+    "PatientMedicalHistory": "This text describes the patient's medical history. This part can be very different to the ChiefComplaint part.",
+    "Others": "This text refers to all other contents not classified as the above categories."
+}
+
+class User(BaseModel):
+    user_id: str
+    first_name: str
+    middle_name: Optional[str]
+    last_name: str
+
 class Diagnosis(BaseModel):
     description: str
     icd_10: Optional[str] = None
@@ -24,7 +37,8 @@ class Section(BaseModel):
     
     # Optional: a "type" discriminator field
     # to identify specialized sections in the DB.
-    section_type: Optional[str] = None
+    section_type: str = "Others"
+    section_description: str = candidate_topics[section_type]
 
 
 class ChiefComplaintContent(BaseModel):
@@ -34,30 +48,34 @@ class ChiefComplaintContent(BaseModel):
     duration: Optional[str] = None
     severity: Optional[str] = None
     modifying_factors: Optional[List[str]] = None
-    
 class ChiefComplaintSection(Section):
     """
     Specialized section. 
     We'll override the content with a stricter type,
     but from the DB perspective, it's still the same row structure.
+
     """
-    section_type: str = "chief_complaint"
     content: ChiefComplaintContent
+    section_type: str = "ChiefComplaint"
+    section_description: str = candidate_topics[section_type]
+
 
 class PatientInformationContent(BaseModel):
     """Structure for the 'content' of a PatientInformationSection."""
     name: str
-    age: int
-    gender: Optional[str]
-    sex: str
+    age: int    
     
 class PatientInformationSection(Section):
     section_type: str = "patient_information"
     content: PatientInformationContent
+    section_type: str = "PatientInformation"
+    section_description: str = candidate_topics[section_type]
+
 
 class ConsultationNote(BaseModel):
     schema_version: int = 1
     consultation_id: str
+    note_id: int
     patient_id: str
     encounter_date: date
     sections: List[Section] = Field(default_factory=list)
