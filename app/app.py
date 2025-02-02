@@ -11,11 +11,10 @@ import whisper
 import numpy as np
 import argparse
 from spacy import displacy
-from api.v1 import endpoints as v1_endpoints
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Backend Connection", version="1.0.0")
-    app.include_router(v1_endpoints.router, prefix="/v1", tags=["v1"])
+    # app.include_router(v1_endpoints.router, prefix="/v1", tags=["v1"])
 
     return app
 

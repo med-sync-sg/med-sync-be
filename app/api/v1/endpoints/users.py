@@ -10,5 +10,5 @@ def get_user(user_id: int):
     pass
 
 @router.post("/users")
-def create_user(user: User):
+def create_user(user):
     pass

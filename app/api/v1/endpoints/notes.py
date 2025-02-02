@@ -9,5 +9,5 @@ def get_note(note_id: int):
     pass
 
 @router.post("/note")
-def create_note(user: User):
+def create_note(user):
     pass

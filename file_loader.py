@@ -1,13 +1,13 @@
 import os
-from app.utils.nlp import process_text
+from app.utils.nlp import process_text, identify_text_topic, generate_section
 from spacy import displacy
 TRANSCRIPT_PATH = "D:\medsync\primock57\\texts"
 TAGGED_DOCS_PATH = "D:\medsync\primock57\\tagged"
 
 def get_transcript_text(file):
-    full_text = ""
+    full_text = []
     for line in file:
-        full_text = full_text + line
+        full_text.append(line)
     return full_text
 
 def load_test_transcripts():
@@ -22,16 +22,17 @@ def load_test_transcripts():
 
 def load():
     transcript_files = load_test_transcripts()
-    number = 1
     file = transcript_files[0]
-    # for file in transcript_files:
-    text = get_transcript_text(file)
-    tagged_doc = process_text(text)
+    text_list = get_transcript_text(file)
+    full_text = ""
+    for line in text_list:
+        full_text = full_text + line
+    tagged_doc = process_text(full_text)
     html = displacy.render(tagged_doc)
+    generate_section(tagged_doc)
     with open(os.path.join(TAGGED_DOCS_PATH + '_{number}'), "w") as f:
         f.write(html)
     f.close()
-    # number = number + 1
         
         
 load()

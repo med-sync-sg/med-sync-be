@@ -1,15 +1,17 @@
-from typing import List
+from typing import List, Tuple
 from spacy.matcher import PhraseMatcher
 import pandas as pd
 import ahocorasick
 import spacy
 from spacy import Language
 from fastapi import APIRouter
+import spacy.tokenizer
 from spacy.tokens import Doc
+import spacy.tokens
 from app.utils.import_umls import DataStore
 from spacy import displacy
 from pathlib import Path
-from app.schemas.schemas import Section, candidate_topics
+from app.schemas.schemas import Section, candidate_topics, ChiefComplaintSection, PatientInformationSection
 from sentence_transformers import SentenceTransformer, util
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
@@ -78,20 +80,6 @@ def create_ahocorasick_component(nlp: Language, name: str, config: dict={}):
     return AhoCorasickComponent()
 
 
-nlp_en = spacy.load("en_core_web_trf")
-if "ahocorasick" not in nlp_en.pipe_names:
-    nlp_en.add_pipe("ahocorasick", last=True)
-nlp_en.initialize()
-
-def process_text(text: str) -> Doc:
-    # Process the text
-    doc = nlp_en(text)
-    rendered = displacy.render(doc, style="ent")
-    output_path = Path("./images/sentence.html")
-    output_path.open("w").write(rendered)
-    return doc
-
-
 def summarize_text():
     pass
 
@@ -110,7 +98,7 @@ def load_labse_model() -> tuple[SentenceTransformer, dict]:
     return (labse_model, topic_embeddings)
         
 
-def get_chunk_embedding(chunk_text: str, labse_model: SentenceTransformer):
+def get_chunk_embedding(chunk_text: str):
     return labse_model.encode(chunk_text, convert_to_tensor=True)
 
 def rank_candidates_bi_encoder(chunk_emb, topic_embeddings, top_k=2):
@@ -125,8 +113,6 @@ def rank_candidates_bi_encoder(chunk_emb, topic_embeddings, top_k=2):
     
     # Return the top K
     return scores[:top_k]
-
-
 
 def cross_encoder_score(text_a, text_b):
     """Return the relevance score from a cross-encoder."""
@@ -154,12 +140,88 @@ def re_rank_candidates(chunk_text, candidates):
     print("Re-ranked candidates:", results)
     return results
 
-def identify_text_topic(text: str) -> List[Section]:
-    labse_model, topic_embeddings = load_labse_model()
+def generate_section(doc: spacy.tokens.Doc) -> List[Section]:
+    """
+    Identify topic segments for a transcript by combining the raw text with
+    NER tags from the Spacy Doc object.
+    
+    :param doc: A Spacy Doc object of the full transcript with NER annotations.
+    :return: A list of Section objects (or prints the chosen label for the chunk).
+    """
+    full_text = doc.text
+    lines = full_text.split("\n")    
+    # We'll use an offset to track the character position of each line in the full text.
+    offset = 0  
+    for line in lines:
+        start_offset = offset
+        end_offset = offset + len(line)
+        
+        # Find entities whose character span falls within the current line.
+        line_entities = [
+            ent.label_ for ent in doc.ents
+            if ent.start_char >= start_offset and ent.end_char <= end_offset
+        ]
+        # Remove duplicate entity labels.
+        line_entities = list(set(line_entities))
+    
+        
+        # Update the offset; assume a newline is one character.
+        offset = end_offset + 1
+        best_label = identify_text_topic(text=line, entities=line_entities)
+        print(best_label, line)
+
+
+    
+    # Optionally, you can return a list of Section objects based on your label.
+    # For example, you might construct a Section with the chosen label.
+    # Here we assume a Section class exists and is constructed appropriately.
+    result = []
+    if best_label == "ChiefComplaint":
+        result.append(
+            ChiefComplaintSection(
+                section_id="generated_id", 
+                title=best_label, 
+            )
+        )
+    elif best_label == "PatientInformation":
+        result.append(
+            PatientInformationSection(
+                section_id="generated_id", 
+                title=best_label, 
+            )
+        )
+    section = Section(
+        section_id="generated_id", 
+        title=best_label, 
+    )
+    return [section]
+
+def identify_text_topic(text: str, entities: List[str]) -> Tuple[str, float]:
+    # Step 1: Compute the chunk embedding using the augmented text.
     chunk_emb = get_chunk_embedding(text)
+    
+    # Step 2: Rank candidate topics using the bi-encoder (LaBSE) step.
     candidates = rank_candidates_bi_encoder(chunk_emb, topic_embeddings, top_k=10)
     print("Top candidates from LaBSE:", candidates)
+    
+    # Step 3: Re-rank the candidates using your re-ranker.
     final_ranking = re_rank_candidates(text, candidates)
     print("Re-ranked candidates:", final_ranking)
+    
+    # Select the best candidate.
     best_label, best_score = final_ranking[0]
-    print("Chosen label:", best_label)
+    print("Chosen label:", best_label, best_score)
+    
+    return (best_label, best_score)
+
+        
+nlp_en = spacy.load("en_core_web_trf")
+if "ahocorasick" not in nlp_en.pipe_names:
+    nlp_en.add_pipe("ahocorasick", last=True)
+nlp_en.initialize()
+labse_model, topic_embeddings = load_labse_model()
+
+def process_text(text: str) -> Doc:
+    # Process the text
+    doc = nlp_en(text)
+    return doc
