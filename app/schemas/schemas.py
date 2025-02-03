@@ -3,13 +3,17 @@ from typing import List, Dict, Any, Optional
 from datetime import date, datetime
 import json
 from sqlalchemy import Engine
+from enum import Enum
 
-candidate_topics = {
-    "ChiefComplaint": "This text describes the patient’s primary symptoms or issues that prompted the visit, such as pain, discomfort, or concern, usually stated at the beginning of a consultation. Examples: 'I have had severe headaches for 2 days...', 'I'm having some real bad diarrhea...'",
-    "PatientInformation" : "This text describes the demographic and personal details such as age, occupation, address, occupation, and many other details.",
-    "PatientMedicalHistory": "This text describes the patient's medical history. This part can be very different to the ChiefComplaint part.",
-    "Others": "This text refers to all other contents not classified as the above categories."
-}
+class TextCategoryEnum(Enum):
+    """
+    An Enum class representing the categories of text chunks (usually sentence-length or shorter)
+    The name acts as the category name, and the value is the decsription of that category.
+    """
+    CHIEF_COMPLAINT:str="This text describes the patient’s primary symptoms or issues that prompted the visit, such as pain, discomfort, or concern, usually stated at the beginning of a consultation. Examples: 'I have had severe headaches for 2 days...', 'I'm having some real bad diarrhea...'"
+    PATIENT_INFORMATION:str="This text describes the demographic and personal details such as age, occupation, address, occupation, and many other details."
+    PATIENT_MEDICAL_HISTORY:str="This text describes the patient's medical history. This part can be very different to the ChiefComplaint part."
+    OTHERS:str="This text refers to all other contents not classified as the above categories."
 
 class User(BaseModel):
     user_id: str
@@ -37,39 +41,35 @@ class Section(BaseModel):
     
     # Optional: a "type" discriminator field
     # to identify specialized sections in the DB.
-    section_type: str = "Others"
-    section_description: str = candidate_topics[section_type]
-
+    section_type: str = TextCategoryEnum.OTHERS.name
+    section_description: str = TextCategoryEnum[section_type]
 
 class ChiefComplaintContent(BaseModel):
     """Structure for the 'content' of a Chief Complaint."""
-    symptoms: List[str]
-    onset: Optional[str] = None
-    duration: Optional[str] = None
-    severity: Optional[str] = None
-    modifying_factors: Optional[List[str]] = None
+    symptoms: List[Dict[str, Any]] = [{"Symptom": "", "Onset": "", "Duration": "", "Severity": ""}]
+    main_concern: str = ""
+
 class ChiefComplaintSection(Section):
     """
     Specialized section. 
     We'll override the content with a stricter type,
     but from the DB perspective, it's still the same row structure.
-
     """
     content: ChiefComplaintContent
-    section_type: str = "ChiefComplaint"
-    section_description: str = candidate_topics[section_type]
+    section_type: str = TextCategoryEnum.CHIEF_COMPLAINT.name
+    section_description: str = TextCategoryEnum[section_type]
 
 
 class PatientInformationContent(BaseModel):
     """Structure for the 'content' of a PatientInformationSection."""
-    name: str
-    age: int    
+    information: Dict[str, Any] = {"age": 0, "name": ""}
+
     
 class PatientInformationSection(Section):
     section_type: str = "patient_information"
     content: PatientInformationContent
-    section_type: str = "PatientInformation"
-    section_description: str = candidate_topics[section_type]
+    section_type: str = TextCategoryEnum.PATIENT_INFORMATION.name
+    section_description: str = TextCategoryEnum[section_type]
 
 
 class ConsultationNote(BaseModel):
@@ -124,22 +124,22 @@ def fetch_section(conn, section_db_id: int) -> Section:
         # Decide which Pydantic model to use based on section_type
         if sec_type == "chief_complaint":
             # Parse the content with ChiefComplaintContent
-            cc_content = ChiefComplaintContent(**content_dict)
+            content = ChiefComplaintContent(**content_dict)
             return ChiefComplaintSection(
                 section_id=sec_id,
                 title=title,
                 section_type=sec_type,
                 metadata=metadata_dict,
-                content=cc_content
+                content=content
             )
         elif sec_type == "patient_information":
-            cc_content = PatientInformationContent(**content_dict)
+            content = PatientInformationContent(**content_dict)
             return PatientInformationSection(
                 section_id=sec_id,
                 title=title,
                 section_type=sec_type,
                 metadata=metadata_dict,
-                content=cc_content
+                content=content
             )
         else:
             # Fallback to a generic Section

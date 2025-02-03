@@ -1,8 +1,7 @@
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
 from spacy.matcher import PhraseMatcher
 import pandas as pd
 import ahocorasick
-import spacy
 from spacy import Language
 from fastapi import APIRouter
 import spacy.tokenizer
@@ -11,7 +10,7 @@ import spacy.tokens
 from app.utils.import_umls import DataStore
 from spacy import displacy
 from pathlib import Path
-from app.schemas.schemas import Section, candidate_topics, ChiefComplaintSection, PatientInformationSection
+from app.schemas.schemas import Section, TextCategoryEnum, ChiefComplaintSection, PatientInformationSection
 from sentence_transformers import SentenceTransformer, util
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
@@ -90,10 +89,10 @@ def load_labse_model() -> tuple[SentenceTransformer, dict]:
 
     # Precompute topic embeddings
     topic_embeddings = {}
-    for label, definition in candidate_topics.items():
+    for category in TextCategoryEnum:
         # Convert definition to an embedding
-        emb = labse_model.encode(definition, convert_to_tensor=True)
-        topic_embeddings[label] = emb
+        emb = labse_model.encode(category.value, convert_to_tensor=True)
+        topic_embeddings[category.name] = emb
     
     return (labse_model, topic_embeddings)
         
@@ -101,7 +100,7 @@ def load_labse_model() -> tuple[SentenceTransformer, dict]:
 def get_chunk_embedding(chunk_text: str):
     return labse_model.encode(chunk_text, convert_to_tensor=True)
 
-def rank_candidates_bi_encoder(chunk_emb, topic_embeddings, top_k=2):
+def rank_candidates_bi_encoder(chunk_emb, topic_embeddings: Dict[str, Any], top_k=2):
     """Return the top_k candidate topics based on cosine similarity."""
     scores = []
     for label, topic_emb in topic_embeddings.items():
@@ -132,69 +131,13 @@ def re_rank_candidates(chunk_text, candidates):
     # candidates is a list of (label, bi_encoder_score)
     results = []
     for label, _ in candidates:
-        label_def = candidate_topics[label]  # the definition
+        label_def = TextCategoryEnum[label].value  # label definition
         ce_score = cross_encoder_score(chunk_text, label_def)
         results.append((label, ce_score))
     # Sort by descending re-ranker score
     results.sort(key=lambda x: x[1], reverse=True)
     print("Re-ranked candidates:", results)
     return results
-
-def generate_section(doc: spacy.tokens.Doc) -> List[Section]:
-    """
-    Identify topic segments for a transcript by combining the raw text with
-    NER tags from the Spacy Doc object.
-    
-    :param doc: A Spacy Doc object of the full transcript with NER annotations.
-    :return: A list of Section objects (or prints the chosen label for the chunk).
-    """
-    full_text = doc.text
-    lines = full_text.split("\n")    
-    # We'll use an offset to track the character position of each line in the full text.
-    offset = 0  
-    for line in lines:
-        start_offset = offset
-        end_offset = offset + len(line)
-        
-        # Find entities whose character span falls within the current line.
-        line_entities = [
-            ent.label_ for ent in doc.ents
-            if ent.start_char >= start_offset and ent.end_char <= end_offset
-        ]
-        # Remove duplicate entity labels.
-        line_entities = list(set(line_entities))
-    
-        
-        # Update the offset; assume a newline is one character.
-        offset = end_offset + 1
-        best_label = identify_text_topic(text=line, entities=line_entities)
-        print(best_label, line)
-
-
-    
-    # Optionally, you can return a list of Section objects based on your label.
-    # For example, you might construct a Section with the chosen label.
-    # Here we assume a Section class exists and is constructed appropriately.
-    result = []
-    if best_label == "ChiefComplaint":
-        result.append(
-            ChiefComplaintSection(
-                section_id="generated_id", 
-                title=best_label, 
-            )
-        )
-    elif best_label == "PatientInformation":
-        result.append(
-            PatientInformationSection(
-                section_id="generated_id", 
-                title=best_label, 
-            )
-        )
-    section = Section(
-        section_id="generated_id", 
-        title=best_label, 
-    )
-    return [section]
 
 def identify_text_topic(text: str, entities: List[str]) -> Tuple[str, float]:
     # Step 1: Compute the chunk embedding using the augmented text.
@@ -213,6 +156,44 @@ def identify_text_topic(text: str, entities: List[str]) -> Tuple[str, float]:
     print("Chosen label:", best_label, best_score)
     
     return (best_label, best_score)
+
+def categorize_doc(doc: spacy.tokens.Doc) -> Dict[str, List[str]]:
+    """
+    Identify topic segments for a transcript by combining the raw text with
+    NER tags from the Spacy Doc object.
+    
+    :param doc: A Spacy Doc object of the full transcript with NER annotations.
+    :return: A list of Section objects (or prints the chosen label for the chunk).
+    """
+    result : Dict[str, List[str]] = {}
+    for category in TextCategoryEnum:
+        # Populate the result dict with using TextCategoryEnum names as keys
+        # and an empty list as the value
+        # Allows the next part to categorize text
+        result[category.name] = []
+
+    full_text = doc.text
+    lines = full_text.split("\n")    
+
+    offset = 0  
+    for line in lines:
+        start_offset = offset
+        end_offset = offset + len(line)
+        
+        # Find entities whose character span falls within the current line.
+        line_entities = [
+            ent.label_ for ent in doc.ents
+            if ent.start_char >= start_offset and ent.end_char <= end_offset
+        ]
+        # Remove duplicate entity labels.
+        line_entities = list(set(line_entities))
+        
+        # Update the offset; assume a newline is one character.
+        offset = end_offset + 1
+        best_label, score = identify_text_topic(text=line, entities=line_entities)
+        result[best_label].append(line)
+
+    return result
 
         
 nlp_en = spacy.load("en_core_web_trf")

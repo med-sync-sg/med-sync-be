@@ -1,5 +1,5 @@
 import os
-from app.utils.nlp import process_text, identify_text_topic, generate_section
+from app.utils.nlp import process_text, categorize_doc
 from spacy import displacy
 TRANSCRIPT_PATH = "D:\medsync\primock57\\texts"
 TAGGED_DOCS_PATH = "D:\medsync\primock57\\tagged"
@@ -29,7 +29,7 @@ def load():
         full_text = full_text + line
     tagged_doc = process_text(full_text)
     html = displacy.render(tagged_doc)
-    generate_section(tagged_doc)
+    print(categorize_doc(tagged_doc))
     with open(os.path.join(TAGGED_DOCS_PATH + '_{number}'), "w") as f:
         f.write(html)
     f.close()
