@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from typing import List
 from app.utils.import_umls import DataStore
-from app.utils.nlp import process_text
+from app.utils.nlp import process_text, categorize_doc
 import queue
 import threading
 import torch
@@ -14,18 +14,13 @@ from spacy import displacy
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Backend Connection", version="1.0.0")
-    
+    # app.include_router(v1_endpoints.router, prefix="/v1", tags=["v1"])
+
     return app
 
 connected_clients: List[WebSocket] = []
 
 app = create_app()
-
-# parser = argparse.ArgumentParser(
-#     prog="MedSyncBE",
-#     description="Runs the backend server locally for MedSync"
-# )
-
 
 load_umls = True
 
@@ -105,6 +100,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         for text in shared_transcript:
                             full_transcript = full_transcript + text
                         doc = process_text(full_transcript)
+                        categorized = categorize_doc(doc)
+                        print(categorized)
                         print(displacy.render(doc, style="ent"))
                 except Exception as e:
                     print(f"Error processing audio chunk: {e}")

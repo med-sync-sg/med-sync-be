@@ -1,38 +1,31 @@
-import json
-from pydantic import BaseModel, Field
-from typing import Union, Optional, List, Any
+from sqlalchemy import Column, String
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.declarative import declarative_base
+from app.schemas import ConsultationNote
 
-class Concept(BaseModel):
-    id : str
-    cui : str
-    name : str
-    definition : str
+Base = declarative_base()
 
+class ConsultationNoteRecord(Base):
+    __tablename__ = "consultation_notes"
 
-class MedicalEntry(BaseModel):
-    topic: str = Field(default="")
-    entry: Optional[Union[str, int, float, List, 'MedicalEntry', List['MedicalEntry']]] = None
-    parent: Optional['MedicalEntry'] = None
-
-    class Config:
-        json_encoders = {
-            'MedicalEntry': lambda v: v.to_dict(exclude={'parent'})
-        }
-
-class ConsultationModel(BaseModel):
-    entries: List[MedicalEntry]
-    def __init__(self):
-        self.entries = []
-
-class SOAPModel(ConsultationModel):
-    subjective_entries: List[MedicalEntry]
-    objective_entries: List[MedicalEntry]
-    assessment_entries: List[MedicalEntry]
-    plan_entries: List[MedicalEntry]
+    consultation_id = Column(String, primary_key=True)
+    patient_id = Column(String)
+    # The entire Pydantic-defined note structure stored as JSON
+    note_data = Column(JSONB)
     
-    def __init__(self):
-        super(self)
-        self.subjective_entries = []
-        self.objective_entries = []
-        self.assessment_entries = []
-        self.plan_entries = []
+    
+def save_consultation_note(session, note: ConsultationNote):
+    record = ConsultationNoteRecord(
+        consultation_id=note.consultation_id,
+        patient_id=note.patient_id,
+        note_data=note.dict()  # serialize to a Python dict for storage
+    )
+    session.add(record)
+    session.commit()
+    
+def get_consultation_note(session, consultation_id: str) -> ConsultationNote:
+    record = session.query(ConsultationNoteRecord).filter_by(consultation_id=consultation_id).first()
+    if record is None:
+        raise ValueError("Not found")
+    # Re-construct the Pydantic model from the stored dict
+    return ConsultationNote(**record.note_data)
