@@ -13,7 +13,7 @@ class TextCategoryEnum(Enum):
     CHIEF_COMPLAINT:str="This text describes the patient’s primary symptoms or issues that prompted the visit, such as pain, discomfort, or concern, usually stated at the beginning of a consultation. Examples: 'I have had severe headaches for 2 days...', 'I'm having some real bad diarrhea...'"
     PATIENT_INFORMATION:str="This text describes the demographic and personal details such as age, occupation, address, occupation, and many other details."
     PATIENT_MEDICAL_HISTORY:str="This text describes the patient's medical history. This part can be very different to the ChiefComplaint part."
-    OTHERS:str="This text refers to all other contents not classified as the above categories."
+    OTHERS:str="This text refers to all other contents not classified as the CHIEF_COMPLAINT, PATIENT_INFORMATION, PATIENT_MEDICAL_HISTORY categories."
 
 class User(BaseModel):
     user_id: str

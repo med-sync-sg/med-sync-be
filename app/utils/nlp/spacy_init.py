@@ -79,9 +79,6 @@ def create_ahocorasick_component(nlp: Language, name: str, config: dict={}):
     return AhoCorasickComponent()
 
 
-def summarize_text():
-    pass
-
 def load_labse_model() -> tuple[SentenceTransformer, dict]:
     # Load LaBSE (bi-encoder model)
     # Note: "sentence-transformers/LaBSE" is a popular checkpoint on Hugging Face
@@ -194,6 +191,9 @@ def categorize_doc(doc: spacy.tokens.Doc) -> Dict[str, List[str]]:
         result[best_label].append(line)
 
     return result
+
+def summarize_text():
+    pass
 
         
 nlp_en = spacy.load("en_core_web_trf")

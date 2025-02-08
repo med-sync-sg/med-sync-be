@@ -1,5 +1,5 @@
 import os
-from app.utils.nlp import process_text, categorize_doc
+from app.utils.nlp.spacy_init import process_text, categorize_doc
 from spacy import displacy
 TRANSCRIPT_PATH = "D:\medsync\primock57\\texts"
 TAGGED_DOCS_PATH = "D:\medsync\primock57\\tagged"

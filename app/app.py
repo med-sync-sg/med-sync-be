@@ -3,7 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from typing import List
 from app.utils.import_umls import DataStore
-from app.utils.nlp import process_text, categorize_doc
+from app.utils.nlp.spacy_init import process_text
+from app.utils.nlp.spacy_init import categorize_doc
 import queue
 import threading
 import torch
