@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Patient Report - {{ report_date }}</title>
+    <style>
+      /* Patient-friendly styling: clear headings, simple language, etc. */
+    </style>
+  </head>
+  <body>
+    <h1>Your Health Report</h1>
+    <p>Date: {{ report_date }}</p>
+    <h2>About You</h2>
+    <p>Name: {{ patient_info.name }}</p>
+    <p>Age: {{ patient_info.age }}</p>
+
+    {% for section in sections %}
+    <h3>{{ section.title }}</h3>
+    <p>{{ section.summary }}</p>
+    {% endfor %}
+
+    <p>Please contact your doctor if you have any questions or concerns.</p>
+  </body>
+</html>

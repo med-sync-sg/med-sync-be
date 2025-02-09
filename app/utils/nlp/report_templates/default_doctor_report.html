@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Doctor Report - {{ report_date }}</title>
+  </head>
+  <body>
+    <h1>Clinical Report (Doctor View)</h1>
+    <p>Date: {{ report_date }}</p>
+
+    <h2>Patient Information</h2>
+    <p>Name: {{ patient_info.name }}</p>
+    <p>Age: {{ patient_info.age }}</p>
+    <p>Gender: {{ patient_info.gender }}</p>
+
+    {% for section in sections %}
+    <h3>{{ section.title }}</h3>
+    <p><strong>Summary:</strong> {{ section.summary }}</p>
+    <p><strong>Evidence:</strong></p>
+    <ul>
+      {% for evidence in section.evidence %}
+      <li>{{ evidence }}</li>
+      {% endfor %}
+    </ul>
+    {% endfor %}
+  </body>
+</html>
