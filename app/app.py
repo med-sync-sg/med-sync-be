@@ -1,4 +1,3 @@
-
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from typing import List
@@ -9,28 +8,28 @@ import threading
 import torch
 import whisper
 import numpy as np
-import argparse
+import webrtcvad
+from resemblyzer import VoiceEncoder
 from spacy import displacy
+import uvicorn
+import argparse
+from collections import deque
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Backend Connection", version="1.0.0")
-    
     return app
 
+app = create_app()
 connected_clients: List[WebSocket] = []
 
-app = create_app()
-
-# parser = argparse.ArgumentParser(
-#     prog="MedSyncBE",
-#     description="Runs the backend server locally for MedSync"
-# )
-
+parser = argparse.ArgumentParser(
+    prog="MedSyncBE",
+    description="Runs the backend server locally for MedSync"
+)
 
 load_umls = True
-
-if load_umls == True:
-    data_store = DataStore()  # first import triggers load
+if load_umls:
+    data_store = DataStore()  # First import triggers load
 
 # Add CORS middleware
 app.add_middleware(
@@ -41,151 +40,98 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 model = whisper.load_model("medium")
+encoder = VoiceEncoder()
+vad = webrtcvad.Vad(3)
+
+RATE = 16000
+CHUNK = 1024
+audio_buffer = deque(maxlen=RATE // CHUNK * 3)
+
+speaker_db = {}
+speaker_id = 0
+
+def detect_speaker(embedding):
+    global speaker_id
+    for spk, ref_embedding in speaker_db.items():
+        similarity = np.inner(embedding, ref_embedding)
+        if similarity > 0.75:
+            return spk
+    speaker_id += 1
+    speaker_db[f"Speaker {speaker_id}"] = embedding
+    return f"Speaker {speaker_id}"
+
+def process_audio(audio_queue: queue.Queue, websocket: WebSocket):
+    buffer = bytes()
+    BUFFER_SIZE = 64000
+
+    while True:
+        data = audio_queue.get()
+        if data is None:
+            break
+
+        buffer += data
+
+        if len(buffer) >= BUFFER_SIZE:
+            audio_data = np.frombuffer(buffer, dtype=np.int16).astype(np.float32) / 32768
+
+            try:
+                result = model.transcribe(audio_data, language="en")
+                text = result["text"]
+
+                if text.strip():
+                    print("TRANSCRIBED TEXT:", text)
+
+                    embedding = encoder.embed_utterance(audio_data)
+                    speaker = detect_speaker(embedding)
+                    print(f"[Diarization] Detected: {speaker}")
+
+                    import asyncio
+                    asyncio.run(websocket.send_text(f"{speaker}: {text}"))  # Fixed async sending
+
+            except Exception as e:
+                print("Error during processing:", e)
+
+            buffer = bytes()  # Clear buffer
 
 @app.websocket("/ws")
-
 async def websocket_endpoint(websocket: WebSocket):
-    shared_transcript = []
-    audio_queue = queue.Queue()
-    
-    def preprocess_audio(buffer):
-        audio_data = np.frombuffer(buffer, dtype=np.int16).astype(np.float32)
-        audio_data /= 32768.0  # Now the range is [-1.0, +1.0]
-        return audio_data
-
-    def transcribe_stream(audio_queue: queue.Queue, websocket: WebSocket, shared_transcript: list):
-        buffer = bytes()
-        TRANSCRIPTION_BUFFER_SIZE = 32000
-        while True:
-            data = audio_queue.get()
-            if data is None:  # End signal
-                break
-
-            buffer += bytes(data)
-
-            # Process audio every ~1 second
-            if len(buffer) > TRANSCRIPTION_BUFFER_SIZE:  # ~1 second of 16kHz 16-bit mono audio
-                audio_data = preprocess_audio(buffer)
-                print(f"Processing buffer with size: {len(buffer)} bytes")
-                
-                try:
-                    result = model.transcribe(audio_data, language="en")
-                    text = result["text"]
-                    if text.strip():
-                        print("TRANSCRIBED TEXT:", text)
-                        # Append to our shared transcript list
-                        shared_transcript.append(text)
-                except Exception as e:
-                    print("Error during transcription:", e)
-                
-                # Reset buffer
-                buffer = bytes()
-                
-    def diarize_stream(audio_queue: queue.Queue, diarization_results: list):
-
-        buffer = bytes()
-        
-        DIARIZATION_BUFFER_SIZE = 96000
-        while True:
-            data = audio_queue.get()
-            if data is None:  # End-of-stream signal
-                break
-
-            buffer += bytes(data)
-            if len(buffer) >= DIARIZATION_BUFFER_SIZE:
-                audio_data = preprocess_audio(buffer)
-                print(f"[Diarization] Processing {len(buffer)} bytes of audio")
-                try:
-                    speaker_label = diarize_audio(audio_data)
-                    print(f"[Diarization] Detected {speaker_label}")
-                    diarization_results.append((speaker_label, len(buffer)))
-                except Exception as e:
-                    print("Error during diarization:", e)
-                buffer = bytes()  # Reset buffer
-
     await websocket.accept()
     connected_clients.append(websocket)
     print("Client connected")
-    
-    transcription_queue = queue.Queue()
-    diarization_queue = queue.Queue()
-    
-    shared_transcript = [] # list of (transcribed_text, speaker_label)
-    diarization_results = [] # list of (speaker_label, buffer_size or timestamp info)
 
-    transcription_thread = threading.Thread(
-        target=transcribe_stream,
+    audio_queue = queue.Queue()
+    processing_thread = threading.Thread(
+        target=process_audio,
         daemon=True,
-        args=(transcription_queue, shared_transcript)
+        args=(audio_queue, websocket),
     )
-    
-    diarization_thread = threading.Thread(
-        target=diarize_stream,
-        daemon=True,
-        args=(diarization_queue, diarization_results)
-    )
-    #transcription_thread.start()
-    transcription_thread.start()
-    diarization_thread.start()
-    
+    processing_thread.start()
+
     try:
         while True:
-            data = await websocket.receive_json()
-            if data:
-                try: 
-                    '''
-                    if data["data"]:
-                        audio_chunk = data["data"]
-                        if audio_chunk == None:
-                            audio_queue.put(None)
-                        audio_queue.put(audio_chunk)
-                    elif data["data"] == None: # End of audio data stream
-                        full_transcript = ""
-                        for text in shared_transcript:
-                            full_transcript = full_transcript + text
-                        doc = process_text(full_transcript)
-                        print(displacy.render(doc, style="ent")) '''
-                    
-                    audio_chunk = data.get("data", None)
-                    if audio_chunk is not None: # chunnk in binary format
-                        transcription_queue.put(audio_chunk)
-                        diarization_queue.put(audio_chunk)
-                    else:
-                        # End of audio stream
-                        transcription_queue.put(None)
-                        diarization_queue.put(None)
-                        # Process final transcript and diarization results if needed
-                        full_transcript = " ".join(text for text, _ in shared_transcript)
-                        doc = process_text(full_transcript)
-                        print(displacy.render(doc, style="ent"))
-                        
-                except Exception as e:
-                    print(f"Error processing audio chunk: {e}")
-            else:
-                print("Non-audio data received")
+            data = await websocket.receive_bytes()
+            audio = np.frombuffer(data, dtype=np.int16)
+
+            if vad.is_speech(data, RATE):
+                audio_queue.put(data)
 
     except WebSocketDisconnect:
         print("Client disconnected")
-        #audio_queue.put(None)
-        transcription_queue.put(None)
-        diarization_queue.put(None)
+        audio_queue.put(None)
         connected_clients.remove(websocket)
     except Exception as e:
         print(f"WebSocket connection error: {e}")
 
-
-# Add routes or other configurations here
 @app.get("/")
 async def read_root():
     return {"message": "Hello, FastAPI from app.py!"}
 
 @app.post("/audio-test")
 async def process_transcript_audio(data):
-   pass
+    return {"status": "Audio processing not implemented yet."}
 
 @app.post("/text-test")
 async def process_transcript_text(data: str):
     result_doc = process_text(data)
-    return result_doc   
+    return result_doc

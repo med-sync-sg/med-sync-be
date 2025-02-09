@@ -6,11 +6,11 @@ from sqlalchemy.engine import Engine
 from app.utils import constants
 from os import environ 
 import pandas as pd
-DB_USER = environ.get('DB_USER')
-DB_PASSWORD = environ.get('DB_PASSWORD')
-DB_HOST = environ.get('DB_HOST')
-DB_PORT = environ.get('DB_PORT')
-DB_NAME = environ.get('DB_NAME')
+DB_USER = environ.get('DB_USER', 'postgres')
+DB_PASSWORD = environ.get('DB_PASSWORD', 'password')
+DB_HOST = environ.get('DB_HOST', 'localhost')
+DB_PORT = environ.get('DB_PORT', '5432')  # Default to 5432 if not set
+DB_NAME = environ.get('DB_NAME', 'mydatabase')
 # Path to MRCONSO.RRF
 UMLS_ROOT_DIRECTORY = os.path.join("umls", "2024AB", "META")
 
