@@ -1,7 +1,7 @@
 from sqlalchemy import Column, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
-from app.schemas import ConsultationNote
+from app.schemas.schemas import ConsultationNote
 
 Base = declarative_base()
 

@@ -4,7 +4,6 @@ import json
 import os
 
 DEFAULT_PATH = os.path.dirname(os.path.abspath(__file__))
-print(DEFAULT_PATH)
 
 def generate_doctor_report(data: dict, is_doctor_report: bool):
     templates_path = os.path.join(DEFAULT_PATH, 'report_templates')
@@ -21,6 +20,7 @@ def generate_doctor_report(data: dict, is_doctor_report: bool):
 
         print("Report generated successfully! Check doctor_report.html")
         f.close()
+        return rendered_report
     else:
         template = env.get_template('default_patient_report.html')
 
@@ -28,8 +28,9 @@ def generate_doctor_report(data: dict, is_doctor_report: bool):
         with open("patient_report.html", "w", encoding="utf-8") as f:
             f.write(rendered_report)
 
-            print("Report generated successfully! Check doctor_report.html")
+        print("Report generated successfully! Check patient_report.html")
         f.close()
+        return rendered_report
 
 
 
