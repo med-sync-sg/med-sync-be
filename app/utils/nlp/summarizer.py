@@ -26,7 +26,7 @@ def rank_sentences(sim_matrix: np.ndarray) -> list:
     # Create a graph where each sentence is a node
     nx_graph = nx.from_numpy_array(sim_matrix)
     # Apply the PageRank algorithm
-    scores = nx.pagerank_numpy(nx_graph)
+    scores = nx.pagerank(nx_graph)
     # Return the sentences ranked by their PageRank score
     ranked_sentences = sorted(((score, idx) for idx, score in scores.items()), reverse=True)
     return ranked_sentences  # List of tuples (score, sentence_index)
