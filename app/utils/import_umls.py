@@ -101,12 +101,13 @@ class DataStore:
     connection = create_engine(f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}")
     def __new__(cls):
         if cls._instance is None:
-            print("Loading DataFrame...")
+            print("Loading UMLS DataFrame...")
             cls._instance = super(DataStore, cls).__new__(cls)
             cls._instance.concepts_df = load_concepts(cls._instance.connection)
             cls._instance.relationships_df = load_relationships(cls._instance.connection)
             cls._instance.semantic_df = load_semantic_types(cls._instance.connection)
             cls._instance.combined_df = combine_data(cls._instance.concepts_df, cls._instance.semantic_df, cls._instance.relationships_df, cls._instance.connection)
+            print("UMLS DataFrame loading completed.")
         return cls._instance
     
     def get_combined_df(self):
