@@ -7,10 +7,10 @@ from fastapi import APIRouter
 import spacy.tokenizer
 from spacy.tokens import Doc
 import spacy.tokens
-from app.utils.import_umls import DataStore
+from app.db.session import DataStore
 from spacy import displacy
 from pathlib import Path
-from app.schemas.schemas import Section, TextCategoryEnum, ChiefComplaintSection, PatientInformationSection
+from app.schemas.schemas import TextCategoryEnum
 from sentence_transformers import SentenceTransformer, util
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
@@ -199,7 +199,6 @@ def summarize_text():
 nlp_en = spacy.load("en_core_web_trf")
 if "ahocorasick" not in nlp_en.pipe_names:
     nlp_en.add_pipe("ahocorasick", last=True)
-nlp_en.initialize()
 labse_model, topic_embeddings = load_labse_model()
 
 def process_text(text: str) -> Doc:
