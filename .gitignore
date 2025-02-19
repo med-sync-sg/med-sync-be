@@ -1,2 +1,6 @@
 /umls
 .env
+/models
+/training
+
+audio.rttm
