@@ -15,11 +15,13 @@ from sentence_transformers import SentenceTransformer, util
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch.nn.functional as F
+from os import environ
 
 # Load a cross-encoder model (e.g., "cross-encoder/ms-marco-MiniLM-L-6-v2" or something domain-specific)
 re_ranker_name = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 re_ranker_tokenizer = AutoTokenizer.from_pretrained(re_ranker_name)
 re_ranker_model = AutoModelForSequenceClassification.from_pretrained(re_ranker_name)
+HF_TOKEN = environ.get("HF_ACCESS_TOKEN")
 
 router = APIRouter()
 
@@ -85,7 +87,7 @@ def summarize_text():
 def load_labse_model() -> tuple[SentenceTransformer, dict]:
     # Load LaBSE (bi-encoder model)
     # Note: "sentence-transformers/LaBSE" is a popular checkpoint on Hugging Face
-    labse_model = SentenceTransformer("sentence-transformers/LaBSE")
+    labse_model = SentenceTransformer("sentence-transformers/LaBSE", token=HF_TOKEN)
 
     # Precompute topic embeddings
     topic_embeddings = {}
@@ -199,7 +201,6 @@ def categorize_doc(doc: spacy.tokens.Doc) -> Dict[str, List[str]]:
 nlp_en = spacy.load("en_core_web_trf")
 if "ahocorasick" not in nlp_en.pipe_names:
     nlp_en.add_pipe("ahocorasick", last=True)
-nlp_en.initialize()
 labse_model, topic_embeddings = load_labse_model()
 
 def process_text(text: str) -> Doc:
