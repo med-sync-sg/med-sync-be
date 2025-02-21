@@ -1,12 +1,10 @@
 from sqlalchemy import Column, String
 from typing import List
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
-from app.schemas.notes import BaseNote
+from app.schemas.note import BaseNote
 from sqlalchemy import Column, Integer, String, ForeignKey
-from sqlalchemy.orm import Mapped
-from sqlalchemy.orm import mapped_column
-from sqlalchemy.orm import relationship
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import Mapped, mapped_column, relationship, declarative_base
+
 Base = declarative_base()
 
 class User(Base):
@@ -31,7 +29,7 @@ class Section(Base):
     
     id: Mapped[int] = mapped_column(primary_key=True)
     note_id : Mapped[int] = mapped_column(ForeignKey("notes.id"), nullable=False)
-    note : Mapped["Note"] = relationship(back_populates="sections")
+    note : Mapped["NoteTemplate"] = relationship(back_populates="sections")
     title = Column(String)
     content = Column(JSONB)
 
@@ -51,5 +49,5 @@ class SectionTemplate(Base):
     note_template_id : Mapped[int] = mapped_column(ForeignKey("note_templates.id"), nullable=False)
     note_template: Mapped["NoteTemplate"] = relationship(back_populates="section_templates")
     title: Mapped[str] = mapped_column(nullable=False)
-    metadata_keys: Mapped[List[str]] = mapped_column(default=[])
-    content_keys: Mapped[List[str]] = mapped_column(default=[])
+    metadata_keys: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
+    content_keys: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)

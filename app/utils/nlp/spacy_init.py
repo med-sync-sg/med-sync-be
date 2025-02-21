@@ -10,7 +10,7 @@ import spacy.tokens
 from app.db.session import DataStore
 from spacy import displacy
 from pathlib import Path
-from app.schemas.schemas import TextCategoryEnum
+from app.schemas.section import TextCategoryEnum
 from sentence_transformers import SentenceTransformer, util
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
