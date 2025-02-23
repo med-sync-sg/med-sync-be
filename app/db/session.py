@@ -3,7 +3,6 @@ import pandas as pd
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
-from app.utils import constants
 from os import environ 
 import pandas as pd
 
@@ -19,9 +18,10 @@ DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_POR
 
 from app.models.models import Base
 
-columns = ["CUI", "LAT", "TS", "LUI", "STT", "SUI", "ISPREF",
-            "AUI", "SAUI", "SCUI", "SDUI", "SAB", "TTY", "CODE",
-            "STR", "SRL", "SUPPRESS", "CVF"]
+SYMPTOMS_AND_DISEASES_TUI = [
+    'T047',  # Disease or Syndrome
+    'T184',  # Sign or Symptom
+]
 
 class DataStore:
     _instance = None
@@ -49,6 +49,10 @@ class DataStore:
         self.load_relationships(engine)
 
     def load_concepts(self, connection: Engine):
+        columns = ["CUI", "LAT", "TS", "LUI", "STT", "SUI", "ISPREF",
+            "AUI", "SAUI", "SCUI", "SDUI", "SAB", "TTY", "CODE",
+            "STR", "SRL", "SUPPRESS", "CVF"]
+        
         # MRCONSO.RRF
         inspector = inspect(connection)
         table_name = "umls_concepts"
@@ -73,13 +77,13 @@ class DataStore:
         table_name = "umls_semantic_types"
         if inspector.has_table(table_name):
             df = pd.read_sql_table(table_name=table_name, con=connection, columns=cols)
-            return df[df["TUI"].isin(constants.SYMPTOMS_AND_DISEASES_TUI)]
+            return df[df["TUI"].isin(SYMPTOMS_AND_DISEASES_TUI)]
         else:        
             df = pd.read_csv(os.path.join(UMLS_ROOT_DIRECTORY, "MRSTY.RRF"), sep="|", names=cols, index_col=False)
             print("UMLS Semantic Types Loaded.")
             # print("Uploading UMLS semantic types to the db...")
             # df.to_sql(table_name, con=connection)
-            df = df[df["TUI"].isin(constants.SYMPTOMS_AND_DISEASES_TUI)]
+            df = df[df["TUI"].isin(SYMPTOMS_AND_DISEASES_TUI)]
             return df
 
     def load_relationships(self, connection: Engine):

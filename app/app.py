@@ -12,10 +12,15 @@ import whisper
 import numpy as np
 import argparse
 from spacy import displacy
+from app.api.v1.endpoints import auth, notes, users, templates, reports
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Backend Connection", version="1.0.0")
-    # app.include_router(v1_endpoints.router, prefix="/v1", tags=["v1"])
+    app.include_router(auth.router, prefix="/auth", tags=["auth"])
+    app.include_router(notes.router, prefix="/note", tags=["note"])
+    app.include_router(users.router, prefix="/user", tags=["user"])
+    app.include_router(templates.router, prefix="/template", tags=["template"])
+    app.include_router(reports.router, prefix="/report", tags=["report"])
 
     return app
 
@@ -115,19 +120,4 @@ async def websocket_endpoint(websocket: WebSocket):
         connected_clients.remove(websocket)
     except Exception as e:
         print(f"WebSocket connection error: {e}")
-        
-
-
-# Add routes or other configurations here
-@app.get("/")
-async def read_root():
-    return {"message": "Hello, FastAPI from app.py!"}
-
-@app.post("/audio-test")
-async def process_transcript_audio(data):
-   pass
-
-@app.post("/text-test")
-async def process_transcript_text(data: str):
-    result_doc = process_text(data)
-    return result_doc
+    
