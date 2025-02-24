@@ -107,8 +107,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             full_transcript = full_transcript + text
                         doc = process_text(full_transcript)
                         categorized = categorize_doc(doc)
-                        print(categorized)
-                        print(displacy.render(doc, style="ent"))
+                        await websocket.send_json({"text": full_transcript})
                 except Exception as e:
                     print(f"Error processing audio chunk: {e}")
             else:
