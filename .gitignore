@@ -2,5 +2,6 @@
 .env
 /models
 /training
+alembic.ini
 
 audio.rttm
