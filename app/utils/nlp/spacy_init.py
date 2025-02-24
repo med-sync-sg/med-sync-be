@@ -15,11 +15,13 @@ from sentence_transformers import SentenceTransformer, util
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch.nn.functional as F
+from os import environ
 
 # Load a cross-encoder model (e.g., "cross-encoder/ms-marco-MiniLM-L-6-v2" or something domain-specific)
 re_ranker_name = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 re_ranker_tokenizer = AutoTokenizer.from_pretrained(re_ranker_name)
 re_ranker_model = AutoModelForSequenceClassification.from_pretrained(re_ranker_name)
+HF_TOKEN = environ.get("HF_ACCESS_TOKEN")
 
 router = APIRouter()
 
@@ -82,7 +84,7 @@ def create_ahocorasick_component(nlp: Language, name: str, config: dict={}):
 def load_labse_model() -> tuple[SentenceTransformer, dict]:
     # Load LaBSE (bi-encoder model)
     # Note: "sentence-transformers/LaBSE" is a popular checkpoint on Hugging Face
-    labse_model = SentenceTransformer("sentence-transformers/LaBSE")
+    labse_model = SentenceTransformer("sentence-transformers/LaBSE", token=HF_TOKEN)
 
     # Precompute topic embeddings
     topic_embeddings = {}
