@@ -43,7 +43,6 @@ async def stream_audio(uri, audio_file_path, chunk_size=1024):
                     
                     # Simulate real-time delay: chunk_duration = frames / framerate
                     delay = chunk_size / framerate
-                    await asyncio.sleep(delay)
                     
     except websockets.exceptions.ConnectionClosed as e:
         logger.error("WebSocket connection closed: %s", e)

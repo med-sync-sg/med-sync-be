@@ -9,10 +9,12 @@ import torch
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 import soundfile as sf
 from os import environ
-
+import os
+from pyctcdecode import build_ctcdecoder
 import torch
-import soundfile as sf
-import librosa
+from app.utils.nlp.spacy_init import process_text
+from app.utils.nlp.extractor import extract_keywords_descriptors, classify_keyword
+
 
 def play_raw_audio(audio_buffer: bytearray, sample_rate=16000, sample_width=2, channels=1):
     p = pyaudio.PyAudio()
@@ -35,9 +37,9 @@ class AudioCollector:
     3. Provides methods to convert buffers to wave data.
     """
     _instance = None
-
+    full_transcript = []
     def __new__(cls):
-        MODEL_ID = "jonatasgrosman/wav2vec2-large-xlsr-53-english"
+        MODEL_ID = "facebook/wav2vec2-base-960h"
         if cls._instance is None:
             print("Initializing AudioCollector.")
             cls._instance = super(AudioCollector, cls).__new__(cls)
@@ -48,8 +50,23 @@ class AudioCollector:
             cls._instance.model = Wav2Vec2ForCTC.from_pretrained(MODEL_ID)
             cls._instance.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             cls._instance.model.to(cls._instance.device)
-
+            # Build the decoder using the vocabulary from the processor
+            # Remove any special tokens as needed (like [UNK], [PAD])
+            vocab_dict = cls._instance.processor.tokenizer.get_vocab()
+            # Create an ordered list of tokens (the order must match the model training)
+            # Often you might sort by the tokenizer's indices or use a predefined list
+            vocab = [None] * len(vocab_dict)
+            for token, idx in vocab_dict.items():
+                vocab[idx] = token
+                
+            # Build a CTC decoder without a language model (or add a kenlm model if you have one)
+            cls._instance.decoder = build_ctcdecoder(
+                vocab, kenlm_model_path=os.path.join(".", "training", "umls_corpus.binary"),
+                alpha=0.3,
+                beta=1.0
+            )
             
+            cls._instance.full_transcript_text = ""
             cls._instance.full_transcript = []
         return cls._instance
 
@@ -145,16 +162,18 @@ class AudioCollector:
             try:
                 with torch.no_grad():
                     logits = self.model(input_values).logits
-                    
-                # Greedy decoding: get the predicted token IDs
-                predicted_ids = torch.argmax(logits, dim=-1)
-
-                # Decode the token IDs to text
-                decoded = self.processor.batch_decode(predicted_ids)
-                transcription = decoded[0]
+                print(logits.shape)
+                logits = logits.squeeze(0)
+                print(logits.shape)
+                # After obtaining logits from the model:
+                logits_np = logits.cpu().numpy()
+                # Use beam search decoder
+                transcription = self.decoder.decode(logits_np)
+                print("Beam search transcription:", transcription)
+                
                 if transcription.strip():
-                    print("TRANSCRIBED TEXT:", transcription)
-                    self.full_transcript.append(transcription)
+                    self.full_transcript_text += transcription
+                    self.full_transcript.append(process_text(transcription))
                 self.reset_buffer()
             except Exception as e:
                 print("Error during transcription:", e)
@@ -164,3 +183,11 @@ class AudioCollector:
         # Decode token IDs to text using the model’s dictionary.
         # The target dictionary is available via task.target_dictionary.
         return transcription
+    
+    def get_tagged_full_transcript(self):
+        doc = process_text(''.join(self.full_transcript_text))
+        keyword_list = extract_keywords_descriptors(doc)
+        print(keyword_list)
+        for keyword_dict in keyword_list:
+            print(classify_keyword(keyword_dict))
+        return doc

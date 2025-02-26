@@ -42,7 +42,8 @@ class AhoCorasickComponent:
             data = {
                 'term': term.lower(),
                 'cui': row['CUI'],
-                'semantic_type': row['STY']
+                'semantic_type': row['STY'],
+                'tui': row["TUI"]
             }
             self.automaton.add_word(term.lower(), data)
 
@@ -64,7 +65,7 @@ class AhoCorasickComponent:
             term = data['term']
             start_char = end_index - len(term) + 1
             end_char = end_index + 1
-            span = doc.char_span(start_char, end_char, label=data['cui'])
+            span = doc.char_span(start_char, end_char, label=data['semantic_type'])
             if span is not None:
                 matches.append(span)
 

@@ -2,8 +2,7 @@
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from typing import List
-from app.utils.import_umls import DataStore
-from app.utils.nlp import process_text, categorize_doc
+from app.db.session import DataStore
 from app.utils.speech_processor import AudioCollector
 import numpy as np
 from pyannote.audio import Pipeline, Inference
@@ -69,7 +68,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     break
                 # Convert the received string to bytes (adjust this conversion as needed)
                 audio_collector.add_chunk(base64.b64decode(chunk))
-                audio_collector.transcribe_audio_segment()
+                transcribed_text = audio_collector.transcribe_audio_segment()
+                await websocket.send_json({'text': transcribed_text})
             else:
                 print("End-of-stream or no 'data' field. Breaking loop.")
                 break
@@ -77,44 +77,9 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         print("WebSocket disconnected")
 
-    # For diarization, use the full session audio rather than the (possibly cleared) real-time buffer.
-    wave_data = audio_collector.get_session_wave_data()
-    print(f"Total wave_data shape: {wave_data.shape}")
-    
-    # Convert wave_data to an in-memory WAV for Pyannote
-    buffer_wav = io.BytesIO()
-    sf.write(buffer_wav, wave_data, 16000, format="WAV")
-    buffer_wav.seek(0)  # rewind
-
-    # Use the diarization pipeline (some require HF token if private)
-    diar_pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=HF_TOKEN)
-    diarization_result = diar_pipeline(
-        buffer_wav, 
-        min_speakers=2, 
-        max_speakers=2
-    )
-    
-    with open("audio.rttm", "w") as rttm:
-        diarization_result.write_rttm(rttm)
-    
+    audio_collector.get_tagged_full_transcript()
     # Optionally, clear the session data for the next session.
     audio_collector.session_audio = bytearray()
     audio_collector.full_transcript.clear()
 
     print("All done.")
-        
-
-
-# Add routes or other configurations here
-@app.get("/")
-async def read_root():
-    return {"message": "Hello, FastAPI from app.py!"}
-
-@app.post("/audio-test")
-async def process_transcript_audio(data):
-   pass
-
-@app.post("/text-test")
-async def process_transcript_text(data: str):
-    result_doc = process_text(data)
-    return result_doc
