@@ -55,13 +55,13 @@ def classify_keyword(keyword_dict: dict):
     """
     # Compute the embedding for the input keyword.
     keyword_emb = data_store.embedding_model.encode(keyword_dict["term"]).astype('float32')
-    
+    # Precompute key-to-index mapping
+
     # Retrieve the nearest neighbor (n=1) along with the distance.
     nearest_indices, distances = data_store.index.get_nns_by_vector(keyword_emb, n=1, include_distances=True)
     idx = nearest_indices[0]
     distance = distances[0]
-    
-    assigned_category = data_store.rep_terms.keys()[idx]
-    matched_term = data_store.rep_terms.values()[idx]
-    
+
+    assigned_category = data_store.term_categories[idx]
+    matched_term = data_store.all_terms[idx]
     return assigned_category, matched_term, distance

@@ -54,7 +54,10 @@ class DataStore:
                 # Embedding model for categorization
                 cls._instance.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
                 cls._instance.rep_terms = cls._instance.load_section_rep_terms(conn)
-                cls._instance.index = cls._instance.build_index()
+                index, all_terms, term_categories = cls._instance.build_index()
+                cls._instance.index = index
+                cls._instance.all_terms = all_terms
+                cls._instance.term_categories = term_categories
                 print("Session loading completed.")
         return cls._instance
     # Define column names as per UMLS documentation
@@ -84,7 +87,7 @@ class DataStore:
         # Build the index with a chosen number of trees (more trees = higher accuracy, slower build time).
         index.build(10)
         print("Index built.")
-        return index
+        return index, all_terms, term_categories
 
     def upload_umls(self, engine: Engine):
         self.load_concepts(engine)
