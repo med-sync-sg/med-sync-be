@@ -20,10 +20,10 @@ HF_TOKEN = environ.get("HF_ACCESS_TOKEN")
 def create_app() -> FastAPI:
     app = FastAPI(title="Backend Connection", version="1.0.0")
     app.include_router(auth.router, prefix="/auth", tags=["auth"])
-    app.include_router(notes.router, prefix="/note", tags=["note"])
-    app.include_router(users.router, prefix="/user", tags=["user"])
-    app.include_router(templates.router, prefix="/template", tags=["template"])
-    app.include_router(reports.router, prefix="/report", tags=["report"])
+    app.include_router(notes.router, prefix="/notes", tags=["note"])
+    app.include_router(users.router, prefix="/users", tags=["user"])
+    app.include_router(templates.router, prefix="/templates", tags=["template"])
+    app.include_router(reports.router, prefix="/reports", tags=["report"])
 
     return app
 
@@ -73,13 +73,14 @@ async def websocket_endpoint(websocket: WebSocket):
             else:
                 print("End-of-stream or no 'data' field. Breaking loop.")
                 break
+        audio_collector.get_tagged_doc_and_upload_sections()
+        # Optionally, clear the session data for the next session.
+        audio_collector.session_audio = bytearray()
+        audio_collector.full_transcript.clear()
 
     except WebSocketDisconnect:
         print("WebSocket disconnected")
 
-    audio_collector.get_tagged_full_transcript()
-    # Optionally, clear the session data for the next session.
-    audio_collector.session_audio = bytearray()
-    audio_collector.full_transcript.clear()
+
 
     print("All done.")

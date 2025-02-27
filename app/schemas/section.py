@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional, Literal
 from datetime import date, datetime
 import json
-from sqlalchemy import Engine
+from app.schemas.base import BaseAuthModel
 
 from enum import Enum
 
@@ -89,22 +89,42 @@ class Diagnosis(BaseModel):
     icd_10: Optional[str] = None
     snomed: Optional[str] = None
 
-class BaseSection(BaseModel):
+class BaseSection(BaseAuthModel):
     id: int
+    note_id: int
     title: str
     metadata: Optional[Dict[str, Any]] = None
     content: Dict[str, Any] = {}
     order: int = 1
-    section_type: TextCategoryEnum.OTHERS.name = Field(default=TextCategoryEnum.OTHERS.name)
+    section_type: str = TextCategoryEnum.OTHERS.name
     section_description: str = TextCategoryEnum.OTHERS.value
-
-class BaseSectionCreate(BaseSection):
+    class Config:
+        orm_mode = True
+        
+class BaseSectionCreate(BaseAuthModel):
     title: str
-    order: int
+    note_id: int
+    order: int = 1
+    metadata: Optional[Dict[str, Any]] = None
     content: Dict[str, Any]
-
-class BaseSectionUpdate(BaseSection):
+    section_type: str = TextCategoryEnum.OTHERS.name
+    section_description: str = TextCategoryEnum.OTHERS.value
+    class Config:
+        orm_mode = True
+        
+class BaseSectionUpdate(BaseAuthModel):
     pass # Most fields are optional by deafult
 
-class BaseSectionRead(BaseSection):
-    pass
+class BaseSectionRead(BaseAuthModel):
+    title: str
+    id: int
+    note_id: int
+    user_id: int
+    order: int = 1
+    metadata: Optional[Dict[str, Any]] = None
+    content: Dict[str, Any]
+    section_type: str = TextCategoryEnum.OTHERS.name
+    section_description: str = TextCategoryEnum.OTHERS.value
+    
+    class Config:
+        orm_mode = True

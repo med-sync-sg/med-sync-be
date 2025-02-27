@@ -1,7 +1,8 @@
 import spacy
 import spacy.tokens
-from app.schemas.section import TextCategoryEnum, BaseSection
+from app.schemas.section import TextCategoryEnum, BaseSection, BaseSectionCreate, CHIEF_COMPLAINT_EXAMPLE, PATIENT_MEDICAL_HISTORY_EXAMPLE, PATIENT_INFORMATION_EXAMPLE, OTHER_EXAMPLE
 from app.db.session import DataStore
+import copy
 
 data_store = DataStore()
 
@@ -65,3 +66,71 @@ def classify_keyword(keyword_dict: dict):
     assigned_category = data_store.term_categories[idx]
     matched_term = data_store.all_terms[idx]
     return assigned_category, matched_term, distance
+
+def create_section(note_id: int, assigned_category: str, matched_term: str, distance: float, order: int = 1) -> BaseSectionCreate:
+    """
+    Create a BaseSection object from the (assigned_category, matched_term, distance) tuple.
+    Note: The `id` is not set here because it will be assigned by the database upon insertion.
+    
+    Args:
+        assigned_category (str): e.g., "CHIEF_COMPLAINT", "PATIENT_INFORMATION", or "OTHERS"
+        matched_term (str): The representative term matched.
+        distance (float): The distance from the vector search.
+        order (int): The order of the section in the report.
+    
+    Returns:
+        BaseSection: A new BaseSection object without an assigned ID.
+    """
+    if note_id == -1:
+        raise Exception("A Section must belong to a Note object!")
+    
+    # Prepare default metadata to include the distance value.
+    metadata = {"matched_term": matched_term, "distance": distance}
+
+    if assigned_category == TextCategoryEnum.CHIEF_COMPLAINT.name:
+        # Use a deep copy to avoid modifying the original template.
+        content = copy.deepcopy(CHIEF_COMPLAINT_EXAMPLE)
+        # Update the "Main Symptom" with the matched term.
+        if "Main Symptom" in content:
+            content["Main Symptom"]["name"] = matched_term
+        title = "Chief Complaint"
+        section_type = TextCategoryEnum.CHIEF_COMPLAINT.name
+        section_description = TextCategoryEnum.CHIEF_COMPLAINT.value
+
+    elif assigned_category == TextCategoryEnum.PATIENT_INFORMATION.name:
+        content = copy.deepcopy(PATIENT_INFORMATION_EXAMPLE)
+        # Append the matched term to Additional Details.
+        if "Additional Details" in content:
+            current_details = content["Additional Details"]
+            content["Additional Details"] = f"{current_details}; {matched_term}" if current_details else matched_term
+        else:
+            content["Additional Details"] = matched_term
+        title = "Patient Information"
+        section_type = TextCategoryEnum.PATIENT_INFORMATION.name
+        section_description = TextCategoryEnum.PATIENT_INFORMATION.value
+
+    else:  # For OTHERS category
+        content = copy.deepcopy(OTHER_EXAMPLE)
+        # Add the matched term as a new observation.
+        new_observation = {
+            "observation": matched_term,
+            "notes": f"Distance: {distance:.4f}"
+        }
+        if "Other Observations" in content:
+            content["Other Observations"].append(new_observation)
+        else:
+            content["Other Observations"] = [new_observation]
+        title = "Other Observations"
+        section_type = TextCategoryEnum.OTHERS.name
+        section_description = TextCategoryEnum.OTHERS.value
+
+    base_section = BaseSectionCreate(
+        title=title,
+        note_id=note_id,
+        metadata=metadata,
+        content=content,
+        order=order,
+        section_type=section_type,
+        section_description=section_description
+    )
+    return base_section

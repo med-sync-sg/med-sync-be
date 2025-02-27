@@ -28,8 +28,9 @@ SYMPTOMS_AND_DISEASES_TUI = [
 
 class DataStore:
     _instance = None
+    current_note_id : int = -1
     engine = create_engine(DATABASE_URL, echo=True)  # Logs SQL to console
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    SessionMaker = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     concepts_df: pd.DataFrame
     relationships_df: pd.DataFrame
     semantic_df: pd.DataFrame
@@ -231,7 +232,7 @@ class DataStore:
             def read_items(db: Session = Depends(data_store.get_db)):
                 ...
         """
-        db = self.__class__.SessionLocal()
+        db = self.__class__.SessionMaker()
         try:
             yield db
         finally:

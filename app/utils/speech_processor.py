@@ -13,8 +13,10 @@ import os
 from pyctcdecode import build_ctcdecoder
 import torch
 from app.utils.nlp.spacy_init import process_text
-from app.utils.nlp.extractor import extract_keywords_descriptors, classify_keyword
-
+from app.utils.nlp.extractor import extract_keywords_descriptors, classify_keyword, create_section
+from app.models.models import upload_section
+from app.db.session import DataStore
+import pandas as pd
 
 def play_raw_audio(audio_buffer: bytearray, sample_rate=16000, sample_width=2, channels=1):
     p = pyaudio.PyAudio()
@@ -28,6 +30,8 @@ def play_raw_audio(audio_buffer: bytearray, sample_rate=16000, sample_width=2, c
     stream.stop_stream()
     stream.close()
     p.terminate()
+
+data_store = DataStore()
 
 class AudioCollector:
     """
@@ -128,7 +132,7 @@ class AudioCollector:
         samples /= 32768.0
         return samples
 
-    def transcribe_audio_segment(self):
+    def transcribe_audio_segment(self) -> str:
         """
         Preprocesses the audio and runs inference using the XLS-R model.
         Returns the transcription as text.
@@ -162,9 +166,7 @@ class AudioCollector:
             try:
                 with torch.no_grad():
                     logits = self.model(input_values).logits
-                print(logits.shape)
                 logits = logits.squeeze(0)
-                print(logits.shape)
                 # After obtaining logits from the model:
                 logits_np = logits.cpu().numpy()
                 # Use beam search decoder
@@ -184,10 +186,12 @@ class AudioCollector:
         # The target dictionary is available via task.target_dictionary.
         return transcription
     
-    def get_tagged_full_transcript(self):
+    def get_tagged_doc_and_upload_sections(self):
         doc = process_text(''.join(self.full_transcript_text))
         keyword_list = extract_keywords_descriptors(doc)
-        print(keyword_list)
         for keyword_dict in keyword_list:
-            print(classify_keyword(keyword_dict))
+            assigned_category, matched_term, distance  = classify_keyword(keyword_dict)
+            section = create_section(data_store.current_note_id, assigned_category, matched_term, distance)
+            upload_section(section, data_store.SessionMaker())
+            print("Uploaded sections from audio.")
         return doc

@@ -9,18 +9,18 @@ from app.schemas.user import BaseUser, BaseUserRead, BaseUserCreate, BaseUserUpd
 router = APIRouter()
 data_store = DataStore()
 
-@router.get("/users", response_model=List[BaseUserRead])
+@router.get("/", response_model=List[BaseUserRead])
 def list_users(db: Session = Depends(data_store.get_db)):
     return db.query(BaseUser).all()
 
-@router.get("/users/{user_id}", response_model=BaseUserRead)
+@router.get("/{user_id}", response_model=BaseUserRead)
 def get_user(user_id: str, db: Session = Depends(data_store.get_db)):
     db_user = db.query(BaseUser).filter(BaseUser.id == user_id).first()
     if not db_user:
         raise HTTPException(404, detail="User not found")
     return db_user
 
-@router.put("/users/{user_id}", response_model=BaseUserRead)
+@router.put("/{user_id}", response_model=BaseUserRead)
 def update_user(user_id: str, user_in: BaseUserUpdate, db: Session = Depends(data_store.get_db)):
     db_user = db.query(BaseUser).filter(BaseUser.id == user_id).first()
     if not db_user:
@@ -35,7 +35,7 @@ def update_user(user_id: str, user_in: BaseUserUpdate, db: Session = Depends(dat
     db.refresh(db_user)
     return db_user
 
-@router.delete("/users/{user_id}", status_code=204)
+@router.delete("/{user_id}", status_code=204)
 def delete_user(user_id: str, db: Session = Depends(data_store.get_db)):
     db_user = db.query(BaseUser).filter(BaseUser.id == user_id).first()
     if not db_user:
