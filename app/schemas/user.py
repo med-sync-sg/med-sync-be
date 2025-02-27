@@ -1,31 +1,26 @@
-from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
-from datetime import date, datetime
+from pydantic import BaseModel
+from typing import Optional
 
-class BaseUser(BaseModel):
-    id: int
+class UserBase(BaseModel):
     username: str
     first_name: str
-    middle_name: Optional[str]
+    middle_name: Optional[str] = None
     last_name: str
     email: str
     age: int
-    
-class BaseUserCreate(BaseModel):
-    username: str
+
+class UserCreate(UserBase):
     password: str
-    first_name: str
-    middle_name: Optional[str]
-    last_name: str
-    email: str
-    age: int
-    
-class BaseUserRead(BaseUser):
-    pass
 
-class BaseUserUpdate(BaseModel):
-    first_name: str
-    middle_name: Optional[str]
-    last_name: str
-    email: str
-    age: int
+class UserRead(UserBase):
+    id: int
+
+    class Config:
+        orm_mode = True
+
+class UserUpdate(BaseModel):
+    first_name: Optional[str] = None
+    middle_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: Optional[str] = None
+    age: Optional[int] = None

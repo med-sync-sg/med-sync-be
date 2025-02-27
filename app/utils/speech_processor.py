@@ -1,13 +1,7 @@
-import queue
-import threading
 import numpy as np
-from pyannote.audio import Pipeline, Inference
-from fastapi import WebSocket, WebSocketDisconnect
-import whisper
 import pyaudio
 import torch
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
-import soundfile as sf
 from os import environ
 import os
 from pyctcdecode import build_ctcdecoder

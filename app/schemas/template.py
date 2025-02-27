@@ -1,49 +1,64 @@
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional, Union, Annotated
 from datetime import date, datetime
-from .section import BaseSectionCreate, BaseSectionRead, BaseSectionUpdate
-from app.schemas.section import TextCategoryEnum 
+from typing import List, Optional
+from .section import SectionCreate, SectionRead, SectionUpdate
+from .base import BaseAuthModel
 
-class BaseSectionTemplate(BaseModel):
-    section_id: int
-    title: str
-    description: str
-    metadata: List[str] = []
-    content: List[str] = []
-    order: int = 0
-    section_type: str = Field(default=TextCategoryEnum.OTHERS.name)
-
-class BaseSectionTemplateCreate(BaseSectionTemplate):
-    title: str
-    description: str
-    order: int
-    content: List[str] = []
-    order: int = 0
-    section_type: Optional[str] = Field(default=TextCategoryEnum.OTHERS.name)
-
-class BaseSectionTemplateUpdate(BaseSectionTemplate):
-    pass # Most fields are optional by deafult
-
-class BaseSectionTemplateRead(BaseSectionTemplate):
-    pass
-
-class BaseNoteTemplate(BaseModel):
-    schema_version: int = 1
+class NoteTemplateCreate(BaseAuthModel):
+    user_id: int
     consultation_id: int
     note_id: int
     patient_id: int
     encounter_date: date
-    sections: List = Field(default_factory=list)
-
-class NoteTemplateCreate(BaseNoteTemplate):
     title: str
-    sections: List[BaseSectionCreate] = []
+    sections: List[SectionCreate] = []
 
-class NoteTemplateRead(BaseNoteTemplate):
+    class Config:
+        orm_mode = True
+
+class NoteTemplateRead(BaseAuthModel):
+    id: int
+    user_id: int
+    consultation_id: int
+    note_id: int
+    patient_id: int
+    encounter_date: date
     title: str
-    sections: List[BaseSectionRead]
+    sections: List[SectionRead] = []
     created_at: datetime
 
-class NoteTemplateUpdate(BaseNoteTemplate):
+    class Config:
+        orm_mode = True
+
+class NoteTemplateUpdate(BaseAuthModel):
+    title: Optional[str] = None
+    sections: Optional[List[SectionUpdate]] = None
+
+    class Config:
+        orm_mode = True
+
+class SectionTemplateCreate(BaseAuthModel):
+    pass
+
+class SectionTemplateRead(BaseAuthModel):
+    id: int
     title: str
-    sections: List[BaseSectionUpdate] = []
+    description: str
+    order: int = 0
+    section_type: str = Field(default="OTHERS")
+    metadata_keys: List[str] = []
+    content_keys: List[str] = []
+
+    class Config:
+        orm_mode = True
+
+class SectionTemplateUpdate(BaseAuthModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    order: Optional[int] = None
+    section_type: Optional[str] = None
+    metadata_keys: Optional[List[str]] = None
+    content_keys: Optional[List[str]] = None
+
+    class Config:
+        orm_mode = True

@@ -1,8 +1,7 @@
-from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional, Literal
-from datetime import date, datetime
-import json
 from app.schemas.base import BaseAuthModel
+from pydantic import BaseModel, Field
+from typing import Dict, Any, Optional
+from enum import Enum
 
 from enum import Enum
 
@@ -84,47 +83,40 @@ OTHER_EXAMPLE = {
     }
   ]
 }
-class Diagnosis(BaseModel):
-    description: str
-    icd_10: Optional[str] = None
-    snomed: Optional[str] = None
 
-class BaseSection(BaseAuthModel):
+class SectionCreate(BaseAuthModel):
+    note_id: int
+    title: str
+    metadata: Optional[Dict[str, Any]] = None
+    content: Dict[str, Any] = {}
+    order: int = 1
+    section_type: str = Field(default=TextCategoryEnum.OTHERS.value)
+    section_description: str = Field(default=TextCategoryEnum.OTHERS.value)
+
+    class Config:
+        orm_mode = True
+
+class SectionRead(BaseAuthModel):
     id: int
     note_id: int
     title: str
     metadata: Optional[Dict[str, Any]] = None
     content: Dict[str, Any] = {}
     order: int = 1
-    section_type: str = TextCategoryEnum.OTHERS.name
-    section_description: str = TextCategoryEnum.OTHERS.value
-    class Config:
-        orm_mode = True
-        
-class BaseSectionCreate(BaseAuthModel):
-    title: str
-    note_id: int
-    order: int = 1
-    metadata: Optional[Dict[str, Any]] = None
-    content: Dict[str, Any]
-    section_type: str = TextCategoryEnum.OTHERS.name
-    section_description: str = TextCategoryEnum.OTHERS.value
-    class Config:
-        orm_mode = True
-        
-class BaseSectionUpdate(BaseAuthModel):
-    pass # Most fields are optional by deafult
+    section_type: str = Field(default=TextCategoryEnum.OTHERS.value)
+    section_description: str = Field(default=TextCategoryEnum.OTHERS.value)
 
-class BaseSectionRead(BaseAuthModel):
-    title: str
-    id: int
+    class Config:
+        orm_mode = True
+
+class SectionUpdate(BaseAuthModel):
     note_id: int
-    user_id: int
-    order: int = 1
+    title: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
-    content: Dict[str, Any]
-    section_type: str = TextCategoryEnum.OTHERS.name
-    section_description: str = TextCategoryEnum.OTHERS.value
-    
+    content: Optional[Dict[str, Any]] = None
+    order: Optional[int] = None
+    section_type: Optional[str] = None
+    section_description: Optional[str] = None
+
     class Config:
         orm_mode = True
