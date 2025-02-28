@@ -17,7 +17,8 @@ def create_note(note_in: NoteCreate, db: Session = Depends(data_store.get_db)):
         title=note_in.title,
         sections=sections_data,
         patient_id=note_in.patient_id,
-        user_id=note_in.user_id
+        user_id=note_in.user_id,
+        encounter_date=note_in.encounter_date
     )
     db.add(db_note)
     db.commit()

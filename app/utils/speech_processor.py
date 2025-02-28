@@ -185,7 +185,7 @@ class AudioCollector:
         keyword_list = extract_keywords_descriptors(doc)
         for keyword_dict in keyword_list:
             assigned_category, matched_term, distance  = classify_keyword(keyword_dict)
-            section = create_section(data_store.current_note_id, assigned_category, matched_term, distance)
+            section = create_section(data_store.current_note_id, 1, assigned_category, matched_term, distance)
             upload_section(section, data_store.SessionMaker())
             print("Uploaded sections from audio.")
         return doc

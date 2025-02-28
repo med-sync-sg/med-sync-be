@@ -87,7 +87,6 @@ OTHER_EXAMPLE = {
 class SectionCreate(BaseAuthModel):
     note_id: int
     title: str
-    metadata: Optional[Dict[str, Any]] = None
     content: Dict[str, Any] = {}
     section_type: str = Field(default=TextCategoryEnum.OTHERS.value)
     section_description: str = Field(default=TextCategoryEnum.OTHERS.value)
@@ -99,7 +98,6 @@ class SectionRead(BaseAuthModel):
     id: int
     note_id: int
     title: str
-    metadata: Optional[Dict[str, Any]] = None
     content: Dict[str, Any] = {}
     section_type: str = Field(default=TextCategoryEnum.OTHERS.value)
     section_description: str = Field(default=TextCategoryEnum.OTHERS.value)
@@ -110,7 +108,6 @@ class SectionRead(BaseAuthModel):
 class SectionUpdate(BaseAuthModel):
     note_id: int
     title: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
     content: Optional[Dict[str, Any]] = None
     section_type: Optional[str] = None
     section_description: Optional[str] = None

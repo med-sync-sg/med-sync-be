@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from app.db.session import DataStore
 from app.models.models import User  # SQLAlchemy user model
-from app.schemas.user import UserBase
+from app.schemas.user import UserCreate
 from app.utils.auth_utils import create_access_token, verify_password, hash_password
 
 class LoginRequest(BaseModel):
@@ -33,7 +33,7 @@ def login(login_req: LoginRequest, db: Session = Depends(data_store.get_db)):
     return TokenResponse(access_token=token)
 
 @router.post("/sign-up")
-def sign_up(user_in: UserBase, db: Session = Depends(data_store.get_db)):
+def sign_up(user_in: UserCreate, db: Session = Depends(data_store.get_db)):
     # Check if a user with the same username already exists
     existing_user = db.query(User).filter(User.username == user_in.username).first()
     if existing_user:

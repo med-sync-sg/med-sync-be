@@ -1,6 +1,6 @@
 import spacy
 import spacy.tokens
-from app.schemas.section import TextCategoryEnum, BaseSection, BaseSectionCreate, CHIEF_COMPLAINT_EXAMPLE, PATIENT_MEDICAL_HISTORY_EXAMPLE, PATIENT_INFORMATION_EXAMPLE, OTHER_EXAMPLE
+from app.schemas.section import TextCategoryEnum, SectionCreate, CHIEF_COMPLAINT_EXAMPLE, PATIENT_MEDICAL_HISTORY_EXAMPLE, PATIENT_INFORMATION_EXAMPLE, OTHER_EXAMPLE
 from app.db.session import DataStore
 import copy
 
@@ -67,7 +67,7 @@ def classify_keyword(keyword_dict: dict):
     matched_term = data_store.all_terms[idx]
     return assigned_category, matched_term, distance
 
-def create_section(note_id: int, assigned_category: str, matched_term: str, distance: float, order: int = 1) -> BaseSectionCreate:
+def create_section(note_id: int, user_id: int, assigned_category: str, matched_term: str, distance: float, order: int = 1) -> SectionCreate:
     """
     Create a BaseSection object from the (assigned_category, matched_term, distance) tuple.
     Note: The `id` is not set here because it will be assigned by the database upon insertion.
@@ -124,10 +124,10 @@ def create_section(note_id: int, assigned_category: str, matched_term: str, dist
         section_type = TextCategoryEnum.OTHERS.name
         section_description = TextCategoryEnum.OTHERS.value
 
-    base_section = BaseSectionCreate(
+    base_section = SectionCreate(
         title=title,
         note_id=note_id,
-        metadata=metadata,
+        user_id=user_id,
         content=content,
         order=order,
         section_type=section_type,
