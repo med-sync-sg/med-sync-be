@@ -38,7 +38,6 @@ class Section(Base):
     content = Column(JSONB)
     section_type: Mapped[str] = mapped_column(String, default=TextCategoryEnum.OTHERS.name)
     section_description: Mapped[str] = mapped_column(String, default=TextCategoryEnum.OTHERS.value)
-    order: Mapped[int] = mapped_column(Integer, default=1)
     note: Mapped["Note"] = relationship("Note", back_populates="sections")
 
 class NoteTemplate(Base):
@@ -56,6 +55,7 @@ class SectionTemplate(Base):
     
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     title: Mapped[str] = mapped_column(String, nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     description: Mapped[str] = mapped_column(String, nullable=False)
     note_template_id: Mapped[int] = mapped_column(Integer, ForeignKey("note_templates.id"), nullable=False)
     section_type: Mapped[str] = mapped_column(String, default=TextCategoryEnum.OTHERS.name)

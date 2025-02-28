@@ -44,7 +44,6 @@ class SectionTemplateRead(BaseAuthModel):
     id: int
     title: str
     description: str
-    order: int = 0
     section_type: str = Field(default="OTHERS")
     metadata_keys: List[str] = []
     content_keys: List[str] = []
@@ -55,7 +54,6 @@ class SectionTemplateRead(BaseAuthModel):
 class SectionTemplateUpdate(BaseAuthModel):
     title: Optional[str] = None
     description: Optional[str] = None
-    order: Optional[int] = None
     section_type: Optional[str] = None
     metadata_keys: Optional[List[str]] = None
     content_keys: Optional[List[str]] = None
