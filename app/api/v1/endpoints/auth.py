@@ -32,7 +32,7 @@ def login(login_req: LoginRequest, db: Session = Depends(data_store.get_db)):
     token = create_access_token({"sub": db_user.username})
     return TokenResponse(access_token=token)
 
-@router.post("/sign-up")
+@router.post("/sign-up", status_code=201)
 def sign_up(user_in: UserCreate, db: Session = Depends(data_store.get_db)):
     # Check if a user with the same username already exists
     existing_user = db.query(User).filter(User.username == user_in.username).first()

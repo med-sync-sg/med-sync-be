@@ -21,7 +21,7 @@ async def stream_audio(uri, audio_file_path, chunk_size=1024):
         chunk_size (int): Number of frames to read per iteration.
     """
     try:
-        async with websockets.connect(uri) as websocket:
+        async with websockets.connect(f"uri?token=test-token&note_id=${5}&user_id=${1}") as websocket:
             logger.info("WebSocket connected to %s", uri)
             with wave.open(audio_file_path, 'rb') as wf:
                 framerate = wf.getframerate()

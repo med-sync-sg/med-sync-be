@@ -1,8 +1,9 @@
 
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, status
 from typing import List
 from app.db.session import DataStore
+from app.db.iris_session import IrisDataStore
 from app.utils.speech_processor import AudioCollector
 import numpy as np
 from pyannote.audio import Pipeline, Inference
@@ -11,10 +12,12 @@ import numpy as np
 import argparse
 from spacy import displacy
 from app.api.v1.endpoints import auth, notes, users, templates, reports
+from app.utils.auth_utils import decode_access_token
 import io
 import soundfile as sf
 from os import environ
 import base64
+import json
 
 HF_TOKEN = environ.get("HF_ACCESS_TOKEN")
 def create_app() -> FastAPI:
@@ -31,10 +34,9 @@ connected_clients: List[WebSocket] = []
 
 app = create_app()
 
-load_umls = False
-
-if load_umls == True:
-    data_store = DataStore()  # first import triggers load
+# Load singleton-like db related classes.
+data_store = DataStore()
+iris_data_store = IrisDataStore()
 
 # Add CORS middleware
 app.add_middleware(
@@ -55,8 +57,28 @@ async def websocket_endpoint(websocket: WebSocket):
     { "data": bytes }
     We accumulate them in AudioCollector for near real-time or offline usage.
     """
+    token = websocket.query_params.get("token")
+    note_id = websocket.query_params.get("note_id")
+    user_id = websocket.query_params.get("user_id")
+
+    if not token or not note_id or not user_id:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    
+    # Validate token (this should raise an exception if invalid).
+    try:
+        payload = decode_access_token(token)
+        # Check that the token's subject matches the provided user_id.
+        if payload.get("sub") != user_id:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+    except Exception as e:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    
+    
     await websocket.accept()
-    print("Client connected")
+    print("Client authentication verified and connected")
 
     try:
         while True:
@@ -68,19 +90,19 @@ async def websocket_endpoint(websocket: WebSocket):
                     break
                 # Convert the received string to bytes (adjust this conversion as needed)
                 audio_collector.add_chunk(base64.b64decode(chunk))
-                transcribed_text = audio_collector.transcribe_audio_segment()
+                transcribed_text = audio_collector.transcribe_audio_segment(user_id, note_id)
                 await websocket.send_json({'text': transcribed_text})
             else:
                 print("End-of-stream or no 'data' field. Breaking loop.")
+                sections = audio_collector.make_sections(user_id, note_id)
+                sections_json = [section.model_dump_json() for section in sections]
+                await websocket.send_json({'sections': sections_json})
                 break
-        audio_collector.get_tagged_doc_and_upload_sections()
         # Optionally, clear the session data for the next session.
         audio_collector.session_audio = bytearray()
-        audio_collector.full_transcript.clear()
+        audio_collector.full_transcript_text = ""
 
     except WebSocketDisconnect:
         print("WebSocket disconnected")
-
-
 
     print("All done.")

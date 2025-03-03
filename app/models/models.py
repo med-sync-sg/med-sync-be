@@ -63,8 +63,8 @@ class SectionTemplate(Base):
     metadata_keys: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     content_keys: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     note_template: Mapped["NoteTemplate"] = relationship("NoteTemplate", back_populates="section_templates")
-    
-def upload_section(pydantic_section: SectionCreate, db: Session) -> Section:
+
+def post_section(pydantic_section: SectionCreate, db: Session) -> Section:
     """
     Uploads a BaseSection (Pydantic model) to the database.
     The database will assign the ID automatically.

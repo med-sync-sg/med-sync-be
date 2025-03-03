@@ -5,21 +5,19 @@ from sqlalchemy.orm import sessionmaker
 from os import environ 
 import pandas as pd
 import json
-from annoy import AnnoyIndex
-import numpy as np
-from sentence_transformers import SentenceTransformer
+from app.models.models import Base
 
 DB_USER = environ.get('DB_USER')
 DB_PASSWORD = environ.get('DB_PASSWORD')
 DB_HOST = environ.get('DB_HOST')
 DB_PORT = environ.get('DB_PORT')
 DB_NAME = environ.get('DB_NAME')
+
 # Path to MRCONSO.RRF
 UMLS_ROOT_DIRECTORY = os.path.join("umls", "2024AB", "META")
 
 DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-from app.models.models import Base
 
 SYMPTOMS_AND_DISEASES_TUI = [
     'T047',  # Disease or Syndrome
@@ -29,15 +27,13 @@ SYMPTOMS_AND_DISEASES_TUI = [
 class DataStore:
     _instance = None
     current_note_id : int = -1
-    engine = create_engine(DATABASE_URL, echo=True)  # Logs SQL to console
+    engine = create_engine(DATABASE_URL)  # Logs SQL to console
     SessionMaker = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     concepts_df: pd.DataFrame
+    definitions_df: pd.DataFrame
     relationships_df: pd.DataFrame
     semantic_df: pd.DataFrame
     combined_df: pd.DataFrame
-    index: AnnoyIndex
-    rep_terms: dict[str, str]
-    embedding_model: SentenceTransformer
     
     def __new__(cls):
         if cls._instance is None:
@@ -48,47 +44,12 @@ class DataStore:
                 # SQL DB loading
                 cls._instance = super(DataStore, cls).__new__(cls)
                 cls._instance.concepts_df = cls._instance.load_concepts(conn)
+                cls._instance.definitions_df = cls._instance.load_definitions(conn)
                 cls._instance.relationships_df = cls._instance.load_relationships(conn)
                 cls._instance.semantic_df = cls._instance.load_semantic_types(conn)
                 cls._instance.combined_df = cls._instance.combine_data(conn)
-                
-                # Embedding model for categorization
-                cls._instance.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-                cls._instance.rep_terms = cls._instance.load_section_rep_terms(conn)
-                index, all_terms, term_categories = cls._instance.build_index()
-                cls._instance.index = index
-                cls._instance.all_terms = all_terms
-                cls._instance.term_categories = term_categories
                 print("Session loading completed.")
         return cls._instance
-    # Define column names as per UMLS documentation
-
-    def build_index(self):
-        representative_terms = self.rep_terms
-
-        all_terms = []
-        term_categories = []
-        for category, terms in representative_terms.items():
-            for term in terms:
-                all_terms.append(term)
-                term_categories.append(category)
-
-        print("Terms ready.")
-        # Compute embeddings for each representative term.
-        embeddings = self.embedding_model.encode(all_terms, convert_to_tensor=False, show_progress_bar=True)
-        embeddings = np.vstack(embeddings).astype('float32')
-    
-        num_elements, dim = embeddings.shape
-        print("Embeddings ready.")
-        # Create an Annoy index.
-        # 'angular' distance approximates cosine similarity.
-        index = AnnoyIndex(dim, 'angular')
-        for i in range(num_elements):
-            index.add_item(i, embeddings[i])
-        # Build the index with a chosen number of trees (more trees = higher accuracy, slower build time).
-        index.build(10)
-        print("Index built.")
-        return index, all_terms, term_categories
 
     def upload_umls(self, engine: Engine):
         self.load_concepts(engine)
@@ -116,7 +77,23 @@ class DataStore:
             # print("Uploading UMLS concepts to the db...")
             # concepts.to_sql(table_name, con=connection)
             return concepts
-            
+
+    def load_definitions(self, connection: Engine):
+        # MRDEF.RRF
+        cols = ["CUI", "AUI", "ATUI", "SATUI", "SAB", "DEF"]
+        inspector = inspect(connection)
+        table_name = "umls_definitions"
+        if inspector.has_table(table_name):
+            df = pd.read_sql_table(table_name=table_name, con=connection, columns=cols)
+            return df
+        else:        
+            df = pd.read_csv(os.path.join(UMLS_ROOT_DIRECTORY, "MRDEF.RRF"), sep="|", names=cols, index_col=False)
+            print("UMLS Definitions Loaded.")
+            # print("Uploading UMLS definitions to the db...")
+            # df.to_sql(table_name, con=connection)
+            df = df
+            return df
+
     def load_semantic_types(self, connection: Engine):
         # MRSTY.RRF
         cols = ["CUI", "TUI", "STN", "STY", "ATUI", "CVF"]
@@ -170,56 +147,6 @@ class DataStore:
             print("Uploading combined dataframe to the db...")
             filtered_relationships_df.to_sql(table_name, con=connection, if_exists="replace")
             return filtered_relationships_df
-
-    def load_section_rep_terms(self, connection: Engine):
-        """
-        Loads UMLS concepts and semantic types, then filters the concepts
-        to keep only those that belong to the TUI group defined in SYMPTOMS_AND_DISEASES_TUI.
-        
-        Returns:
-            pd.DataFrame: Filtered concepts DataFrame.
-        """
-        inspector = inspect(connection)
-        table_name = "section_representative_terms"
-
-        if inspector.has_table(table_name):
-            query = "SELECT category, terms FROM section_representative_terms"
-            df = pd.read_sql(query, connection)
-            print("Loaded representative terms.")
-            # If the 'terms' column is stored as a JSON string, convert it to a list.
-            # (If it's already parsed into Python objects, this step might not be needed.)
-            df['terms'] = df['terms'].apply(lambda x: json.loads(x) if isinstance(x, str) else x)            
-            # Build the dictionary
-            rep_terms_dict = pd.Series(df["terms"].values, index=df["categories"]).to_dict()
-            return rep_terms_dict
-        else:
-            # Load concepts and semantic types using the provided functions.
-            concepts = self.concepts_df
-            semantic_types = self.semantic_df
-        
-            # Filter concepts: keep only rows where the CUI is present in the semantic types.
-            filtered_concepts = concepts.merge(semantic_types[['CUI']], on="CUI", how="inner")
-                
-            rep_terms = {
-                "CHIEF_COMPLAINT": [],
-                "PATIENT_INFORMATION": [],
-                "OTHERS": []
-            }
-            rep_terms["CHIEF_COMPLAINT"] = filtered_concepts["STR"].to_list()
-            # Remove duplicates.
-            rep_terms["CHIEF_COMPLAINT"] = list(set(rep_terms["CHIEF_COMPLAINT"]))
-            
-            # For PATIENT_INFORMATION, use a manually defined set of representative terms.
-            rep_terms["PATIENT_INFORMATION"] = ["age", "gender", "occupation", "address", "name"]
-            
-            # For OTHERS, we add a generic term.
-            rep_terms["OTHERS"] = ["miscellaneous", "other"]
-            # Convert the dictionary into a list of tuples, then create a DataFrame.
-            data = [(category, terms) for category, terms in rep_terms.items()]
-            df = pd.DataFrame(data, columns=['Category', 'Terms'])
-            df.to_sql(table_name, connection, if_exists="replace")
-            print("Uploaded representative terms.")
-            return rep_terms
     
     def get_combined_df(self):
         return self.combined_df

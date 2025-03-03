@@ -7,10 +7,15 @@ import os
 from pyctcdecode import build_ctcdecoder
 import torch
 from app.utils.nlp.spacy_init import process_text
-from app.utils.nlp.extractor import extract_keywords_descriptors, classify_keyword, create_section
-from app.models.models import upload_section
+from app.utils.nlp.keyword_extractor import extract_keywords_descriptors, merge_keyword_dicts
+from app.models.models import post_section
+from app.schemas.section import SectionCreate, TextCategoryEnum
 from app.db.session import DataStore
 import pandas as pd
+from typing import List, Dict
+from app.db.iris_session import IrisDataStore
+from spacy.tokens.doc import Doc
+import re
 
 def play_raw_audio(audio_buffer: bytearray, sample_rate=16000, sample_width=2, channels=1):
     p = pyaudio.PyAudio()
@@ -26,6 +31,7 @@ def play_raw_audio(audio_buffer: bytearray, sample_rate=16000, sample_width=2, c
     p.terminate()
 
 data_store = DataStore()
+iris_data_store = IrisDataStore()
 
 class AudioCollector:
     """
@@ -35,7 +41,10 @@ class AudioCollector:
     3. Provides methods to convert buffers to wave data.
     """
     _instance = None
-    full_transcript = []
+    buffer_keyword_dicts: List[dict] = []
+    final_keyword_dicts: List[dict] = []
+    
+    buffer_sections: List[SectionCreate] = []
     def __new__(cls):
         MODEL_ID = "facebook/wav2vec2-base-960h"
         if cls._instance is None:
@@ -48,6 +57,8 @@ class AudioCollector:
             cls._instance.model = Wav2Vec2ForCTC.from_pretrained(MODEL_ID)
             cls._instance.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             cls._instance.model.to(cls._instance.device)
+            
+            
             # Build the decoder using the vocabulary from the processor
             # Remove any special tokens as needed (like [UNK], [PAD])
             vocab_dict = cls._instance.processor.tokenizer.get_vocab()
@@ -56,16 +67,13 @@ class AudioCollector:
             vocab = [None] * len(vocab_dict)
             for token, idx in vocab_dict.items():
                 vocab[idx] = token
-                
-            # Build a CTC decoder without a language model (or add a kenlm model if you have one)
+            # Build a CTC decoder with a language model (kenlm)
             cls._instance.decoder = build_ctcdecoder(
                 vocab, kenlm_model_path=os.path.join(".", "training", "umls_corpus.binary"),
                 alpha=0.3,
                 beta=1.0
             )
-            
             cls._instance.full_transcript_text = ""
-            cls._instance.full_transcript = []
         return cls._instance
 
     def add_chunk(self, chunk: bytes):
@@ -76,6 +84,7 @@ class AudioCollector:
     def reset_buffer(self):
         """Reset only the real-time audio buffer (keeping session audio intact)."""
         self.audio_buffer = bytearray()
+
 
     @staticmethod
     def detect_silence_adaptive(audio_frames, sample_rate, frame_duration_ms=20, offset=100, silence_ratio_threshold=0.7):
@@ -126,7 +135,16 @@ class AudioCollector:
         samples /= 32768.0
         return samples
 
-    def transcribe_audio_segment(self) -> str:
+    def make_sections(self, user_id: int, note_id: int) -> List[SectionCreate]:
+        sections = []
+        for keyword_dict in self.final_keyword_dicts:
+            term = keyword_dict["term"]
+            category = iris_data_store.classify_text_category(term) # embed term
+            section = SectionCreate(user_id=user_id, note_id=note_id, title=keyword_dict["label"], content=keyword_dict, section_type=category, section_description=TextCategoryEnum[category].value)
+            sections.append(section)
+        return sections
+
+    def transcribe_audio_segment(self, user_id: int, note_id: int) -> str:
         """
         Preprocesses the audio and runs inference using the XLS-R model.
         Returns the transcription as text.
@@ -169,23 +187,18 @@ class AudioCollector:
                 
                 if transcription.strip():
                     self.full_transcript_text += transcription
-                    self.full_transcript.append(process_text(transcription))
+                    transcription_doc = process_text(transcription)
+                    keyword_dicts = extract_keywords_descriptors(doc=transcription_doc)
+                    self.buffer_keyword_dicts = self.buffer_keyword_dicts + keyword_dicts
                 self.reset_buffer()
             except Exception as e:
                 print("Error during transcription:", e)
         else:
-            pass
+            for keyword_dict in self.buffer_keyword_dicts:
+                for final_dict in self.final_keyword_dicts:
+                    if keyword_dict["term"] == final_dict["term"]:
+                        self.final_keyword_dicts.append(merge_keyword_dicts(keyword_dict, final_dict))
+                        continue
+            self.buffer_keyword_dicts = {} # Clear buffer for next iterations
         
-        # Decode token IDs to text using the model’s dictionary.
-        # The target dictionary is available via task.target_dictionary.
         return transcription
-    
-    def get_tagged_doc_and_upload_sections(self):
-        doc = process_text(''.join(self.full_transcript_text))
-        keyword_list = extract_keywords_descriptors(doc)
-        for keyword_dict in keyword_list:
-            assigned_category, matched_term, distance  = classify_keyword(keyword_dict)
-            section = create_section(data_store.current_note_id, 1, assigned_category, matched_term, distance)
-            upload_section(section, data_store.SessionMaker())
-            print("Uploaded sections from audio.")
-        return doc
