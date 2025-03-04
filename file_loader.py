@@ -1,5 +1,5 @@
 import os
-from app.utils.nlp.spacy_init import process_text, categorize_doc
+from app.utils.nlp.spacy_init import process_text
 from app.utils.nlp.summarizer import generate_summary
 from app.utils.nlp.report_generator import generate_doctor_report
 from spacy import displacy
@@ -61,14 +61,7 @@ def load():
         full_text = full_text + line
     tagged_doc = process_text(full_text)
     html = displacy.render(tagged_doc)
-    categorized_texts = categorize_doc(tagged_doc)
-    
-    for topic, texts in categorized_texts.items():
-        text = ""
-        for line in texts:
-            text = text + line
-        
-        print(topic, generate_summary(text))
+
     generate_doctor_report(data=example_data, is_doctor_report=True)
     generate_doctor_report(data=example_data, is_doctor_report=False)
             

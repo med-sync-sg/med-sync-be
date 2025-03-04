@@ -10,10 +10,9 @@ from app.utils.nlp.spacy_init import process_text
 from app.utils.nlp.keyword_extractor import extract_keywords_descriptors, merge_keyword_dicts
 from app.models.models import post_section
 from app.schemas.section import SectionCreate, TextCategoryEnum
-from app.db.session import DataStore
+from app.db.iris_session import IrisDataStore
 import pandas as pd
 from typing import List, Dict
-from app.db.iris_session import IrisDataStore
 from spacy.tokens.doc import Doc
 import re
 
@@ -30,9 +29,6 @@ def play_raw_audio(audio_buffer: bytearray, sample_rate=16000, sample_width=2, c
     stream.close()
     p.terminate()
 
-data_store = DataStore()
-iris_data_store = IrisDataStore()
-
 class AudioCollector:
     """
     A singleton-like class that:
@@ -43,8 +39,9 @@ class AudioCollector:
     _instance = None
     buffer_keyword_dicts: List[dict] = []
     final_keyword_dicts: List[dict] = []
-    
+    current_node_id: int = -1
     buffer_sections: List[SectionCreate] = []
+    iris_data_store: IrisDataStore = IrisDataStore()
     def __new__(cls):
         MODEL_ID = "facebook/wav2vec2-base-960h"
         if cls._instance is None:
@@ -139,7 +136,7 @@ class AudioCollector:
         sections = []
         for keyword_dict in self.final_keyword_dicts:
             term = keyword_dict["term"]
-            category = iris_data_store.classify_text_category(term) # embed term
+            category = self.iris_data_store.classify_text_category(term) # embed term
             section = SectionCreate(user_id=user_id, note_id=note_id, title=keyword_dict["label"], content=keyword_dict, section_type=category, section_description=TextCategoryEnum[category].value)
             sections.append(section)
         return sections
@@ -190,15 +187,23 @@ class AudioCollector:
                     transcription_doc = process_text(transcription)
                     keyword_dicts = extract_keywords_descriptors(doc=transcription_doc)
                     self.buffer_keyword_dicts = self.buffer_keyword_dicts + keyword_dicts
+                    for keyword_dict in self.buffer_keyword_dicts:
+                        if len(self.final_keyword_dicts) == 0:
+                            self.final_keyword_dicts.append(keyword_dict)
+                        for final_dict in self.final_keyword_dicts:
+                            if keyword_dict["term"] == final_dict["term"]:
+                                self.final_keyword_dicts.append(merge_keyword_dicts(keyword_dict, final_dict))
                 self.reset_buffer()
             except Exception as e:
                 print("Error during transcription:", e)
         else:
             for keyword_dict in self.buffer_keyword_dicts:
+                if len(self.final_keyword_dicts) == 0:
+                    self.final_keyword_dicts.append(keyword_dict)
                 for final_dict in self.final_keyword_dicts:
                     if keyword_dict["term"] == final_dict["term"]:
                         self.final_keyword_dicts.append(merge_keyword_dicts(keyword_dict, final_dict))
                         continue
-            self.buffer_keyword_dicts = {} # Clear buffer for next iterations
-        
+            self.buffer_keyword_dicts = [] # Clear buffer for next iterations
+
         return transcription

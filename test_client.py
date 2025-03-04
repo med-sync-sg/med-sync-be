@@ -6,6 +6,7 @@ import base64
 import logging
 import argparse
 import websockets
+import requests
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -21,7 +22,7 @@ async def stream_audio(uri, audio_file_path, chunk_size=1024):
         chunk_size (int): Number of frames to read per iteration.
     """
     try:
-        async with websockets.connect(f"uri?token=test-token&note_id=${5}&user_id=${1}") as websocket:
+        async with websockets.connect(f"{uri}?token=test-token&note_id={5}&user_id={1}") as websocket:
             logger.info("WebSocket connected to %s", uri)
             with wave.open(audio_file_path, 'rb') as wf:
                 framerate = wf.getframerate()
@@ -40,7 +41,6 @@ async def stream_audio(uri, audio_file_path, chunk_size=1024):
                     # Send the JSON payload over the WebSocket.
                     await websocket.send(message)
                     logger.info("Sent chunk of size %d bytes", len(data))
-                    
                     # Simulate real-time delay: chunk_duration = frames / framerate
                     delay = chunk_size / framerate
                     
@@ -59,7 +59,10 @@ def main():
                         help="Chunk size in frames")
     args = parser.parse_args()
     
-    asyncio.run(stream_audio(args.uri, args.file, args.chunk))
-
+    # asyncio.run(stream_audio(args.uri, args.file, args.chunk))
+    response = requests.get("http://127.0.0.1:8001/tests")
+    print(response.status_code)
+    print(response.json())
+    
 if __name__ == "__main__":
     main()

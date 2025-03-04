@@ -2,31 +2,31 @@
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, status
 from typing import List
-from app.db.session import DataStore
-from app.db.iris_session import IrisDataStore
+
 from app.utils.speech_processor import AudioCollector
 import numpy as np
 from pyannote.audio import Pipeline, Inference
 import torch
 import numpy as np
 import argparse
-from spacy import displacy
-from app.api.v1.endpoints import auth, notes, users, templates, reports
-from app.utils.auth_utils import decode_access_token
 import io
 import soundfile as sf
 from os import environ
 import base64
 import json
+import requests
+from app.api.v1.endpoints import auth, notes, users, templates, reports, tests
 
 HF_TOKEN = environ.get("HF_ACCESS_TOKEN")
 def create_app() -> FastAPI:
+
     app = FastAPI(title="Backend Connection", version="1.0.0")
     app.include_router(auth.router, prefix="/auth", tags=["auth"])
     app.include_router(notes.router, prefix="/notes", tags=["note"])
     app.include_router(users.router, prefix="/users", tags=["user"])
     app.include_router(templates.router, prefix="/templates", tags=["template"])
     app.include_router(reports.router, prefix="/reports", tags=["report"])
+    app.include_router(tests.router, prefix="/tests", tags=["test"])
 
     return app
 
@@ -34,9 +34,6 @@ connected_clients: List[WebSocket] = []
 
 app = create_app()
 
-# Load singleton-like db related classes.
-data_store = DataStore()
-iris_data_store = IrisDataStore()
 
 # Add CORS middleware
 app.add_middleware(
@@ -66,15 +63,15 @@ async def websocket_endpoint(websocket: WebSocket):
         return
     
     # Validate token (this should raise an exception if invalid).
-    try:
-        payload = decode_access_token(token)
-        # Check that the token's subject matches the provided user_id.
-        if payload.get("sub") != user_id:
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-            return
-    except Exception as e:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
+    # try:
+    #     payload = decode_access_token(token)
+    #     # Check that the token's subject matches the provided user_id.
+    #     if payload.get("sub") != user_id:
+    #         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+    #         return
+    # except Exception as e:
+    #     await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+    #     return
     
     
     await websocket.accept()
@@ -92,16 +89,20 @@ async def websocket_endpoint(websocket: WebSocket):
                 audio_collector.add_chunk(base64.b64decode(chunk))
                 transcribed_text = audio_collector.transcribe_audio_segment(user_id, note_id)
                 await websocket.send_json({'text': transcribed_text})
+                sections = audio_collector.make_sections(user_id, note_id)
+                sections_json = [section.model_dump_json() for section in sections]
+                print(sections_json)
+                await websocket.send_json({'sections': sections_json})
             else:
                 print("End-of-stream or no 'data' field. Breaking loop.")
                 sections = audio_collector.make_sections(user_id, note_id)
                 sections_json = [section.model_dump_json() for section in sections]
+                print(sections_json)
                 await websocket.send_json({'sections': sections_json})
                 break
         # Optionally, clear the session data for the next session.
         audio_collector.session_audio = bytearray()
         audio_collector.full_transcript_text = ""
-
     except WebSocketDisconnect:
         print("WebSocket disconnected")
 

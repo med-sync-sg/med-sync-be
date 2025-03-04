@@ -1,6 +1,12 @@
-from app.app import app  # Import the FastAPI app instance
-
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8001)
-
+    def run_api():
+        """Runs the main API with hot-reload enabled (watching selected directories)."""
+        uvicorn.run(
+            "app.app:app",
+            host="127.0.0.1",
+            port=8001,
+            reload=True,
+        )
+        
+    run_api()

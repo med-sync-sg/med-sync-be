@@ -3,7 +3,7 @@ import iris
 from app.schemas.section import TextCategoryEnum
 from sentence_transformers import SentenceTransformer
 import pandas as pd
-from app.db.session import DataStore
+from app.db.umls_data import umls_df_dict
 import numpy as np
 
 IRIS_USER = environ.get('IRIS_USER')
@@ -13,12 +13,13 @@ IRIS_PORT = environ.get('IRIS_PORT')
 IRIS_NAMESPACE = environ.get('IRIS_NAMESPACE')
 
 CONNECTION_STRING = f"{IRIS_HOST}:{IRIS_PORT}/{IRIS_NAMESPACE}"
+
 class IrisDataStore:
     _instance = None
-    data_store = DataStore()
     model: SentenceTransformer
     schema_name: str = "medsync"
-    
+    class Config:
+        arbitrary_types_allowed = True
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(IrisDataStore, cls).__new__(cls)
@@ -82,34 +83,23 @@ class IrisDataStore:
         create_table_sql = f"CREATE TABLE IF NOT EXISTS {self.schema_name}.{table_name} (cui VARCHAR(100), term VARCHAR(1000), category VARCHAR(1000), semantic_type VARCHAR(1000), description VARCHAR(20000), description_embeddings VECTOR(DOUBLE, 384))"
         self.cursor.execute(create_table_sql)
         
-        # Load concepts and semantic types using the provided functions.
-        concepts = self.data_store.concepts_df
-        definitions = self.data_store.definitions_df
-        semantic_types = self.data_store.semantic_df
+        # Load concepts, semantic types, and definitions.        
+        concepts_with_sty_def_df = umls_df_dict["concepts_with_sty_def_df"]
+        print(concepts_with_sty_def_df.columns)
         
-        concepts_with_def_df = concepts.merge(definitions, on="CUI", how="inner")
-        print(concepts_with_def_df.columns)
-        concepts_with_def_df = concepts_with_def_df.merge(semantic_types, on="CUI", how="inner")
-        print(concepts_with_def_df.columns)
-
-        concepts_with_def_df["DEF"] = concepts_with_def_df["DEF"].astype('string')
-        concepts_with_def_df = concepts_with_def_df.drop_duplicates("CUI")
-        concepts_with_def_df = concepts_with_def_df.dropna(subset=["CUI", "STR", "DEF", "STY"])
-        print(concepts_with_def_df.columns)
-        
-        description_embeddings = self.model.encode(concepts_with_def_df["DEF"].tolist(), normalize_embeddings=True).tolist()
+        description_embeddings = self.model.encode(concepts_with_sty_def_df["DEF"].tolist(), normalize_embeddings=True).tolist()
         
         description_embeddings = [str(embedding) for embedding in description_embeddings]
         print("Successfully created embeddings.")
         
-        categories = concepts_with_def_df["TUI"].apply(IrisDataStore.get_category)
+        categories = concepts_with_sty_def_df["TUI"].apply(IrisDataStore.get_category)
         print(categories)
         data = {
-            "cui": concepts_with_def_df["CUI"].tolist(),
-            "term": concepts_with_def_df["STR"].tolist(),
+            "cui": concepts_with_sty_def_df["CUI"].tolist(),
+            "term": concepts_with_sty_def_df["STR"].tolist(),
             "category": categories,
-            "semantic_type": concepts_with_def_df["STY"].tolist(),
-            "description": concepts_with_def_df["DEF"].tolist(),
+            "semantic_type": concepts_with_sty_def_df["STY"].tolist(),
+            "description": concepts_with_sty_def_df["DEF"].tolist(),
             "description_embeddings": description_embeddings
         }
         result = list(zip(

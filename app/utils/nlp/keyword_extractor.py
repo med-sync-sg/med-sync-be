@@ -7,34 +7,36 @@ from sentence_transformers import SentenceTransformer
 
 def extract_keywords_descriptors(doc: spacy.tokens.Doc) -> list:
     """
-    Given a spaCy Doc with NER annotations, extract for each entity (keyword):
+    Given a spaCy Doc with NER annotations,
+    extract for each entity (keyword):
     - The entity text and label.
     - Any adjectives describing it (using dependency relations).
     - Any numerical modifiers (quantities) related to it.
     
+    Only processes spans marked with the 'is_medical_term' attribute.
     Returns a list of dictionaries.
     """
     results = []
     for ent in doc.ents:
+        # Only process entities that came from the Aho-Corasick component.
+        if not ent._.is_medical_term:
+            continue
+
         adjectives = []
         quantities = []
-        
+
         # Look at the children of the entity's root token.
         for child in ent.root.children:
-            # If the child is an adjective, add it.
             if child.pos_ == "ADJ":
                 adjectives.append(child.text)
-            # If the child is a numerical modifier or looks like a number, add it.
             if child.dep_ in ["nummod", "quantmod"] or child.like_num:
                 quantities.append(child.text)
         
-        # Optionally, check left siblings for adjectives that might not be direct children.
-        # This can catch adjectives preceding the entity in cases where dependency
-        # structure might not attach them directly.
-        for token in doc[ent.start - 3:ent.start]:  # Look at a window before the entity.
+        # Optionally, look at a few tokens before the entity for adjectives.
+        for token in doc[max(ent.start - 3, 0):ent.start]:
             if token.pos_ == "ADJ" and token.text not in adjectives:
                 adjectives.append(token.text)
-                
+        
         results.append({
             "term": ent.text,
             "label": ent.label_,
