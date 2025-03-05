@@ -59,10 +59,10 @@ def main():
                         help="Chunk size in frames")
     args = parser.parse_args()
     
+    test_url = "http://127.0.0.1:8001/tests"
     # asyncio.run(stream_audio(args.uri, args.file, args.chunk))
-    response = requests.get("http://127.0.0.1:8001/tests")
-    print(response.status_code)
-    print(response.json())
-    
+    response = requests.get(test_url)
+    print(response.status_code, response.content)
+
 if __name__ == "__main__":
     main()

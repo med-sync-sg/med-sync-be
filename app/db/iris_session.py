@@ -3,7 +3,7 @@ import iris
 from app.schemas.section import TextCategoryEnum
 from sentence_transformers import SentenceTransformer
 import pandas as pd
-from app.db.umls_data import umls_df_dict
+from app.db.umls_data_loader import umls_df_dict
 import numpy as np
 
 IRIS_USER = environ.get('IRIS_USER')
@@ -30,8 +30,8 @@ class IrisDataStore:
             cls._instance.cursor = cls._instance.conn.cursor()
             print("Connected to IRIS successfully!")
             
-            # cls._instance.set_up_categories()
-            # cls._instance.create_and_upload_category_embeddings()
+            cls._instance.set_up_categories()
+            # cls._instance.set_up_category_embeddings()
         return cls._instance
     
     def set_up_categories(self):
@@ -55,7 +55,7 @@ class IrisDataStore:
         (
             row['category'], 
             row['description'],
-            row["description_embeddings"]
+            str(row["description_embeddings"])
         )
             for index, row in result_df.iterrows()
         ]
@@ -72,9 +72,21 @@ class IrisDataStore:
             'T047',  # Disease or Syndrome
             'T184',  # Sign or Symptom
         ]
+        
+        DRUGS_AND_MEDICINES_TUI = [
+            'T195',
+            'T200',
+        ]
+
+        PATIENT_INFORMATION_TUI = [
+            'T98',
+            'T99',
+            'T100'
+        ]
         if tui in SYMPTOMS_AND_DISEASES_TUI:
             return TextCategoryEnum.CHIEF_COMPLAINT.name
-        
+        if tui in PATIENT_INFORMATION_TUI:
+            return TextCategoryEnum.PATIENT_INFORMATION.name
         return TextCategoryEnum.OTHERS.name
 
     def set_up_category_embeddings(self):
@@ -85,21 +97,22 @@ class IrisDataStore:
         
         # Load concepts, semantic types, and definitions.        
         concepts_with_sty_def_df = umls_df_dict["concepts_with_sty_def_df"]
-        print(concepts_with_sty_def_df.columns)
+        patient_information_df = umls_df_dict["patient_information_df"]
         
-        description_embeddings = self.model.encode(concepts_with_sty_def_df["DEF"].tolist(), normalize_embeddings=True).tolist()
+        full_df = pd.concat([concepts_with_sty_def_df, patient_information_df])
         
+        description_embeddings = self.model.encode(full_df["DEF"].tolist(), normalize_embeddings=True).tolist()
         description_embeddings = [str(embedding) for embedding in description_embeddings]
         print("Successfully created embeddings.")
         
-        categories = concepts_with_sty_def_df["TUI"].apply(IrisDataStore.get_category)
+        categories = full_df["TUI"].apply(IrisDataStore.get_category)
         print(categories)
         data = {
-            "cui": concepts_with_sty_def_df["CUI"].tolist(),
-            "term": concepts_with_sty_def_df["STR"].tolist(),
+            "cui": full_df["CUI"].tolist(),
+            "term": full_df["STR"].tolist(),
             "category": categories,
-            "semantic_type": concepts_with_sty_def_df["STY"].tolist(),
-            "description": concepts_with_sty_def_df["DEF"].tolist(),
+            "semantic_type": full_df["STY"].tolist(),
+            "description": full_df["DEF"].tolist(),
             "description_embeddings": description_embeddings
         }
         result = list(zip(

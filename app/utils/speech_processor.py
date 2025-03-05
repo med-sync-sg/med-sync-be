@@ -6,7 +6,7 @@ from os import environ
 import os
 from pyctcdecode import build_ctcdecoder
 import torch
-from app.utils.nlp.spacy_init import process_text
+from app.utils.nlp.spacy_utils import process_text
 from app.utils.nlp.keyword_extractor import extract_keywords_descriptors, merge_keyword_dicts
 from app.models.models import post_section
 from app.schemas.section import SectionCreate, TextCategoryEnum

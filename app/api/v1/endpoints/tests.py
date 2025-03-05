@@ -1,6 +1,7 @@
-from app.utils.nlp.spacy_init import process_text
+from app.utils.nlp.spacy_utils import process_text
 from app.utils.nlp.keyword_extractor import extract_keywords_descriptors, merge_keyword_dicts
 from fastapi import APIRouter
+import logging
 
 sample_transcript = """
 Doctor: Hello? Hi. Um, should we start? Yeah, okay. Hello how um. Good morning sir, how can I help you this morning?
@@ -113,21 +114,162 @@ Doctor: Great. Well, I wish you all the best.
 Patient: Okay, thank you. Bye.
 Doctor: Thank you. Bye bye.
 """
-
+sample_transcript_2 = '''
+    Doctor: Alex. Ohh. Hello? Hi, can you hear me?
+Patient: 
+Patient: Yeah.
+Doctor: OK great. Um how can I help you this morning, sir?
+Patient: Alright, so I've been feeling, I've been feeling kind of uh under the weather for the past four days.
+Doctor: 
+Patient: Um it started with the um, uh sore throat and runny nose, and
+Patient: It's sort of, um, it's sort of going into a cough now. Um, the sort throat is kind of going away, but, um, I'm starting to cough.
+Doctor: Mm-hmm. OK.
+Patient: And uh kind of uh bad and tired.
+Doctor: Sorry to hear that .
+Doctor: Mm. OK. I'm sorry to hear that. Seems like there's a lot going on there. Um so let's start with your, your sore throat first. Um tell me a bit more about that, if you can.
+Patient: Um ,so I, I , you know I think I, it all started with, uh, this colleague of mine, she just kept sneezing next to me, all the time. I think her kids are catching something from the
+Patient: uh from their kindergarten or something. And uh, you know the it it started as normal sore throat, and uh was quite painful for a couple days, but then it was past.
+Doctor: OK.
+Doctor: OK. OK. And did you have any uh difficulty or pain on swallowing?
+Patient: Um yeah. Yeah it was uh, it was quite painful to swallow, for one or two days.
+Doctor: OK.
+Doctor: You , did you manage to have a look at the back of your throat in the mirror?
+Patient: Um no, not really.
+Doctor: No. OK you didn't, you didn't notice any abnormal white spots, redness at the back of your throat?
+Patient: Um
+Patient: No. Um I I didn't think about uh .
+Doctor: 
+Doctor: that's OK. That's OK. And you mentioned a runny nose. Um again what kind of discharge is coming out? Is it clear, or is it a bit more coloured?
+Patient: Yeah yeah, it's uh it's clearing up .
+Patient: Sort of um, sort of getting my nose stuffed all the time. It's very had to, uh to get it free.
+Doctor: OK. You feel quite congested, do you?
+Patient: Yeah, quite congested.
+Doctor: OK, fine. Um you also mentioned a cough as well. Can you tell me a bit more about that?
+Patient: Um yeah that started recently, like just uh um maybe yesterday. And um it's uh, it's dry for now, it's it's not very painful but it's sort of there, all the time.
+Doctor: OK.
+Doctor: OK. And is it worse any particular time of the day?
+Patient: Sorry?
+Doctor: Is it, is it worse any particular time of the day? For example in the evenings, night time, mornings?
+Patient: Um
+Doctor: throughout the day.
+Patient: No it's it's um, it's sort of, it's sort of constant. Um I forgot to mention, that um I'm also having uh night sweats.
+Doctor: OK.
+Doctor: Night first, OK.
+Patient: That's, that's very odd actually. makes me a bit tired, um makes my uneasy.
+Doctor: Mm.
+Doctor: 
+Doctor: I can imagine, yes. Uh and this has again, been going on for last uh three four days, has it?
+Patient: Yeah, yes.
+Doctor: OK. Um right, OK. Have you noticed any fevers or temperatures at all?
+Patient: Um I I had some some fever in the beginning, but it's now sort of uh going down. I I've been taking some Paracetamol and Ibuprofen for that, and uh they, they help.
+Doctor: OK.
+Doctor: That's very sensible. Um very good. Um in terms of your chest otherwise, have you any difficulty breathing, or any pain in your chest?
+Patient: Um so no pain in chest, but uh I noticed that I um um so I feel a bit winded on exertion. So if I I I haven't been going, going to the gym thus uh, because of that.
+Doctor: When you say winded, do you feel, uh do you feel more short of breath would you say, on exertion? Is that when you, OK. Um and and that's mainly on exercise. But when you're resting, there's no problem.
+Patient: yeah.
+Patient: Yeah, yeah. When when when I'm resting it's OK. So I've been actually going to work, um sort of managing.
+Doctor: OK.
+Doctor: OK, fine. Just a couple other questions , if you don't mind. Any pain in, in your ears at all?
+Patient: Um no.
+Doctor: No, you don't feel blocked, or any discharge coming out of your ears?
+Patient: 
+Patient: No, I don't think so.
+Doctor: OK, fine. Um what I'm gonna do, I'm just gonna run through a few uh yes no questions, if you if you don't mind, just a review of your systems. Any, any headaches at all?
+Patient: Um, yeah, yeah. That that's still, that's still there.
+Doctor: Whereabouts are the head, headaches?
+Patient: Um it's sort of general. Uh and uh they're not, they're not always there, but you know every now and then they will come and go.
+Doctor: OK. And with those headaches have you had any problems with your, with your eyesight, your vision?
+Patient: Um no.
+Doctor: Uh any difficulty with seeing bright lights?
+Patient: No, I don't think so.
+Doctor: No, OK. Um and just moving down now, in terms of any, any feeling nausea or any vomiting?
+Patient: No, none of that.
+Doctor: OK. Tell me about your bowels. Are your bowels working OK?
+Patient: Uh yeah, yeah. Think so.
+Doctor: You're passing urine OK?
+Patient: Yeah, yeah.
+Doctor: How's your appetite, sir?
+Patient: Yeah I've been, I've been drinking a lot more than the usual. But uh so other than that, so
+Doctor: OK. Um and you're eating and drinking, uh you're eating OK otherwise.
+Patient: Um maybe a bit less than uh than what I, I would usually have.
+Doctor: OK. Um have you noticed any, any funny rashes at all, on your skin?
+Patient: Um no, no.
+Doctor: No. And any general muscle pain or aches, joint pain, ?
+Patient: Yeah, yeah. Yeah that's, that sort of started in the past couple days.
+Doctor: Yeah, OK. Alright um and uh just having a look at the rest of your history, are you otherwise fit and well? Or do you have any other medical problems I should be aware of?
+Patient: Um, so otherwise that, uh, I'm I'm fine. There's um, there isn't anything that I'm taking or, I'm being treated for.
+Doctor: OK. Um
+Patient: Um
+Doctor: So you are otherwise fit and well. Uh any, any allergies at all to any medications, I should be aware of?
+Patient: Um, no
+Doctor: No, OK. Um
+Doctor: Any family history at all? So anything relevant in the family that I should be aware of? Anything like diabetes, high blood pressure?
+Patient: Um, yeah my grandma has diabetes. Um, and, my grandma.
+Doctor: 
+Doctor: Your brother?
+Doctor: you say grandma, sorry my apologies. Grandma, OK. Uh do you know what type of diabetes it is? Is it type one, type two?
+Patient: 
+Patient: I think , I think it's type two.
+Doctor: OK.
+Doctor: Um anything else which you think is significant?
+Patient: Yeah, I, I think um, one of my uh, great grandads had an eczema.
+Doctor: Excellent, OK. OK. Um just moving on to what we social history, just to get to know you a bit more as a person. Tell me, who do you live with at home?
+Patient: Ohh um, I live alone.
+Doctor: OK. And you said you're working at the moment?
+Patient: Yeah, yeah.
+Doctor: What do you do for work?
+Patient: I'm an, I'm an accountant.
+Doctor: OK, and how's your work going at the moment? Uh over the last, has it, has it been affecting your work?
+Patient: Um, a little bit. I've been a bit slower. And you know, it's uh, it's, it's a bit of a stressful period just around the um, end of the year. Right.
+Doctor: Mm, OK. Is that stress, is that affecting your um, your mood at all any, in any way?
+Patient: Um, no I think I think it's, it's the, you know it's the good kind of stress. It's um, it's good work.
+Doctor: OK.
+Doctor: Well if there's anything you want to talk to me about, you can always come see me about your mood, um stress, anxiety. happy to help.
+Patient: I don't know. I, I like my job. It's just you know, it's a bit more work than usual.
+Doctor: OK. OK. And just very briefly, just in terms of smoking uh, do you smoke at all?
+Patient: Um, yeah occasionally, you know, cigars and things on company parties.
+Doctor: OK so not, not regular. Um and what about alcohol?
+Patient: No.
+Patient: Um, occasionally yeah I would have some. I'm, I'm not a very big drinker.
+Doctor: 
+Doctor: socially with work.
+Patient: Yeah.
+Doctor: Um OK. Um so um
+Doctor: just having listened to your story, um uh really just to summarize you know since the last four days you've been feeling generally quite unwell, sore throat, runny nose, bit of a dry cough, bit of muscle pain, weakness.
+Doctor: Um had initial fever, but now settled. Um I don't think there's a lot to worry about. I think you probably have, you know a bit of a viral, what we say viral illness, maybe a viral upper respiratory tract infection, or maybe early signs of a flu.
+Doctor: Um these normally last about seven to days and just gets better really, um over time. But things you can do to really help yourself, um is get plenty of rest. I'd probably advise you taking a day or two off work if you can. Um
+Doctor: Making yourself, pushing fluids and make yourself well-hydrated. Continue with the regular Paracetamol, Ibuprofen. Um and and you should see how things go, really. Um if next week you're still not better, I'd like you to come back and see me.
+Doctor: Um is that clear? Does that, does that make, does that make
+Patient: Yeah, yeah, that's that's , it makes sense. Uh, I think I'll take a couple days off, and see how it goes.
+Doctor: Yeah, yeah.
+Doctor: and things to look out for if you're really not getting better, if you if you have a high fever, or your breathing is becoming a bit more labored, or chest pain, I'd like you to come back and see me much sooner, give me a call. Um and we can help you out. OK?
+Patient: Yeah.
+Patient: Yeah, yeah I understand. Uh, I'll uh, I'll take care.
+Doctor: Great. Have a great day. Good luck with your work. Thank you. Bye bye. Bye bye.
+Patient: Thank you. Thank you. You too. Bye bye.
+    '''
 router = APIRouter()
 
 @router.get("/")
 def test_with_sample_transcript():
-    transcription_doc = process_text(sample_transcript)
-    print(transcription_doc.ents)
+    transcription_doc = process_text(sample_transcript_2)
+    print(f"Entities: {transcription_doc.ents}")
+    
     keyword_dicts = extract_keywords_descriptors(doc=transcription_doc)
-    print(keyword_dicts)
+    print(f"Extracted keywords: {keyword_dicts}")
+    
     result_dicts = []
     for keyword_dict in keyword_dicts:
-        if len(result_dicts) == 0:
+        found = False
+        print(f"Keyword Dict: {keyword_dict}")
+        # Search for an existing entry with the same term.
+        for i, existing_dict in enumerate(result_dicts):
+            if keyword_dict["term"] == existing_dict["term"]:
+                result_dicts[i] = merge_keyword_dicts(existing_dict, keyword_dict)
+                print(f"Merged Dicts: {result_dicts}")
+                found = True
+                break
+        if not found:
             result_dicts.append(keyword_dict)
-        for final_dict in result_dicts:
-            if keyword_dict["term"] == final_dict["term"]:
-                result_dicts.append(merge_keyword_dicts(keyword_dict, final_dict))
-    print(result_dicts)
+    
     return result_dicts

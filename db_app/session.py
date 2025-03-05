@@ -4,6 +4,7 @@ import pandas as pd
 import json
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.engine import Engine
+from typing import List
 from sqlalchemy.orm import sessionmaker
 
 DB_USER = environ.get('DB_USER')
@@ -27,6 +28,17 @@ UMLS_ROOT_DIRECTORY = os.path.join("umls", "2024AB", "META")
 SYMPTOMS_AND_DISEASES_TUI = [
     'T047',  # Disease or Syndrome
     'T184',  # Sign or Symptom
+]
+
+DRUGS_AND_MEDICINES_TUI = [
+    'T195',
+    'T200',
+]
+
+PATIENT_INFORMATION_TUI = [
+    'T98',
+    'T99',
+    'T100'
 ]
 
 # Only contains pd DataFrame objects
@@ -55,7 +67,7 @@ class DataStore:
                 cls._instance.relationships_df = cls._instance.load_relationships(conn)
                 cls._instance.semantic_df = cls._instance.load_semantic_types(conn)
                 cls._instance.combined_df = cls._instance.combine_data(conn)
-                cls._instance.concepts_with_sty_def_df = cls._instance.get_concepts_with_sty_def(conn)
+                cls._instance.concepts_with_sty_def_df = cls._instance.get_concepts_with_sty_def(SYMPTOMS_AND_DISEASES_TUI)
                 print("Session loading completed.")
         return cls._instance
 
@@ -104,15 +116,15 @@ class DataStore:
         table_name = "umls_semantic_types"
         if inspector.has_table(table_name):
             df = pd.read_sql_table(table_name=table_name, con=connection, columns=cols)
-            return df[df["TUI"].isin(SYMPTOMS_AND_DISEASES_TUI)]
+            return df
         else:        
             df = pd.read_csv(os.path.join(UMLS_ROOT_DIRECTORY, "MRSTY.RRF"), sep="|", names=cols, index_col=False)
             print("UMLS Semantic Types Loaded.")
             # print("Uploading UMLS semantic types to the db...")
             # df.to_sql(table_name, con=connection)
-            df = df[df["TUI"].isin(SYMPTOMS_AND_DISEASES_TUI)]
-            return df[["CUI", "TUI", "STY"]]
 
+            return df[["CUI", "TUI", "STY"]]
+    
     def load_relationships(self, connection: Engine):
         inspector = inspect(connection)
         cols = ["CUI1", "AUI1", "STYPE1", "REL", "CUI2", "AUI2", "STYPE2", "RELA"]
@@ -148,9 +160,10 @@ class DataStore:
         filtered_relationships_df.to_sql(table_name, con=connection, if_exists="replace")
         return filtered_relationships_df
     
-    def get_concepts_with_sty_def(self, connection: Engine):
-        concepts_with_sty_def_df = self.concepts_df.merge(self.definitions_df, on="CUI", how="inner")
-        concepts_with_sty_def_df = concepts_with_sty_def_df.merge(self.semantic_df, on="CUI", how="inner")
+    def get_concepts_with_sty_def(self, target_tuis: List[str]):
+        concepts_with_sty_def_df = self.concepts_df.merge(self.semantic_df, on="CUI", how="inner")
+        concepts_with_sty_def_df = concepts_with_sty_def_df[concepts_with_sty_def_df["TUI"].isin(target_tuis)]
+        concepts_with_sty_def_df = concepts_with_sty_def_df.merge(self.definitions_df, on="CUI", how="inner")
         
         concepts_with_sty_def_df["DEF"] = concepts_with_sty_def_df["DEF"].astype('string')
         concepts_with_sty_def_df = concepts_with_sty_def_df.drop_duplicates("CUI")

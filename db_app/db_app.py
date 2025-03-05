@@ -1,11 +1,15 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from db_app.session import DataStore
+from db_app.session import DataStore, DRUGS_AND_MEDICINES_TUI, PATIENT_INFORMATION_TUI
 from pyarrow import feather
 import io
 import pandas as pd
 from fastapi.responses import StreamingResponse
 
+'''
+The db_app.py is run separately from app.py through db_main.py such that heavy and stationary DB data loading is offloaded to
+a different process.
+'''
 def create_app() -> FastAPI:
     app = FastAPI(title="Backend Connection", version="1.0.0")
     return app
@@ -14,6 +18,8 @@ def create_app() -> FastAPI:
 data_store = DataStore()
 print(data_store.concepts_df.head())
 
+# drugs_and_medicines_df = data_store.get_concepts_with_sty_def(DRUGS_AND_MEDICINES_TUI)
+patient_information_df = data_store.get_concepts_with_sty_def(PATIENT_INFORMATION_TUI)
 app = create_app()
 
 # Add CORS middleware
@@ -37,7 +43,18 @@ def get_combined():
     buffer = serialize_dataframe_to_feather(data_store.combined_df)
     return StreamingResponse(buffer, media_type="application/octet-stream")
 
-@app.get("/umls-data/concepts-with-sty-def-df")
-def get_concepts_with_sty_def():
+@app.get("/umls-data/drugs")
+def get_drugs():
     buffer = serialize_dataframe_to_feather(data_store.concepts_with_sty_def_df)
+    return StreamingResponse(buffer, media_type="application/octet-stream")
+
+
+@app.get("/umls-data/symptoms-and-diseases")
+def get_symptoms_and_diseases():
+    buffer = serialize_dataframe_to_feather(data_store.concepts_with_sty_def_df)
+    return StreamingResponse(buffer, media_type="application/octet-stream")
+
+@app.get("/umls-data/patient-information")
+def get_patient_information():
+    buffer = serialize_dataframe_to_feather(patient_information_df)
     return StreamingResponse(buffer, media_type="application/octet-stream")

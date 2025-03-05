@@ -43,6 +43,7 @@ def extract_keywords_descriptors(doc: spacy.tokens.Doc) -> list:
             "adjectives": adjectives,
             "quantities": quantities
         })
+    print(results)
     return results
 
 def cosine_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
@@ -76,16 +77,18 @@ def merge_keyword_dicts(kw1: Dict, kw2: Dict) -> Dict[str, Any]:
     Returns:
       - final_keyword_dict (dict)
     """
-    final_keyword_dict = {}
+    print(f"first: {kw1}")
+    print(f"second: {kw2}")
+    final_keyword_dict = {
+        "term": None,
+        "label": None,
+        "adjectives": [],
+        "quantities": []
+    }
+    final_keyword_dict["term"] = kw1["term"]
     final_keyword_dict["label"] = kw1["label"]
     
-    # Directly compare "term"
-    term1 = normalize_text(kw1.get("term", ""))
-    term2 = normalize_text(kw2.get("term", ""))
-    if term1 != term2:
-        final_keyword_dict["term"] = [kw1.get("term", ""), kw2.get("term", "")]
-        # If the main term doesn't match, we consider them inconsistent immediately.
-        return {}
+    assert kw1["term"] == kw2["term"]
     
     # Compare "quantities" directly.
     quantities1 = [q for q in kw1.get("quantities", [])]
@@ -102,14 +105,11 @@ def merge_keyword_dicts(kw1: Dict, kw2: Dict) -> Dict[str, Any]:
     
     for adj in adjectives1:
         if not any(are_semantically_similar(adj, other) for other in adjectives2):
-            consistent_adjectives = False
             differing_adjectives.append(adj)
     for adj in adjectives2:
         if not any(are_semantically_similar(adj, other) for other in adjectives1):
-            consistent_adjectives = False
             differing_adjectives.append(adj)
     
-    if not consistent_adjectives:
-        final_keyword_dict["adjectives"] = list(set(differing_adjectives))
-    
+    final_keyword_dict["adjectives"] = list(set(differing_adjectives))
+    print(f"final: {final_keyword_dict}")
     return final_keyword_dict

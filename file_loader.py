@@ -1,5 +1,5 @@
 import os
-from app.utils.nlp.spacy_init import process_text
+from app.utils.nlp.spacy_utils import process_text
 from app.utils.nlp.summarizer import generate_summary
 from app.utils.nlp.report_generator import generate_doctor_report
 from spacy import displacy

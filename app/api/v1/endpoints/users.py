@@ -4,7 +4,7 @@ from typing import List
 
 from app.models.models import User
 from app.schemas.user import UserBase, UserRead, UserCreate, UserUpdate
-from app.db.umls_data import SessionMaker
+from app.db.umls_data_loader import SessionMaker
 router = APIRouter()
 
 @router.get("/", response_model=List[UserRead])
