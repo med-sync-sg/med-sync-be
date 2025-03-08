@@ -29,9 +29,7 @@ router = APIRouter()
 @Language.component("ahocorasick")
 def AhoCorasickComponent(doc: Doc):
     df : pd.DataFrame = umls_df_dict["combined_df"]
-    print(df.head())
     automaton = ahocorasick.Automaton()
-    print(df.head())
     for index, row in df.iterrows():
         term = row['STR']
         data = {

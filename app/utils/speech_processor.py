@@ -12,7 +12,7 @@ from app.models.models import post_section
 from app.schemas.section import SectionCreate, TextCategoryEnum
 from app.db.iris_session import IrisDataStore
 import pandas as pd
-from typing import List, Dict
+from typing import List, Dict, Any
 from spacy.tokens.doc import Doc
 import re
 
@@ -42,6 +42,8 @@ class AudioCollector:
     current_node_id: int = -1
     buffer_sections: List[SectionCreate] = []
     iris_data_store: IrisDataStore = IrisDataStore()
+    full_transcript_text: str = ""
+    full_transcript_segments: List[str] = []
     def __new__(cls):
         MODEL_ID = "facebook/wav2vec2-base-960h"
         if cls._instance is None:
@@ -54,7 +56,6 @@ class AudioCollector:
             cls._instance.model = Wav2Vec2ForCTC.from_pretrained(MODEL_ID)
             cls._instance.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             cls._instance.model.to(cls._instance.device)
-            
             
             # Build the decoder using the vocabulary from the processor
             # Remove any special tokens as needed (like [UNK], [PAD])
@@ -70,7 +71,7 @@ class AudioCollector:
                 alpha=0.3,
                 beta=1.0
             )
-            cls._instance.full_transcript_text = ""
+
         return cls._instance
 
     def add_chunk(self, chunk: bytes):
@@ -143,10 +144,19 @@ class AudioCollector:
             print(section)
         return sections
 
-    def transcribe_audio_segment(self, user_id: int, note_id: int) -> str:
+    def fill_content_dictionary(self) -> List[Dict[str, Any]]:
+        result = []
+        for result_keyword_dict in self.final_keyword_dicts:
+            category = self.iris_data_store.classify_text_category(result_keyword_dict["term"])
+            template = self.iris_data_store.find_content_dictionary(result_keyword_dict, category)
+            result.append(self.iris_data_store.recursive_fill_content_dictionary(result_keyword_dict, template))
+            
+        return result
+
+    def transcribe_audio_segment(self, user_id: int, note_id: int) -> bool:
         """
-        Preprocesses the audio and runs inference using the XLS-R model.
-        Returns the transcription as text.
+        Preprocesses the audio and runs inference.
+        Returns False if transcription did not occur as no silence was detected yet and True if the function did transcribe.
         """
         sample_rate = 16000
         sample_width = 2  # bytes per sample
@@ -155,7 +165,7 @@ class AudioCollector:
         
         window_size = sample_rate * sample_width  # 1 second of audio = 32000 bytes
         if len(self.audio_buffer) < window_size:
-            return
+            return False
 
         audio_window = self.audio_buffer[-window_size:]
         frames = [
@@ -185,15 +195,18 @@ class AudioCollector:
                 print("Beam search transcription:", transcription)
                 
                 if transcription.strip():
-                    self.full_transcript_text += transcription
+                    self.full_transcript_text = self.full_transcript_text + ". " + transcription
+                    self.full_transcript_segments.append(transcription)
                     transcription_doc = process_text(transcription)
                     keyword_dicts = extract_keywords_descriptors(doc=transcription_doc)
                     self.buffer_keyword_dicts = self.buffer_keyword_dicts + keyword_dicts
+                
                 self.reset_buffer()
             except Exception as e:
                 print("Error during transcription:", e)
+            return True
         else:
-            for keyword_dict in keyword_dicts:
+            for keyword_dict in self.buffer_keyword_dicts:
                 found = False
                 print(f"Keyword Dict: {keyword_dict}")
                 # Search for an existing entry with the same term.
@@ -205,6 +218,7 @@ class AudioCollector:
                         break
                 if not found:
                     self.final_keyword_dicts.append(keyword_dict)
+            final_content_dictionary_list = self.fill_content_dictionary()
+            print(final_content_dictionary_list)
             self.buffer_keyword_dicts = [] # Clear buffer for next iterations
-
-        return transcription
+            return False

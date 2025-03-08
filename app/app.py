@@ -17,7 +17,7 @@ import json
 import requests
 from app.api.v1.endpoints import auth, notes, users, templates, reports, tests
 from app.db.iris_session import IrisDataStore
-
+from app.utils.text_utils import clean_transcription, correct_spelling
 HF_TOKEN = environ.get("HF_ACCESS_TOKEN")
 def create_app() -> FastAPI:
 
@@ -89,12 +89,19 @@ async def websocket_endpoint(websocket: WebSocket):
                     break
                 # Convert the received string to bytes (adjust this conversion as needed)
                 audio_collector.add_chunk(base64.b64decode(chunk))
-                transcribed_text = audio_collector.transcribe_audio_segment(user_id, note_id)
-                await websocket.send_json({'text': transcribed_text})
-                sections = audio_collector.make_sections(user_id, note_id)
-                sections_json = [section.model_dump_json() for section in sections]
-                print(sections_json)
-                await websocket.send_json({'sections': sections_json})
+                did_transcribe = audio_collector.transcribe_audio_segment(user_id, note_id)
+                if did_transcribe:
+                    transcribed_text = audio_collector.full_transcript_text
+                    cleaned_text = clean_transcription(transcribed_text)
+                    corrected_text = correct_spelling(cleaned_text)
+                    print(corrected_text)
+                    await websocket.send_json({'text': corrected_text})
+                    # sections = audio_collector.make_sections(user_id, note_id)
+                    # sections_json = [section.model_dump_json() for section in sections]
+                    # print(sections_json)
+                    # await websocket.send_json({'sections': sections_json})
+                else:
+                    print("No transcript was created.")
             else:
                 print("End-of-stream or no 'data' field. Breaking loop.")
                 sections = audio_collector.make_sections(user_id, note_id)
