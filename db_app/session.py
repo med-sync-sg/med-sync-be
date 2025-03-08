@@ -41,7 +41,6 @@ PATIENT_INFORMATION_TUI = [
     'T100'
 ]
 
-# Only contains pd DataFrame objects
 class DataStore:
     _instance = None
     engine = create_engine(DATABASE_URL)

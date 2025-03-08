@@ -1,5 +1,7 @@
 from app.utils.nlp.spacy_utils import process_text
 from app.utils.nlp.keyword_extractor import extract_keywords_descriptors, merge_keyword_dicts
+from app.utils.speech_processor import AudioCollector
+from app.db.iris_session import IrisDataStore
 from fastapi import APIRouter
 import logging
 
@@ -250,6 +252,8 @@ Patient: Thank you. Thank you. You too. Bye bye.
     '''
 router = APIRouter()
 
+audio_collector = AudioCollector()
+
 @router.get("/")
 def test_with_sample_transcript():
     transcription_doc = process_text(sample_transcript_2)
@@ -271,5 +275,11 @@ def test_with_sample_transcript():
                 break
         if not found:
             result_dicts.append(keyword_dict)
+    iris_data_store = IrisDataStore()
+    result = []
+    for result_keyword_dict in result_dicts:
+        category = iris_data_store.classify_text_category(result_keyword_dict["term"])
+        template = iris_data_store.find_content_dictionary(result_keyword_dict, category)
+        result.append(iris_data_store.recursive_fill_content_dictionary(result_keyword_dict, template))
     
-    return result_dicts
+    return result

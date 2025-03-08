@@ -5,7 +5,7 @@ from typing import List
 from app.models.models import User  # SQLAlchemy user model
 from app.schemas.user import UserCreate
 from app.utils.auth_utils import create_access_token, verify_password, hash_password
-from app.db.umls_data_loader import SessionMaker
+from app.db.local_session import SessionMaker
 
 class LoginRequest(BaseModel):
     username: str

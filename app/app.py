@@ -16,6 +16,7 @@ import base64
 import json
 import requests
 from app.api.v1.endpoints import auth, notes, users, templates, reports, tests
+from app.db.iris_session import IrisDataStore
 
 HF_TOKEN = environ.get("HF_ACCESS_TOKEN")
 def create_app() -> FastAPI:
@@ -32,8 +33,9 @@ def create_app() -> FastAPI:
 
 connected_clients: List[WebSocket] = []
 
-app = create_app()
+IrisDataStore()
 
+app = create_app()
 
 # Add CORS middleware
 app.add_middleware(

@@ -2,8 +2,12 @@ import spacy
 import spacy.tokens
 from typing import List, Dict, Any
 from app.utils.text_utils import normalize_text
+from app.schemas.section import TextCategoryEnum, SectionCreate
+from app.db.iris_session import IrisDataStore
 import numpy as np
 from sentence_transformers import SentenceTransformer
+
+iris_data_store = IrisDataStore()
 
 def extract_keywords_descriptors(doc: spacy.tokens.Doc) -> list:
     """
@@ -72,7 +76,8 @@ def merge_keyword_dicts(kw1: Dict, kw2: Dict) -> Dict[str, Any]:
       - "term": e.g. "severe headache"
       - "label": e.g. "SYMPTOM"
       - "adjectives": a list of adjectives (e.g. ["severe", "persistent"])
-      - "quantities": a list of quantities (e.g. ["3 days"])
+      - "quantities": a list of quantities (e.g. ["3 meetings"])
+      - "durations": a list of time words
     
     Returns:
       - final_keyword_dict (dict)
@@ -113,3 +118,28 @@ def merge_keyword_dicts(kw1: Dict, kw2: Dict) -> Dict[str, Any]:
     final_keyword_dict["adjectives"] = list(set(differing_adjectives))
     print(f"final: {final_keyword_dict}")
     return final_keyword_dict
+
+def build_section_create_objects(note_id: int, keyword_dicts: List[Dict]) -> List[SectionCreate]:
+    """
+    Group extracted keyword dictionaries by category and merge them to create
+    SectionCreate objects. For each category (e.g., CHIEF_COMPLAINT, PATIENT_INFORMATION, OTHERS),
+    the corresponding content is generated based on a template.
+    
+    Args:
+        note_id (int): The note identifier.
+        keyword_dicts (List[Dict]): List of keyword dictionaries extracted from the transcript.
+        
+    Returns:
+        List[SectionCreate]: List of SectionCreate objects ready for database insertion.
+    """    
+    for kw in keyword_dicts:
+        category = iris_data_store.classify_text_category(kw)
+        selected_content_dictionary = iris_data_store.find_content_dictionary(keyword_dict=kw, category=category)
+        print(selected_content_dictionary) 
+        result_content = iris_data_store.merge_keyword_into_template(kw, selected_content_dictionary)
+        print(result_content)
+    sections = []
+    
+    
+    
+    return sections

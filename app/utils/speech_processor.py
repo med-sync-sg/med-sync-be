@@ -139,6 +139,8 @@ class AudioCollector:
             category = self.iris_data_store.classify_text_category(term) # embed term
             section = SectionCreate(user_id=user_id, note_id=note_id, title=keyword_dict["label"], content=keyword_dict, section_type=category, section_description=TextCategoryEnum[category].value)
             sections.append(section)
+        for section in sections:
+            print(section)
         return sections
 
     def transcribe_audio_segment(self, user_id: int, note_id: int) -> str:
@@ -187,23 +189,22 @@ class AudioCollector:
                     transcription_doc = process_text(transcription)
                     keyword_dicts = extract_keywords_descriptors(doc=transcription_doc)
                     self.buffer_keyword_dicts = self.buffer_keyword_dicts + keyword_dicts
-                    for keyword_dict in self.buffer_keyword_dicts:
-                        if len(self.final_keyword_dicts) == 0:
-                            self.final_keyword_dicts.append(keyword_dict)
-                        for final_dict in self.final_keyword_dicts:
-                            if keyword_dict["term"] == final_dict["term"]:
-                                self.final_keyword_dicts.append(merge_keyword_dicts(keyword_dict, final_dict))
                 self.reset_buffer()
             except Exception as e:
                 print("Error during transcription:", e)
         else:
-            for keyword_dict in self.buffer_keyword_dicts:
-                if len(self.final_keyword_dicts) == 0:
+            for keyword_dict in keyword_dicts:
+                found = False
+                print(f"Keyword Dict: {keyword_dict}")
+                # Search for an existing entry with the same term.
+                for i, existing_dict in enumerate(self.final_keyword_dicts):
+                    if keyword_dict["term"] == existing_dict["term"]:
+                        self.final_keyword_dicts[i] = merge_keyword_dicts(existing_dict, keyword_dict)
+                        print(f"Merged Dicts: {self.final_keyword_dicts}")
+                        found = True
+                        break
+                if not found:
                     self.final_keyword_dicts.append(keyword_dict)
-                for final_dict in self.final_keyword_dicts:
-                    if keyword_dict["term"] == final_dict["term"]:
-                        self.final_keyword_dicts.append(merge_keyword_dicts(keyword_dict, final_dict))
-                        continue
             self.buffer_keyword_dicts = [] # Clear buffer for next iterations
 
         return transcription

@@ -4,7 +4,7 @@ from typing import List
 
 from app.models.models import Note
 from app.schemas.note import NoteCreate, NoteRead, NoteUpdate
-from app.db.umls_data_loader import SessionMaker
+from app.db.local_session import SessionMaker
 
 router = APIRouter()
 
