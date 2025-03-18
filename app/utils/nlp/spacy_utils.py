@@ -17,6 +17,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch.nn.functional as F
 from os import environ
 from spacy.tokens import Span
+from Levenshtein import ratio as levenshtein_ratio
 
 # Load a cross-encoder model (e.g., "cross-encoder/ms-marco-MiniLM-L-6-v2" or something domain-specific)
 re_ranker_name = "cross-encoder/ms-marco-MiniLM-L-6-v2"
@@ -43,18 +44,32 @@ def AhoCorasickComponent(doc: Doc):
     automaton.make_automaton()
 
     matches = []
+    text_lower = doc.text.lower()
+    
     # Iterate over matches from the automaton.
     for end_index, data in automaton.iter(doc.text.lower()):
-        term = data['term']
+        term = data['term']  # The stored term (lowercase)
         start_char = end_index - len(term) + 1
         end_char = end_index + 1
+        # Extract the substring from the document.
+        found_text = text_lower[start_char:end_char]
         span = doc.char_span(start_char, end_char, label=data['semantic_type'])
-        if span is not None:
-            # Mark the span as coming from Aho-Corasick.
+        if found_text.lower() == term:
             span._.is_medical_term = True
             matches.append(span)
+        else:
+            # Compute the Levenshtein ratio between the found text and the stored term.
+            sim = levenshtein_ratio(found_text, term)
+            # Accept the match if similarity is above the threshold.
+            if sim >= 0.85:
+                span = doc.char_span(start_char, end_char, label=data['semantic_type'])
+                if span is not None:
+                    # Mark this span as coming from Aho-Corasick.
+                    span._.is_medical_term = True
+                    matches.append(span)
+
     # Replace doc.ents entirely with our matches.
-    doc.ents = matches
+    doc.ents = list(doc.ents) + matches
     return doc
 
 def summarize_text():
@@ -67,9 +82,17 @@ if not Span.has_extension("is_medical_term"):
     Span.set_extension("is_medical_term", default=False)
 
 if "ahocorasick" not in nlp_en.pipe_names:
-    nlp_en.add_pipe("ahocorasick", before="ner")
+    nlp_en.add_pipe("ahocorasick", after="ner")
 
 def process_text(text: str) -> Doc:
     # Process the text
     doc = nlp_en(text)
+    svg = displacy.render(doc)
+    output_path = Path("./images/dependency_plot.svg")
+    output_path.open("w", encoding="utf-8").write(svg)
+    
+    svg = displacy.render(doc, style="ent")
+    output_path = Path("./images/ent_plot.svg")
+    output_path.open("w", encoding="utf-8").write(svg)
+
     return doc

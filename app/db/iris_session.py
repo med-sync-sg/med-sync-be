@@ -8,6 +8,7 @@ import numpy as np
 import json
 from typing import Dict, List, Any, Tuple
 import copy
+from Levenshtein import ratio  # pip install python-Levenshtein
 IRIS_USER = environ.get('IRIS_USER')
 IRIS_PASSWORD = environ.get('IRIS_PASSWORD')
 IRIS_HOST = environ.get('IRIS_HOST')
@@ -81,7 +82,7 @@ class IrisDataStore:
         """
         self.cursor.executemany(sql, data)
 
-    def _get_category(self, tui: str) -> str:
+    def _get_category(tui: str) -> str:
         SYMPTOMS_AND_DISEASES_TUI = [
             'T047',  # Disease or Syndrome
             'T184',  # Sign or Symptom
@@ -106,7 +107,7 @@ class IrisDataStore:
     def set_up_category_embeddings(self):
         print("Loading up category embeddings...")
         table_name = "TextCategoryEmbeddings"
-        create_table_sql = f"CREATE TABLE IF NOT EXISTS {self.schema_name}.{table_name} (cui VARCHAR(100), term VARCHAR(1000), category VARCHAR(1000), semantic_type VARCHAR(1000), description VARCHAR(20000), description_embeddings VECTOR(DOUBLE, 384))"
+        create_table_sql = f"CREATE TABLE IF NOT EXISTS {self.schema_name}.{table_name} (cui VARCHAR(100), term VARCHAR(1000), term_embeddings VECTOR(DOUBLE, 384), category VARCHAR(1000), semantic_type VARCHAR(1000), description VARCHAR(20000), description_embeddings VECTOR(DOUBLE, 384))"
         self.cursor.execute(create_table_sql)
         
         # Load concepts, semantic types, and definitions.        
@@ -115,15 +116,19 @@ class IrisDataStore:
         
         full_df = pd.concat([concepts_with_sty_def_df, patient_information_df])
         
+        term_embeddings = self.model.encode(full_df["STR"].tolist(), normalize_embeddings=True).tolist()
+        term_embeddings = [str(embedding) for embedding in term_embeddings]
+        
         description_embeddings = self.model.encode(full_df["DEF"].tolist(), normalize_embeddings=True).tolist()
         description_embeddings = [str(embedding) for embedding in description_embeddings]
         print("Successfully created embeddings.")
         
-        categories = full_df["TUI"].apply(IrisDataStore.get_category)
+        categories = full_df["TUI"].apply(lambda element: IrisDataStore._get_category(tui=element))
         print(categories)
         data = {
             "cui": full_df["CUI"].tolist(),
             "term": full_df["STR"].tolist(),
+            "term_embeddings": term_embeddings,
             "category": categories,
             "semantic_type": full_df["STY"].tolist(),
             "description": full_df["DEF"].tolist(),
@@ -132,6 +137,7 @@ class IrisDataStore:
         result = list(zip(
             data["cui"],
             data["term"],
+            data["term_embeddings"],
             data["category"],
             data["semantic_type"],
             data["description"],
@@ -143,8 +149,8 @@ class IrisDataStore:
             
         sql = f"""
             INSERT INTO {self.schema_name}.{table_name}
-            (cui, term, category, semantic_type, description, description_embeddings)
-            VALUES (?, ?, ?, ?, ?, TO_VECTOR(?))
+            (cui, term, term_embeddings, category, semantic_type, description, description_embeddings)
+            VALUES (?, ?, TO_VECTOR(?), ?, ?, ?, TO_VECTOR(?))
         """
                 
         current = 0
@@ -181,42 +187,54 @@ class IrisDataStore:
         embeddings = self.model.encode(json.dumps(data), normalize_embeddings=True)
         return embeddings
     
-    def classify_text_category(self, text: str, threshold: float = 0.8) -> str:
-        """
-        Classify the input text by performing a vector search against stored category embeddings.
-        If no result is found or the best distance is greater than the threshold, return the fallback category (OTHERS).
 
-        Parameters:
-            text (str): The input text to classify.
-            threshold (float): Maximum acceptable distance for a match. If the best match's distance 
-                            exceeds this value, fallback to OTHERS.
+
+    def classify_text_category(self, text: str, threshold: float = 0.5) -> str:
+        """
+        Classify the input text by performing a vector search against stored category embeddings,
+        and also taking into account the similarity of the term string itself.
         
-        Returns:
-            str: The predicted category, or TextCategoryEnum.OTHERS if no good match is found.
+        This method computes:
+        1. A combined vector similarity score from both the term_embeddings and description_embeddings.
+        2. A direct string similarity score (using Levenshtein ratio) between the input text and the stored term.
+        
+        The final score is a combination of these scores. If the final score is above the threshold,
+        it returns the matched category; otherwise, it falls back to OTHERS.
         """
         # Step 1: Convert the input text into its embedding.
+        # Convert the embedding vector to a Python list then to a string.
         input_embedding = str(self.embed_text(text).tolist())
-
-        # Step 2: Query the vector database for the closest match.
+        
+        # Step 2: Query the vector database.
+        # The query computes a combined score using both term_embeddings and description_embeddings.
         sql = f"""
-            SELECT TOP 1 category
+            SELECT TOP 1 category, term, VECTOR_DOT_PRODUCT(description_embeddings, TO_VECTOR(?)) as score
             FROM {self.schema_name}.TextCategoryEmbeddings
             ORDER BY VECTOR_DOT_PRODUCT(description_embeddings, TO_VECTOR(?)) DESC
         """
-        self.cursor.execute(sql, [input_embedding])
+        # For now, if you want to search for a specific category, pass it; otherwise, you could remove the WHERE clause.
+        # Here, we search for the category provided (converted to uppercase).
+        self.cursor.execute(sql, [input_embedding, input_embedding])
         result = self.cursor.fetchone()
-
-        # Step 3: Check if a result was returned.
+        
         if result:
-            category, = result
-            print(f"Best match category: {category}")
-            # If the distance is too high, the input text is considered dissimilar.
-            # if distance > threshold:
-            return TextCategoryEnum[category].name
-            # else:
-            #     return category
+            category, db_term, score = result
+            print(f"Vector result - Category: {category}, Term: {db_term}, Score: {score}")
+            
+            # Step 3: Compute string similarity between input text and the stored term.
+            string_sim = ratio(text.lower(), db_term.lower())
+            print(f"String similarity between '{text}' and '{db_term}': {string_sim:.4f}")
+            
+            # Step 4: Combine the vector and string similarities.
+            if string_sim > 0.85:
+                return TextCategoryEnum[category].name
+            
+            if float(score) >= threshold:
+                return TextCategoryEnum[category].name
+            else:
+                return TextCategoryEnum.OTHERS.name
         else:
-            # No result found, fallback to OTHERS.
+            # If no result is found, fallback to OTHERS.
             return TextCategoryEnum.OTHERS.name
     
     def set_up_content_dictionary_embeddings(self):
@@ -331,98 +349,82 @@ class IrisDataStore:
         
         return json.loads(result)
 
-    def find_best_key_path(self, keyword_key: str, template: Dict[str, Any], threshold: float) -> Tuple[List[str], float]:
+    def clear_template_values(self, template: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Recursively search the template for the key path that best matches the keyword_key.
-        Returns a tuple (path, similarity) where path is a list of keys indicating where in the template
-        the keyword should be mapped. If no key reaches the threshold, returns ([], best_similarity).
+        Recursively clear all string values in the template, replacing them with an empty string,
+        while preserving the structure.
         """
-        best_path = []
-        best_sim = -1.0
-        for t_key, t_value in template.items():
-            sim = cosine_similarity(self.embed_text(keyword_key), self.embed_text(t_key))
-            if sim > best_sim:
-                best_sim = sim
-                best_path = [t_key]
-            # If the current value is a nested dict, search deeper.
-            if isinstance(t_value, dict):
-                sub_path, sub_sim = self.find_best_key_path(keyword_key, t_value, threshold)
-                if sub_sim > best_sim:
-                    best_sim = sub_sim
-                    best_path = [t_key] + sub_path
-        return best_path, best_sim
+        new_template = {}
+        for key, value in template.items():
+            if isinstance(value, str):
+                new_template[key] = ""
+            elif isinstance(value, dict):
+                new_template[key] = self.clear_template_values(value)
+            else:
+                new_template[key] = value
+        return new_template
 
-    def set_value_at_path(self, template: Dict[str, Any], path: List[str], new_value: Any) -> None:
+    def merge_flat_keywords_into_template(self, feature_dict: Dict[str, Any],
+                                            template: Dict[str, Any],
+                                            threshold: float = 0.5) -> Dict[str, Any]:
         """
-        Given a nested dictionary (template) and a list of keys (path), update the value at the deepest key.
-        """
-        current = template
-        for key in path[:-1]:
-            current = current.setdefault(key, {})
-        current[path[-1]] = new_value
+        Merge a flat feature dictionary (extracted from a transcript) into a nested content template
+        using a prototype-based approach that considers both the key and its value.
         
-    def append_value_at_path(self, template: Dict[str, Any], path: List[str], new_value: Any) -> None:
-        """
-        Given a nested dictionary (template) and a list of keys (path), update the value at the deepest key.
-        """
-        current = template
-        for key in path[:-1]:
-            current = current.setdefault(key, {})
-        current[path[-1]] += f", {new_value}" 
+        For each key in feature_dict (e.g., "term", "duration", "adjectives", "quantities"):
+          - Build a combined string from the feature (e.g. "term: severe headache").
+          - For every key in the template that has a string value, build a candidate string 
+            by combining the key and its description (e.g. "name: The name of the primary symptom (e.g., headache, diarrhea)").
+          - Compute cosine similarity between the two combined strings.
+          - If a best match (similarity >= threshold) is found, assign the feature value to that field
+            in a working template (whose values are cleared).
+          - Otherwise, store the key/value pair in an "additional_content" bucket.
         
-    def recursive_fill_content_dictionary(self, keyword_dict: Dict[str, Any],
-                                            content_dictionary: Dict[str, Any],
-                                            threshold: float = 0.1) -> Dict[str, Any]:
+        Returns a new dictionary with the same structure (and order) as the template, updated with the feature data.
         """
-        Merge a flat keyword dictionary into a nested content template.
-        
-        For each key in keyword_dict (excluding keys like "label"):
-          - Recursively search the template for the best matching key path using semantic similarity.
-          - If a matching path is found (similarity above threshold), set that field to the keyword's value.
-          - Otherwise, add the key/value pair to an "additional_content" bucket.
-        
-        Returns a new dictionary with the same structure (and order) as the template, updated with the keyword data.
-        """
-        # Make a deep copy of the content template to preserve its structure.
-        merged = copy.deepcopy(content_dictionary)
+        # similarity_template retains original descriptions for computing similarity.
+        similarity_template = copy.deepcopy(template)
+        # working_template has its string values cleared, so it starts empty.
+        working_template = self.clear_template_values(copy.deepcopy(template))
         extras = {}
 
-        if not keyword_dict:
-            raise Exception("Keyword dictionary cannot be empty or None.")
-        if not content_dictionary:
-            raise Exception("Content dictionary cannot be empty or None.")
-
-        # Process each key from the flat keyword dictionary.
-        for k_key, k_value in keyword_dict.items():
-            if k_key == "label":
+        for f_key, f_value in feature_dict.items():
+            if f_key == "label":
                 continue
-            path, sim = self.find_best_key_path(k_key, merged, threshold)
-            print("Path: ", path)
-            if path:
-                if isinstance(k_value, list):
-                    added = False
-                    self.set_value_at_path(merged, path, "")
-                    for val in k_value:
-                        adj_path, adj_sim = self.find_best_key_path(val, merged, threshold)
-                        if adj_sim >= threshold:
-                            self.append_value_at_path(merged, adj_path, val)
-                            added = True
-                    if not added:
-                        self.set_value_at_path(merged, path, "N/A")
-                elif isinstance(k_value, str):
-                    if sim >= threshold:
-                        self.set_value_at_path(merged, path, k_value)
-                    else:
-                        self.set_value_at_path(merged, path, "N/A")
-                else:
-                    self.set_value_at_path(merged, path, "N/A")
+            
+            # Create a combined string for the feature.
+            if isinstance(f_value, list):
+                f_val_str = ", ".join(f_value)
             else:
-                extras[k_key] = k_value
+                f_val_str = str(f_value)
+            feature_candidate = f"{f_key}: {f_val_str}"
+            
+            best_match = None
+            best_sim = -1.0
+            
+            # Only consider template keys whose value is a string in the similarity template.
+            for t_key, t_val in similarity_template.items():
+                if isinstance(t_val, str):
+                    candidate = f"{t_key}: {t_val}"
+                    sim = cosine_similarity(self.embed_text(feature_candidate), self.embed_text(candidate))
+                    if sim > best_sim:
+                        best_sim = sim
+                        best_match = t_key
+                # Optionally, you could also check nested dicts if needed.
+            
+            if best_match is not None and best_sim >= threshold:
+                # If the feature value is a list, join it into a string.
+                if isinstance(f_value, list):
+                    working_template[best_match] = ", ".join(f_value)
+                else:
+                    working_template[best_match] = f_value
+            else:
+                extras[f_key] = f_value
 
         if extras:
-            if "additional_content" in merged and isinstance(merged["additional_content"], dict):
-                merged["additional_content"].update(extras)
+            if "additional_content" in working_template and isinstance(working_template["additional_content"], dict):
+                working_template["additional_content"].update(extras)
             else:
-                merged["additional_content"] = extras
-        print(merged)
-        return merged
+                working_template["additional_content"] = extras
+
+        return working_template

@@ -1,18 +1,19 @@
 from typing import List, Optional
 from datetime import date
-from .base import BaseAuthModel
+from pydantic import BaseModel
 from .section import SectionCreate, SectionRead, SectionUpdate
 
-class NoteCreate(BaseAuthModel):
+class NoteCreate(BaseModel):
     patient_id: Optional[int]
+    user_id: int
     title: str
     encounter_date: date
-    sections: List[SectionCreate] = []
+    sections: List[SectionCreate]
 
     class Config:
         orm_mode = True
 
-class NoteRead(BaseAuthModel):
+class NoteRead(BaseModel):
     id: int
     title: str
     patient_id: Optional[int]
@@ -22,7 +23,7 @@ class NoteRead(BaseAuthModel):
     class Config:
         orm_mode = True
 
-class NoteUpdate(BaseAuthModel):
+class NoteUpdate(BaseModel):
     title: Optional[str] = None
     patient_id: Optional[int] = None
     encounter_date: Optional[date] = None

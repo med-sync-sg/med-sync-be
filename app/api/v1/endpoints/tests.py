@@ -1,8 +1,9 @@
 from app.utils.nlp.spacy_utils import process_text
-from app.utils.nlp.keyword_extractor import extract_keywords_descriptors, merge_keyword_dicts
+from app.utils.nlp.keyword_extractor import find_medical_modifiers
 from app.utils.speech_processor import AudioCollector
 from app.db.iris_session import IrisDataStore
 from fastapi import APIRouter
+from pydantic import BaseModel
 import logging
 
 sample_transcript = """
@@ -250,36 +251,83 @@ Patient: Yeah, yeah I understand. Uh, I'll uh, I'll take care.
 Doctor: Great. Have a great day. Good luck with your work. Thank you. Bye bye. Bye bye.
 Patient: Thank you. Thank you. You too. Bye bye.
     '''
-router = APIRouter()
+from app.utils.nlp.spacy_utils import process_text
+from app.utils.speech_processor import AudioCollector
+from app.db.iris_session import IrisDataStore
+from fastapi import APIRouter
+from pydantic import BaseModel
+import logging
+import json
 
+router = APIRouter()
 audio_collector = AudioCollector()
+iris_data_store = IrisDataStore()
+
+class TranscriptFragment(BaseModel):
+    transcript: str
 
 @router.get("/")
 def test_with_sample_transcript():
-    transcription_doc = process_text(sample_transcript_2)
-    print(f"Entities: {transcription_doc.ents}")
+    transcription_doc = process_text(sample_transcript)
+    logging.info(f"Entities: {transcription_doc.ents}")
+        
+    # Extract prototype features from the transcript.
+    audio_collector.buffer_keyword_dicts = find_medical_modifiers(doc=transcription_doc)
+    logging.info(f"Extracted keywords: {audio_collector.buffer_keyword_dicts}")
     
-    keyword_dicts = extract_keywords_descriptors(doc=transcription_doc)
-    print(f"Extracted keywords: {keyword_dicts}")
-    
+    # Merge duplicate entries based on the 'term'
     result_dicts = []
-    for keyword_dict in keyword_dicts:
+    for keyword_dict in audio_collector.buffer_keyword_dicts:
         found = False
-        print(f"Keyword Dict: {keyword_dict}")
-        # Search for an existing entry with the same term.
         for i, existing_dict in enumerate(result_dicts):
             if keyword_dict["term"] == existing_dict["term"]:
-                result_dicts[i] = merge_keyword_dicts(existing_dict, keyword_dict)
-                print(f"Merged Dicts: {result_dicts}")
+                # If duplicate, you might merge lists or simply ignore duplicates.
+                # For prototype-based approach, we choose the first occurrence.
                 found = True
                 break
         if not found:
             result_dicts.append(keyword_dict)
-    iris_data_store = IrisDataStore()
+    audio_collector.final_keyword_dicts = result_dicts
     result = []
-    for result_keyword_dict in result_dicts:
+    for result_keyword_dict in audio_collector.final_keyword_dicts:
         category = iris_data_store.classify_text_category(result_keyword_dict["term"])
         template = iris_data_store.find_content_dictionary(result_keyword_dict, category)
-        result.append(iris_data_store.recursive_fill_content_dictionary(result_keyword_dict, template))
+        # Use the new prototype-based merging function.
+        merged_content = iris_data_store.merge_flat_keywords_into_template(result_keyword_dict, template, threshold=0.5)
+        logging.info("Merged Content Dictionary: %s", merged_content)
+        result.append(merged_content)
     
     return result
+
+@router.post("/text-transcript")
+def test_with_sample_transcript(fragment: TranscriptFragment):
+    text = fragment.transcript
+    transcription_doc = process_text(text)
+    logging.info(f"Entities: {transcription_doc.ents}")
+    
+    audio_collector.buffer_keyword_dicts = find_medical_modifiers(doc=transcription_doc)
+    logging.info(f"Extracted keywords: {audio_collector.buffer_keyword_dicts}")
+    
+    result_dicts = []
+    for keyword_dict in audio_collector.buffer_keyword_dicts:
+        found = False
+        for i, existing_dict in enumerate(result_dicts):
+            if keyword_dict["term"] == existing_dict["term"]:
+                found = True
+                break
+        if not found:
+            result_dicts.append(keyword_dict)
+    audio_collector.final_keyword_dicts = result_dicts
+    
+    # Create sections based on final_keyword_dicts and prototype-based mapping.
+    sections = []
+    for result_keyword_dict in audio_collector.final_keyword_dicts:
+        category = iris_data_store.classify_text_category(result_keyword_dict["term"])
+        template = iris_data_store.find_content_dictionary(result_keyword_dict, category)
+        merged_content = iris_data_store.merge_flat_keywords_into_template(result_keyword_dict, template, threshold=0.5)
+        sections.append(merged_content)
+    
+    sections_json = []
+    for section in sections:
+        sections_json.append(json.dumps(section))
+    return sections_json

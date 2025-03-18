@@ -7,14 +7,14 @@ import os
 from pyctcdecode import build_ctcdecoder
 import torch
 from app.utils.nlp.spacy_utils import process_text
-from app.utils.nlp.keyword_extractor import extract_keywords_descriptors, merge_keyword_dicts
+from app.utils.nlp.keyword_extractor import find_medical_modifiers
 from app.models.models import post_section
 from app.schemas.section import SectionCreate, TextCategoryEnum
 from app.db.iris_session import IrisDataStore
 import pandas as pd
 from typing import List, Dict, Any
 from spacy.tokens.doc import Doc
-import re
+from app.utils.text_utils import clean_transcription, correct_spelling
 
 def play_raw_audio(audio_buffer: bytearray, sample_rate=16000, sample_width=2, channels=1):
     p = pyaudio.PyAudio()
@@ -135,10 +135,12 @@ class AudioCollector:
 
     def make_sections(self, user_id: int, note_id: int) -> List[SectionCreate]:
         sections = []
-        for keyword_dict in self.final_keyword_dicts:
-            term = keyword_dict["term"]
+        contents = self.fill_content_dictionary()
+        print("Contents:", contents)
+        for index in range(len(contents)):
+            term = self.final_keyword_dicts[index]["term"]
             category = self.iris_data_store.classify_text_category(term) # embed term
-            section = SectionCreate(user_id=user_id, note_id=note_id, title=keyword_dict["label"], content=keyword_dict, section_type=category, section_description=TextCategoryEnum[category].value)
+            section = SectionCreate(user_id=user_id, note_id=note_id, title=self.final_keyword_dicts[index]["label"], content=contents[index], section_type=category, section_description=TextCategoryEnum[category].value)
             sections.append(section)
         for section in sections:
             print(section)
@@ -194,12 +196,33 @@ class AudioCollector:
                 transcription = self.decoder.decode(logits_np)
                 print("Beam search transcription:", transcription)
                 
-                if transcription.strip():
+                transcription = transcription.lower()
+                cleaned_text = clean_transcription(transcription)
+                corrected_text = correct_spelling(cleaned_text)
+                print("Corrected Text: ", corrected_text)
+                
+                if len(cleaned_text) > 0:
                     self.full_transcript_text = self.full_transcript_text + ". " + transcription
                     self.full_transcript_segments.append(transcription)
-                    transcription_doc = process_text(transcription)
-                    keyword_dicts = extract_keywords_descriptors(doc=transcription_doc)
-                    self.buffer_keyword_dicts = self.buffer_keyword_dicts + keyword_dicts
+                    transcription_doc = process_text(self.full_transcript_text)
+                    print(transcription_doc.ents)
+                    keyword_dicts = extract_prototype_features(doc=transcription_doc)
+                    print("Keyword Dicts: ",  keyword_dicts)
+                    self.buffer_keyword_dicts.extend(keyword_dicts)
+                    
+                for keyword_dict in self.buffer_keyword_dicts:
+                    found = False
+                    print(f"Keyword Dict: {keyword_dict}")
+                    # Search for an existing entry with the same term.
+                    for i, existing_dict in enumerate(self.final_keyword_dicts):
+                        if keyword_dict["term"] == existing_dict["term"]:
+                            self.final_keyword_dicts[i] = self.iris_data_store.merge_flat_keywords_into_template(existing_dict, keyword_dict)
+                            print(f"Merged Dicts: {self.final_keyword_dicts}")
+                            found = True
+                            break
+                    if not found:
+                        self.final_keyword_dicts.append(keyword_dict)
+                self.buffer_keyword_dicts = [] # Clear buffer for next iterations
                 
                 self.reset_buffer()
             except Exception as e:
@@ -212,13 +235,11 @@ class AudioCollector:
                 # Search for an existing entry with the same term.
                 for i, existing_dict in enumerate(self.final_keyword_dicts):
                     if keyword_dict["term"] == existing_dict["term"]:
-                        self.final_keyword_dicts[i] = merge_keyword_dicts(existing_dict, keyword_dict)
+                        self.final_keyword_dicts[i] = self.iris_data_store.merge_flat_keywords_into_template(existing_dict, keyword_dict)
                         print(f"Merged Dicts: {self.final_keyword_dicts}")
                         found = True
                         break
                 if not found:
                     self.final_keyword_dicts.append(keyword_dict)
-            final_content_dictionary_list = self.fill_content_dictionary()
-            print(final_content_dictionary_list)
             self.buffer_keyword_dicts = [] # Clear buffer for next iterations
             return False

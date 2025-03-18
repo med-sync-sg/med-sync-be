@@ -1,6 +1,6 @@
 from app.schemas.base import BaseAuthModel
 from pydantic import BaseModel, Field
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Union
 from enum import Enum
 
 from enum import Enum
@@ -29,7 +29,7 @@ class SectionRead(BaseAuthModel):
     id: int
     note_id: int
     title: str
-    content: Dict[str, Any] = {}
+    content: Union[Dict[str, Any], None]
     section_type: str = Field(default=TextCategoryEnum.OTHERS.value)
     section_description: str = Field(default=TextCategoryEnum.OTHERS.value)
 
@@ -38,10 +38,10 @@ class SectionRead(BaseAuthModel):
 
 class SectionUpdate(BaseAuthModel):
     note_id: int
-    title: Optional[str] = None
-    content: Optional[Dict[str, Any]] = None
-    section_type: Optional[str] = None
-    section_description: Optional[str] = None
+    title: Union[str, None] = None
+    content: Union[Dict[str, Any], None] = None
+    section_type: Union[str, None] = None
+    section_description: Union[str, None] = None
 
     class Config:
         orm_mode = True

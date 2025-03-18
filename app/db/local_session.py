@@ -15,6 +15,14 @@ DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_POR
 engine: Engine = create_engine(DATABASE_URL)
 SessionMaker = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+def get_db():
+    db = SessionMaker()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
 '''
 LocalDataStore should be used when communicating with the local database, currently hosted on docker with PostgreSQL.
 '''

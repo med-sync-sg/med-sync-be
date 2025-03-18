@@ -5,7 +5,7 @@ from typing import List
 from app.models.models import User  # SQLAlchemy user model
 from app.schemas.user import UserCreate
 from app.utils.auth_utils import create_access_token, verify_password, hash_password
-from app.db.local_session import SessionMaker
+from app.db.local_session import get_db
 
 class LoginRequest(BaseModel):
     username: str
@@ -18,7 +18,7 @@ class TokenResponse(BaseModel):
 router = APIRouter()
 
 @router.post("/login", response_model=TokenResponse)
-def login(login_req: LoginRequest, db: Session = Depends(lambda x: SessionMaker())):
+def login(login_req: LoginRequest, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.username == login_req.username).first()
     if not db_user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -31,7 +31,7 @@ def login(login_req: LoginRequest, db: Session = Depends(lambda x: SessionMaker(
     return TokenResponse(access_token=token)
 
 @router.post("/sign-up", status_code=201)
-def sign_up(user_in: UserCreate, db: Session = Depends(lambda x: SessionMaker())):
+def sign_up(user_in: UserCreate, db: Session = Depends(get_db)):
     # Check if a user with the same username already exists
     existing_user = db.query(User).filter(User.username == user_in.username).first()
     if existing_user:
