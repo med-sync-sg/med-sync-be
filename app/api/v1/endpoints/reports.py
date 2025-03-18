@@ -5,10 +5,10 @@ from typing import Dict
 router = APIRouter()
 
 
-@router.get("/reports/{user_id}/{report_id}")
+@router.get("/{user_id}/{report_id}")
 def get_user(user_id: int, report_id: int):
     pass
 
-@router.post("/reports")
+@router.post("/")
 def create_report(report_data):
     pass

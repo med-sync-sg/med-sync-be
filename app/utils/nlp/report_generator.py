@@ -33,4 +33,5 @@ def generate_doctor_report(data: dict, is_doctor_report: bool):
         return rendered_report
 
 
-
+def generate_patient_report():
+    pass

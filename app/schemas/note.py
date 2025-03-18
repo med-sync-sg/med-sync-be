@@ -1,25 +1,33 @@
-from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional, Union, Annotated
-from datetime import date, datetime
-from .section import BaseSectionCreate, BaseSectionRead, BaseSectionUpdate
+from typing import List, Optional
+from datetime import date
+from pydantic import BaseModel
+from .section import SectionCreate, SectionRead, SectionUpdate
 
-class BaseNote(BaseModel):
-    schema_version: int = 1
-    consultation_id: int
-    note_id: int
-    patient_id: int
+class NoteCreate(BaseModel):
+    patient_id: Optional[int]
+    user_id: int
+    title: str
     encounter_date: date
-    sections: List = Field(default_factory=list)
+    sections: List[SectionCreate]
 
-class NoteCreate(BaseNote):
-    title: str
-    sections: List[BaseSectionCreate] = []
+    class Config:
+        orm_mode = True
 
-class NoteRead(BaseNote):
+class NoteRead(BaseModel):
+    id: int
     title: str
-    sections: List[BaseSectionRead]
-    created_at: datetime
+    patient_id: Optional[int]
+    encounter_date: date
+    sections: List[SectionRead] = []
 
-class NoteUpdate(BaseNote):
-    title: str
-    sections: List[BaseSectionUpdate] = []
+    class Config:
+        orm_mode = True
+
+class NoteUpdate(BaseModel):
+    title: Optional[str] = None
+    patient_id: Optional[int] = None
+    encounter_date: Optional[date] = None
+    sections: Optional[List[SectionUpdate]] = None
+
+    class Config:
+        orm_mode = True

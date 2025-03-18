@@ -1,37 +1,40 @@
 
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, status
 from typing import List
-from app.db.session import DataStore
-from app.utils.nlp.spacy_init import process_text
-from app.utils.nlp.spacy_init import categorize_doc
-import queue
-import threading
+
+from app.utils.speech_processor import AudioCollector
+import numpy as np
+from pyannote.audio import Pipeline, Inference
 import torch
-import whisper
 import numpy as np
 import argparse
-from spacy import displacy
-from app.api.v1.endpoints import auth, notes, users, templates, reports
+import io
+import soundfile as sf
+from os import environ
+import base64
+import json
+import requests
+from app.api.v1.endpoints import auth, notes, users, reports, tests
+from app.db.iris_session import IrisDataStore
 
+HF_TOKEN = environ.get("HF_ACCESS_TOKEN")
 def create_app() -> FastAPI:
+
     app = FastAPI(title="Backend Connection", version="1.0.0")
     app.include_router(auth.router, prefix="/auth", tags=["auth"])
-    app.include_router(notes.router, prefix="/note", tags=["note"])
-    app.include_router(users.router, prefix="/user", tags=["user"])
-    app.include_router(templates.router, prefix="/template", tags=["template"])
-    app.include_router(reports.router, prefix="/report", tags=["report"])
+    app.include_router(notes.router, prefix="/notes", tags=["note"])
+    app.include_router(users.router, prefix="/users", tags=["user"])
+    app.include_router(reports.router, prefix="/reports", tags=["report"])
+    app.include_router(tests.router, prefix="/tests", tags=["test"])
 
     return app
 
 connected_clients: List[WebSocket] = []
 
+IrisDataStore()
+
 app = create_app()
-
-load_umls = True
-
-if load_umls == True:
-    data_store = DataStore()  # first import triggers load
 
 # Add CORS middleware
 app.add_middleware(
@@ -42,82 +45,70 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Global collector instance
+audio_collector = AudioCollector()
 
-model = whisper.load_model("medium")
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    shared_transcript = []
-    audio_queue = queue.Queue()
-    def preprocess_audio(buffer):
-        audio_data = np.frombuffer(buffer, dtype=np.int16).astype(np.float32)
-        audio_data /= 32768.0  # Now the range is [-1.0, +1.0]
-        return audio_data
+    """
+    Receives audio chunks (raw PCM bytes) from the frontend as JSON: 
+    { "data": bytes }
+    We accumulate them in AudioCollector for near real-time or offline usage.
+    """
+    token = websocket.query_params.get("token")
+    note_id = websocket.query_params.get("note_id")
+    user_id = websocket.query_params.get("user_id")
 
-    def transcribe_stream(audio_queue: queue.Queue, websocket: WebSocket, shared_transcript: list):
-        buffer = bytes()
-        while True:
-            data = audio_queue.get()
-            if data is None:  # End signal
-                break
-
-            buffer += bytes(data)
-
-            # Process audio every ~1 second
-            if len(buffer) > 32000:  # ~1 second of 16kHz 16-bit mono audio
-                audio_data = preprocess_audio(buffer)
-                print(f"Processing buffer with size: {len(buffer)} bytes")
-                
-                try:
-                    result = model.transcribe(audio_data, language="en")
-                    text = result["text"]
-                    if text.strip():
-                        print("TRANSCRIBED TEXT:", text)
-                        # Append to our shared transcript list
-                        shared_transcript.append(text)
-                except Exception as e:
-                    print("Error during transcription:", e)
-                
-                # Reset buffer
-                buffer = bytes()
-
+    if not token or not note_id or not user_id:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    
+    # Validate token (this should raise an exception if invalid).
+    # try:
+    #     payload = decode_access_token(token)
+    #     # Check that the token's subject matches the provided user_id.
+    #     if payload.get("sub") != user_id:
+    #         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+    #         return
+    # except Exception as e:
+    #     await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+    #     return
+    
+    
     await websocket.accept()
-    connected_clients.append(websocket)
-    print("Client connected")
-    
-    transcription_thread = threading.Thread(
-        target=transcribe_stream,
-        daemon=True,
-        args=(audio_queue, websocket, shared_transcript)
-    )
-    transcription_thread.start()
-    
+    print("Client authentication verified and connected")
+
     try:
         while True:
             data = await websocket.receive_json()
-            if data:
-                try:
-                    if data["data"]:
-                        audio_chunk = data["data"]
-                        if audio_chunk == None:
-                            audio_queue.put(None)
-                        audio_queue.put(audio_chunk)
-                    elif data["data"] == None: # End of audio data stream
-                        full_transcript = ""
-                        for text in shared_transcript:
-                            full_transcript = full_transcript + text
-                        doc = process_text(full_transcript)
-                        categorized = categorize_doc(doc)
-                        print(categorized)
-                        print(displacy.render(doc, style="ent"))
-                except Exception as e:
-                    print(f"Error processing audio chunk: {e}")
+            if data and "data" in data:
+                chunk = data["data"]  # raw PCM bytes (sent as a string)
+                if chunk is None:
+                    print("End-of-stream or no 'data' field. Breaking loop.")
+                    break
+                # Convert the received string to bytes (adjust this conversion as needed)
+                audio_collector.add_chunk(base64.b64decode(chunk))
+                did_transcribe = audio_collector.transcribe_audio_segment(user_id, note_id)
+                if did_transcribe:
+                    transcribed_text = audio_collector.full_transcript_text
+ 
+                    await websocket.send_json({'text': transcribed_text})
+                    
+                    sections = audio_collector.make_sections(user_id, note_id)
+                    sections_json = []
+                    for section in sections:
+                        print("Section: ", section)
+                        sections_json.append(section.model_dump_json())
+                    await websocket.send_json({'sections': sections_json})
             else:
-                print("Non-audio data received")
-
+                print("End-of-stream or no 'data' field. Breaking loop.")
+        # Optionally, clear the session data for the next session.
+        audio_collector.session_audio = bytearray()
+        audio_collector.full_transcript_text = ""
     except WebSocketDisconnect:
-        print("Client disconnected")
-        audio_queue.put(None)
-        connected_clients.remove(websocket)
-    except Exception as e:
-        print(f"WebSocket connection error: {e}")
-    
+        print("Final: ", audio_collector.full_transcript_text)
+        audio_collector.session_audio = bytearray()
+        audio_collector.full_transcript_text = ""
+        print("WebSocket disconnected")
+
+    print("All done.")

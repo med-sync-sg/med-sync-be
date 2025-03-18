@@ -1,8 +1,7 @@
+from app.schemas.base import BaseAuthModel
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional, Literal
-from datetime import date, datetime
-import json
-from sqlalchemy import Engine
+from typing import Dict, Any, Union
+from enum import Enum
 
 from enum import Enum
 
@@ -16,27 +15,33 @@ class TextCategoryEnum(str, Enum):
     PATIENT_MEDICAL_HISTORY ="This text describes the patient's medical history. This part can be very different to the ChiefComplaint part."
     OTHERS ="This text refers to all other contents not classified as the CHIEF_COMPLAINT, PATIENT_INFORMATION, PATIENT_MEDICAL_HISTORY categories."
 
-class Diagnosis(BaseModel):
-    description: str
-    icd_10: Optional[str] = None
-    snomed: Optional[str] = None
-
-class BaseSection(BaseModel):
-    section_id: int
+class SectionCreate(BaseAuthModel):
+    note_id: int
     title: str
-    metadata: Optional[Dict[str, Any]] = None
     content: Dict[str, Any] = {}
-    order: int = 1
-    section_type: TextCategoryEnum.OTHERS.name = Field(default=TextCategoryEnum.OTHERS.name)
-    section_description: str = TextCategoryEnum.OTHERS.value
+    section_type: str = Field(default=TextCategoryEnum.OTHERS.value)
+    section_description: str = Field(default=TextCategoryEnum.OTHERS.value)
 
-class BaseSectionCreate(BaseSection):
+    class Config:
+        orm_mode = True
+
+class SectionRead(BaseAuthModel):
+    id: int
+    note_id: int
     title: str
-    order: int
-    content: Dict[str, Any]
+    content: Union[Dict[str, Any], None]
+    section_type: str = Field(default=TextCategoryEnum.OTHERS.value)
+    section_description: str = Field(default=TextCategoryEnum.OTHERS.value)
 
-class BaseSectionUpdate(BaseSection):
-    pass # Most fields are optional by deafult
+    class Config:
+        orm_mode = True
 
-class BaseSectionRead(BaseSection):
-    pass
+class SectionUpdate(BaseAuthModel):
+    note_id: int
+    title: Union[str, None] = None
+    content: Union[Dict[str, Any], None] = None
+    section_type: Union[str, None] = None
+    section_description: Union[str, None] = None
+
+    class Config:
+        orm_mode = True
