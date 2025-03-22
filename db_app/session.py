@@ -64,7 +64,7 @@ class DataStore:
                 cls._instance.definitions_df = cls._instance.load_definitions(conn)
                 cls._instance.relationships_df = cls._instance.load_relationships(conn)
                 cls._instance.semantic_df = cls._instance.load_semantic_types(conn)
-                cls._instance.concepts_with_sty_def_df = cls._instance.get_concepts_with_sty_def(SYMPTOMS_AND_DISEASES_TUI)
+                cls._instance.concepts_with_sty_def_df = cls._instance.get_concepts_with_sty_def(SYMPTOMS_AND_DISEASES_TUI, conn)
                 print("Session loading completed.")
         return cls._instance
 
@@ -100,11 +100,11 @@ class DataStore:
             return df
         else:        
             df = pd.read_csv(os.path.join(UMLS_ROOT_DIRECTORY, "MRDEF.RRF"), sep="|", names=cols, index_col=False)
+            df = df[["CUI", "DEF"]]
             print("UMLS Definitions Loaded.")
             # print("Uploading UMLS definitions to the db...")
             # df.to_sql(table_name, con=connection)
-            df = df
-            return df[["CUI", "DEF"]]
+            return df
 
     def load_semantic_types(self, connection: Engine):
         # MRSTY.RRF
@@ -137,13 +137,20 @@ class DataStore:
             return df[["CUI1", "REL", "CUI2", "RELA"]]
 
     
-    def get_concepts_with_sty_def(self, target_tuis: List[str]):
-        concepts_with_sty_def_df = self.concepts_df.merge(self.semantic_df, on="CUI", how="inner")
-        concepts_with_sty_def_df = concepts_with_sty_def_df[concepts_with_sty_def_df["TUI"].isin(target_tuis)]
-        concepts_with_sty_def_df = concepts_with_sty_def_df.merge(self.definitions_df, on="CUI", how="inner")
+    def get_concepts_with_sty_def(self, target_tuis: List[str], connection: Engine):
+        inspector = inspect(connection)
+        table_name="concepts_def_sty"
         
-        concepts_with_sty_def_df["DEF"] = concepts_with_sty_def_df["DEF"].astype('string')
-        concepts_with_sty_def_df = concepts_with_sty_def_df.drop_duplicates("CUI")
-        concepts_with_sty_def_df = concepts_with_sty_def_df.dropna(subset=["CUI", "STR", "DEF", "STY"])
-        
-        return concepts_with_sty_def_df
+        if inspector.has_table(table_name):
+            df = pd.read_sql_table(table_name=table_name, con=connection)
+            return df
+        else:
+            concepts_with_sty_def_df = self.concepts_df.merge(self.semantic_df, on="CUI", how="inner")
+            concepts_with_sty_def_df = concepts_with_sty_def_df[concepts_with_sty_def_df["TUI"].isin(target_tuis)]
+            concepts_with_sty_def_df = concepts_with_sty_def_df.merge(self.definitions_df, on="CUI", how="inner")
+            
+            concepts_with_sty_def_df["DEF"] = concepts_with_sty_def_df["DEF"].astype('string')
+            concepts_with_sty_def_df = concepts_with_sty_def_df.drop_duplicates("CUI")
+            concepts_with_sty_def_df = concepts_with_sty_def_df.dropna(subset=["CUI", "STR", "DEF", "STY"])
+            concepts_with_sty_def_df.to_sql(table_name, con=connection)
+            return concepts_with_sty_def_df
