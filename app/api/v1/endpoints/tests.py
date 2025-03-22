@@ -251,6 +251,18 @@ Patient: Yeah, yeah I understand. Uh, I'll uh, I'll take care.
 Doctor: Great. Have a great day. Good luck with your work. Thank you. Bye bye. Bye bye.
 Patient: Thank you. Thank you. You too. Bye bye.
     '''
+demo_transcript = """
+Patient: Doctor, I’ve had a sore throat for the past three days, and it’s getting worse. It feels scratchy, and swallowing is uncomfortable.
+Doctor: I see. Has it been painful enough to affect eating or drinking?
+Patient: No, but I also have a mild cough and keep sneezing a lot. My nose has been running non-stop.
+Doctor: Sounds like you’re experiencing some nasal irritation. Have you noticed any thick or discolored mucus?
+Patient: Yeah, sometimes I feel some mucus at the back of my throat.
+Doctor: Alright. Do you feel any tightness in your chest or shortness of breath when coughing?
+Patient: No, but I’ve been feeling a bit feverish since last night. I haven’t checked my temperature though. My body feels tired too.
+Doctor: Fatigue and feverishness can be common with viral infections. Any chills or sweating?
+Patient: No.
+Doctor: Understood. Based on your symptoms, it looks like an upper respiratory tract infection, likely viral. Let me examimne your throat to confirm.
+"""
 from app.utils.nlp.spacy_utils import process_text
 from app.utils.speech_processor import AudioCollector
 from app.db.iris_session import IrisDataStore
@@ -268,7 +280,7 @@ class TranscriptFragment(BaseModel):
 
 @router.get("/")
 def test_with_sample_transcript():
-    transcription_doc = process_text(sample_transcript)
+    transcription_doc = process_text(demo_transcript)
     logging.info(f"Entities: {transcription_doc.ents}")
         
     # Extract prototype features from the transcript.
@@ -295,8 +307,11 @@ def test_with_sample_transcript():
         # Use the new prototype-based merging function.
         merged_content = iris_data_store.merge_flat_keywords_into_template(result_keyword_dict, template, threshold=0.5)
         logging.info("Merged Content Dictionary: %s", merged_content)
-        result.append(merged_content)
-    
+        if merged_content.get("Main Symptom") != None:
+            if len(merged_content["Main Symptom"]["name"]) == 0:
+                print("Content not added as it has no name: ", merged_content)
+            else:
+                result.append(merged_content)
     return result
 
 @router.post("/text-transcript")
@@ -325,7 +340,11 @@ def test_with_sample_transcript(fragment: TranscriptFragment):
         category = iris_data_store.classify_text_category(result_keyword_dict["term"])
         template = iris_data_store.find_content_dictionary(result_keyword_dict, category)
         merged_content = iris_data_store.merge_flat_keywords_into_template(result_keyword_dict, template, threshold=0.5)
-        sections.append(merged_content)
+        if merged_content.get("Main Symptom") != None:
+            if len(merged_content["Main Symptom"]["name"]) == 0:
+                print("Content not added as it has no name: ", merged_content)
+            else:
+                sections.append(merged_content)    
     
     sections_json = []
     for section in sections:

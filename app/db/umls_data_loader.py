@@ -21,10 +21,6 @@ umls_df_dict: dict = {
     "patient_information_df": None,
 }
 
-combined = BytesIO(requests.get(f"{DATA_LOADER_URL}/umls-data/combined").content)
-umls_df_dict["combined_df"] = read_feather(combined)
-combined.close()
-
 concepts_with_sty_def = BytesIO(requests.get(f"{DATA_LOADER_URL}/umls-data/symptoms-and-diseases").content)
 umls_df_dict["concepts_with_sty_def_df"] = read_feather(concepts_with_sty_def)
 concepts_with_sty_def.close()

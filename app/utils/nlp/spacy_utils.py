@@ -27,19 +27,20 @@ HF_TOKEN = environ.get("HF_ACCESS_TOKEN")
 
 router = APIRouter()
 
+df = umls_df_dict["concepts_with_sty_def_df"]
+automaton = ahocorasick.Automaton()
+
 @Language.component("ahocorasick")
 def AhoCorasickComponent(doc: Doc):
-    df : pd.DataFrame = umls_df_dict["combined_df"]
-    automaton = ahocorasick.Automaton()
     for index, row in df.iterrows():
-        term = row['STR']
+        term = row["STR"].strip().lower()  # Normalize
         data = {
-            'term': term.lower(),
+            'term': term,
             'cui': row['CUI'],
             'semantic_type': row['STY'],
             'tui': row["TUI"]
         }
-        automaton.add_word(term.lower(), data)
+        automaton.add_word(term, data)
 
     automaton.make_automaton()
 
@@ -53,8 +54,8 @@ def AhoCorasickComponent(doc: Doc):
         end_char = end_index + 1
         # Extract the substring from the document.
         found_text = text_lower[start_char:end_char]
-        span = doc.char_span(start_char, end_char, label=data['semantic_type'])
-        if found_text.lower() == term:
+        span = doc.char_span(start_char, end_char, label=data['semantic_type'], alignment_mode="expand")
+        if found_text.strip().lower() == term.strip().lower():            
             span._.is_medical_term = True
             matches.append(span)
         else:
@@ -62,7 +63,7 @@ def AhoCorasickComponent(doc: Doc):
             sim = levenshtein_ratio(found_text, term)
             # Accept the match if similarity is above the threshold.
             if sim >= 0.85:
-                span = doc.char_span(start_char, end_char, label=data['semantic_type'])
+                span = doc.char_span(start_char, end_char, label=data["semantic_type"], alignment_mode="expand")
                 if span is not None:
                     # Mark this span as coming from Aho-Corasick.
                     span._.is_medical_term = True
@@ -87,12 +88,15 @@ if "ahocorasick" not in nlp_en.pipe_names:
 def process_text(text: str) -> Doc:
     # Process the text
     doc = nlp_en(text)
-    svg = displacy.render(doc)
-    output_path = Path("./images/dependency_plot.svg")
-    output_path.open("w", encoding="utf-8").write(svg)
     
-    svg = displacy.render(doc, style="ent")
-    output_path = Path("./images/ent_plot.svg")
-    output_path.open("w", encoding="utf-8").write(svg)
+    medical_terms = {ent.text: ent.label_ for ent in doc.ents if ent._.is_medical_term}
+    print(medical_terms)
+    # svg = displacy.render(doc)
+    # output_path = Path("./images/dependency_plot.svg")
+    # output_path.open("w", encoding="utf-8").write(svg)
+    
+    # svg = displacy.render(doc, style="ent")
+    # output_path = Path("./images/ent_plot.svg")
+    # output_path.open("w", encoding="utf-8").write(svg)
 
     return doc
