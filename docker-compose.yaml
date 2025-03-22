@@ -14,8 +14,6 @@ services:
       retries: 10
     ports:
       - "9000:5432"
-    volumes:
-      - medsync_db:/data/postgres
  
   adminer:
     image: adminer
