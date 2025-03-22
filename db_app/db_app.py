@@ -16,10 +16,9 @@ def create_app() -> FastAPI:
 
 # Instantiate your DataStore once
 data_store = DataStore()
-print(data_store.concepts_df.head())
 
 # drugs_and_medicines_df = data_store.get_concepts_with_sty_def(DRUGS_AND_MEDICINES_TUI)
-patient_information_df = data_store.get_concepts_with_sty_def(PATIENT_INFORMATION_TUI)
+# patient_information_df = data_store.get_concepts_with_sty_def(PATIENT_INFORMATION_TUI, )
 app = create_app()
 
 # Add CORS middleware
@@ -48,7 +47,7 @@ def get_symptoms_and_diseases():
     buffer = serialize_dataframe_to_feather(data_store.concepts_with_sty_def_df)
     return StreamingResponse(buffer, media_type="application/octet-stream")
 
-@app.get("/umls-data/patient-information")
-def get_patient_information():
-    buffer = serialize_dataframe_to_feather(patient_information_df)
-    return StreamingResponse(buffer, media_type="application/octet-stream")
+# @app.get("/umls-data/patient-information")
+# def get_patient_information():
+#     buffer = serialize_dataframe_to_feather(patient_information_df)
+#     return StreamingResponse(buffer, media_type="application/octet-stream")

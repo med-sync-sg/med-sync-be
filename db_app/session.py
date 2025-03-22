@@ -15,7 +15,7 @@ DB_NAME = environ.get('DB_NAME')
 
 DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-def create_session():
+def create_session() -> sessionmaker:
     engine: Engine = create_engine(DATABASE_URL)
     SessionMaker: sessionmaker = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     
@@ -44,7 +44,7 @@ PATIENT_INFORMATION_TUI = [
 class DataStore:
     _instance = None
     engine = create_engine(DATABASE_URL)
-    SessionMaker = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    SessionMaker = create_session()
     concepts_df: pd.DataFrame
     definitions_df: pd.DataFrame
     relationships_df: pd.DataFrame
@@ -57,14 +57,15 @@ class DataStore:
     def __new__(cls):
         if cls._instance is None:
             print("Loading DataFrame...")
-            with cls.engine.connect() as conn:               
+            with cls.SessionMaker() as session:
+                connection = session.get_bind()
                 # SQL DB loading
                 cls._instance = super(DataStore, cls).__new__(cls)
-                cls._instance.concepts_df = cls._instance.load_concepts(conn)
-                cls._instance.definitions_df = cls._instance.load_definitions(conn)
-                cls._instance.relationships_df = cls._instance.load_relationships(conn)
-                cls._instance.semantic_df = cls._instance.load_semantic_types(conn)
-                cls._instance.concepts_with_sty_def_df = cls._instance.get_concepts_with_sty_def(SYMPTOMS_AND_DISEASES_TUI, conn)
+                cls._instance.concepts_df = cls._instance.load_concepts(connection)
+                cls._instance.definitions_df = cls._instance.load_definitions(connection)
+                cls._instance.relationships_df = cls._instance.load_relationships(connection)
+                cls._instance.semantic_df = cls._instance.load_semantic_types(connection)
+                cls._instance.concepts_with_sty_def_df = cls._instance.get_concepts_with_sty_def(SYMPTOMS_AND_DISEASES_TUI, connection)
                 print("Session loading completed.")
         return cls._instance
 
@@ -152,5 +153,6 @@ class DataStore:
             concepts_with_sty_def_df["DEF"] = concepts_with_sty_def_df["DEF"].astype('string')
             concepts_with_sty_def_df = concepts_with_sty_def_df.drop_duplicates("CUI")
             concepts_with_sty_def_df = concepts_with_sty_def_df.dropna(subset=["CUI", "STR", "DEF", "STY"])
+            print("Uploading UMLS concepts with definitions and semantic types to the db...")
             concepts_with_sty_def_df.to_sql(table_name, con=connection)
             return concepts_with_sty_def_df
