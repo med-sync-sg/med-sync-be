@@ -49,7 +49,6 @@ class DataStore:
     definitions_df: pd.DataFrame
     relationships_df: pd.DataFrame
     semantic_df: pd.DataFrame
-    combined_df: pd.DataFrame
     concepts_with_sty_def_df: pd.DataFrame
     
     class Config:
@@ -65,7 +64,6 @@ class DataStore:
                 cls._instance.definitions_df = cls._instance.load_definitions(conn)
                 cls._instance.relationships_df = cls._instance.load_relationships(conn)
                 cls._instance.semantic_df = cls._instance.load_semantic_types(conn)
-                cls._instance.combined_df = cls._instance.combine_data(conn)
                 cls._instance.concepts_with_sty_def_df = cls._instance.get_concepts_with_sty_def(SYMPTOMS_AND_DISEASES_TUI)
                 print("Session loading completed.")
         return cls._instance
@@ -138,26 +136,6 @@ class DataStore:
             # df.to_sql(table_name, con=connection)
             return df[["CUI1", "REL", "CUI2", "RELA"]]
 
-    def combine_data(self, connection: Engine):
-        inspector = inspect(connection)
-        table_name = "combined_table"
-
-        concepts_with_types = pd.merge(self.concepts_df, self.semantic_df, on='CUI')
-
-        # concepts_with_types = concepts_with_types[concepts_with_types['TUI'].isin(relevant_types)]
-        concepts_with_types = concepts_with_types.drop_duplicates(subset=["CUI"])
-
-        relationships_df = self.relationships_df.merge(concepts_with_types, left_on="CUI1", right_on="CUI")
-        
-        wanted_rela_labels = ["diagnostic_criteria_of", "defining_characteristic_of"]
-        print(f'Relevant labels for RELA columns: {wanted_rela_labels}')
-        
-        filtered_relationships_df = relationships_df[relationships_df["RELA"].isin(wanted_rela_labels)]
-        
-        result_df = filtered_relationships_df[['CUI1', 'RELA', 'CUI2']]
-        print("Uploading combined dataframe to the db...")
-        filtered_relationships_df.to_sql(table_name, con=connection, if_exists="replace")
-        return filtered_relationships_df
     
     def get_concepts_with_sty_def(self, target_tuis: List[str]):
         concepts_with_sty_def_df = self.concepts_df.merge(self.semantic_df, on="CUI", how="inner")

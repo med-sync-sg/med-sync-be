@@ -37,12 +37,6 @@ def serialize_dataframe_to_feather(df: pd.DataFrame) -> io.BytesIO:
     buffer.seek(0)
     return buffer
 
-
-@app.get("/umls-data/combined")
-def get_combined():
-    buffer = serialize_dataframe_to_feather(data_store.combined_df)
-    return StreamingResponse(buffer, media_type="application/octet-stream")
-
 @app.get("/umls-data/drugs")
 def get_drugs():
     buffer = serialize_dataframe_to_feather(data_store.concepts_with_sty_def_df)

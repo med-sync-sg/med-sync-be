@@ -38,7 +38,7 @@ def extract_pp_object_span(token: Token) -> Span:
                 return span
     return None
 
-def find_modifiers_for_medical_span(span: Span) -> List[Dict[str, Any]]:
+def find_modifiers_for_medical_span(span: Span) -> Dict[str, Any]:
     """
     Given a span, use DependencyMatcher to find all target nouns (POS "NOUN").
     For each target, record a dictionary with:
@@ -69,12 +69,15 @@ def find_modifiers_for_medical_span(span: Span) -> List[Dict[str, Any]]:
             "quantities": []
         }
         target = span[token_ids[0]]
-        result_dict["term"] = target.text
+        result_dict["term"] = span.text
         
-        # Check the head of the target token (only if in the same sentence)
-        if target.head.sent == target.sent and target.head != target:
-            result_dict["modifiers"].append(target.head.text)
-        
+        # Process direct children of the target to get direct modifiers/quantities.
+        for child in target.children:
+            if child.pos_ == "ADJ" and child.dep_ in ("amod", "attr"):
+                result_dict["modifiers"].append(child.text)
+            if child.dep_ in ("nummod", "quantmod", "compound"):
+                result_dict["quantities"].append(child.text)
+
         # Process children of the target's head.
         for child in target.head.children:
             # Only consider tokens in the same sentence.
@@ -84,17 +87,27 @@ def find_modifiers_for_medical_span(span: Span) -> List[Dict[str, Any]]:
             if child.pos_ == "ADJ" and child.dep_ in ("amod", "attr"):
                 result_dict["modifiers"].append(child.text)
             # If a child is numeric or compound, record it as quantity.
-            elif child.dep_ in ("nummod", "quantmod", "compound"):
+            if child.dep_ in ("nummod", "quantmod", "compound"):
                 result_dict["quantities"].append(child.text)
             # If a child is a preposition, extract its prepositional object span.
-            elif child.pos_ == "ADP":
+            if child.pos_ == "ADP":
                 pp_span = extract_pp_object_span(target.head)
                 if pp_span is not None:
                     # Add the full PP text as a quantity modifier.
                     result_dict["quantities"].append(pp_span.text)
         
         results.append(result_dict)
-    return results
+    print("Extracted dicts: ", results)
+    if len(results) == 0:
+        return {
+            "term": span.text,
+            "modifiers": [],
+            "quantities": []
+        }
+    if len(results) == 1:
+        return results[0]
+    return merge_results_dicts(results)
+
 
 def find_medical_modifiers(doc: Doc) -> List[Dict[str, Any]]:
     """
@@ -107,10 +120,11 @@ def find_medical_modifiers(doc: Doc) -> List[Dict[str, Any]]:
     for span in doc.ents:
         # Check if the span is marked as medical.
         if span._.is_medical_term == True:
+            print("Medical term: ", span.text)
             mods = find_modifiers_for_medical_span(span)
             features.append(mods)
     features = merge_results_dicts(features)
-    print("Result: ", features)
+    print("Modifiers result: ", features)
     return features
 
 def merge_results_dicts(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

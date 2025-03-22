@@ -8,7 +8,7 @@ import numpy as np
 import json
 from typing import Dict, List, Any, Tuple
 import copy
-from Levenshtein import ratio  # pip install python-Levenshtein
+from Levenshtein import ratio
 IRIS_USER = environ.get('IRIS_USER')
 IRIS_PASSWORD = environ.get('IRIS_PASSWORD')
 IRIS_HOST = environ.get('IRIS_HOST')
@@ -208,13 +208,13 @@ class IrisDataStore:
         # Step 2: Query the vector database.
         # The query computes a combined score using both term_embeddings and description_embeddings.
         sql = f"""
-            SELECT TOP 1 category, term, VECTOR_DOT_PRODUCT(description_embeddings, TO_VECTOR(?)) as score
+            SELECT TOP 1 category, term, VECTOR_DOT_PRODUCT(term_embeddings, TO_VECTOR(?)) as score
             FROM {self.schema_name}.TextCategoryEmbeddings
-            ORDER BY VECTOR_DOT_PRODUCT(description_embeddings, TO_VECTOR(?)) DESC
+            ORDER BY score DESC
         """
         # For now, if you want to search for a specific category, pass it; otherwise, you could remove the WHERE clause.
         # Here, we search for the category provided (converted to uppercase).
-        self.cursor.execute(sql, [input_embedding, input_embedding])
+        self.cursor.execute(sql, [input_embedding])
         result = self.cursor.fetchone()
         
         if result:
@@ -364,67 +364,149 @@ class IrisDataStore:
                 new_template[key] = value
         return new_template
 
+
+    def iter_candidate_keys(self, template: Dict[str, Any]) -> List[Tuple[List[str], str]]:
+        """
+        Yield candidate key paths and their combined strings from the template.
+        For each top-level key with a string value, yield ([key], "key: description").
+        For each nested key (one level deep) where the value is a string, yield ([top_key, sub_key], "sub_key: description").
+        """
+        candidates = []
+        for t_key, t_val in template.items():
+            if isinstance(t_val, str):
+                candidates.append(([t_key], f"{t_key}: {t_val}"))
+            elif isinstance(t_val, dict):
+                for sub_key, sub_val in t_val.items():
+                    if isinstance(sub_val, str):
+                        candidates.append(([t_key, sub_key], f"{sub_key}: {sub_val}"))
+        return candidates
+    
+    def set_value_at_path(self, template: Dict[str, Any], path: List[str], value: Any) -> Dict[str, Any]:
+        """
+        Set the given value in the template at the location specified by the path (list of keys).
+        If the key does not exist, create an empty dict for that key.
+        Returns the updated template.
+        """
+        current = template
+        for key in path[:-1]:
+            current = current.setdefault(key, {})
+        current[path[-1]] = value
+        return template
+
+    def get_value_at_path(self, template: Dict[str, Any], path: List[str]) -> Any:
+        """
+        Retrieve the value at the given key path in the template.
+        Returns None if any key is missing.
+        """
+        current = template
+        for key in path:
+            current = current.get(key)
+            if current is None:
+                return None
+        return current
+
+    def append_value_at_path(self, template: Dict[str, Any], path: List[str], new_value: Any) -> Dict[str, Any]:
+        """
+        Append new_value to the field specified by path in the template.
+        If the field already contains a nonempty string, new_value is appended
+        with a comma separator.
+        Returns the updated template.
+        """
+        current = template
+        for key in path[:-1]:
+            current = current.setdefault(key, {})
+        existing = current.get(path[-1], "")
+        if existing:
+            current[path[-1]] = f"{existing}, {new_value}"
+        else:
+            current[path[-1]] = str(new_value)
+        return template
+
     def merge_flat_keywords_into_template(self, feature_dict: Dict[str, Any],
                                             template: Dict[str, Any],
                                             threshold: float = 0.5) -> Dict[str, Any]:
         """
-        Merge a flat feature dictionary (extracted from a transcript) into a nested content template
+        Merge a flat feature dictionary into a nested content template (nested one level deep),
         using a prototype-based approach that considers both the key and its value.
         
         For each key in feature_dict (e.g., "term", "duration", "adjectives", "quantities"):
-          - Build a combined string from the feature (e.g. "term: severe headache").
-          - For every key in the template that has a string value, build a candidate string 
-            by combining the key and its description (e.g. "name: The name of the primary symptom (e.g., headache, diarrhea)").
-          - Compute cosine similarity between the two combined strings.
-          - If a best match (similarity >= threshold) is found, assign the feature value to that field
-            in a working template (whose values are cleared).
-          - Otherwise, store the key/value pair in an "additional_content" bucket.
+        - Build a combined string from the feature (e.g. "term: severe headache").
+        - For every candidate field from the template—both top-level keys (if its value is a string)
+            and nested keys (one level only)—build candidate strings using the key and its description.
+        - Compute cosine similarity between the feature string and each candidate.
+        - If the best candidate (similarity >= threshold) is found, update that field in a working
+            template (whose string values have been cleared).  
+            * If the feature value is a list, process each element iteratively, appending each
+            element to the field.
+        - Otherwise, store the key/value pair in an "additional_content" bucket.
         
-        Returns a new dictionary with the same structure (and order) as the template, updated with the feature data.
+        Returns a new dictionary with the same structure (and order) as the template, updated with feature data.
         """
-        # similarity_template retains original descriptions for computing similarity.
         similarity_template = copy.deepcopy(template)
-        # working_template has its string values cleared, so it starts empty.
         working_template = self.clear_template_values(copy.deepcopy(template))
         extras = {}
 
+        # Build a list of candidate keys from the template (one level deep)
+        # Each candidate is a tuple: (path, candidate_string)
+        candidates = []
+        for t_key, t_val in similarity_template.items():
+            if isinstance(t_val, str):
+                candidates.append(([t_key], f"{t_key}: {t_val}"))
+            elif isinstance(t_val, dict):
+                for sub_key, sub_val in t_val.items():
+                    if isinstance(sub_val, str):
+                        candidates.append(([t_key, sub_key], f"{sub_key}: {sub_val}"))
+        
         for f_key, f_value in feature_dict.items():
             if f_key == "label":
                 continue
-            
-            # Create a combined string for the feature.
+
+            # Process list values iteratively.
             if isinstance(f_value, list):
-                f_val_str = ", ".join(f_value)
+                for element in f_value:
+                    element_str = str(element)
+                    feature_candidate = f"{f_key}: {element_str}"
+                    best_sim = -1.0
+                    best_path = []
+                    for path, candidate in candidates:
+                        sim = cosine_similarity(self.embed_text(feature_candidate), self.embed_text(candidate))
+                        if sim > best_sim:
+                            best_sim = sim
+                            best_path = path
+                    if best_path:
+                        # If there's already content, append; otherwise, set the value.
+                        current_value = self.get_value_at_path(working_template, best_path)
+                        if current_value:
+                            working_template = self.append_value_at_path(working_template, best_path, element_str)
+                        else:
+                            working_template = self.set_value_at_path(working_template, best_path, element_str)
+                    else:
+                        extras.setdefault(f_key, []).append(element_str)
             else:
-                f_val_str = str(f_value)
-            feature_candidate = f"{f_key}: {f_val_str}"
-            
-            best_match = None
-            best_sim = -1.0
-            
-            # Only consider template keys whose value is a string in the similarity template.
-            for t_key, t_val in similarity_template.items():
-                if isinstance(t_val, str):
-                    candidate = f"{t_key}: {t_val}"
-                    sim = cosine_similarity(self.embed_text(feature_candidate), self.embed_text(candidate))
-                    if sim > best_sim:
-                        best_sim = sim
-                        best_match = t_key
-                # Optionally, you could also check nested dicts if needed.
-            
-            if best_match is not None and best_sim >= threshold:
-                # If the feature value is a list, join it into a string.
-                if isinstance(f_value, list):
-                    working_template[best_match] = ", ".join(f_value)
+                if f_key == "term" and isinstance(f_value, str):
+                    if working_template.get("Main Symptom") != None and f_value != "symptoms" and f_value != "feverishness" and f_value != "painful":
+                        best_path = ["Main Symptom", "name"]
+                        working_template = self.set_value_at_path(working_template, best_path, f_value)
                 else:
-                    working_template[best_match] = f_value
-            else:
-                extras[f_key] = f_value
+                    f_val_str = str(f_value)
+                    feature_candidate = f"{f_key}: {f_val_str}"
+                    best_sim = -1.0
+                    best_path = []
+                    for path, candidate in candidates:
+                        sim = cosine_similarity(self.embed_text(feature_candidate), self.embed_text(f"{path[1]}: ${candidate}"))
+                        if sim > best_sim:
+                            best_sim = sim
+                            best_path = path
+                    if best_path and best_sim >= threshold:
+                        working_template = self.set_value_at_path(working_template, best_path, f_val_str)
+                    else:
+                        extras[f_key] = f_value
 
         if extras:
             if "additional_content" in working_template and isinstance(working_template["additional_content"], dict):
                 working_template["additional_content"].update(extras)
             else:
                 working_template["additional_content"] = extras
-
+                
+        print("Final Working Template: " , working_template)
         return working_template

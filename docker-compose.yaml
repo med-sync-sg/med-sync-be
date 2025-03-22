@@ -1,0 +1,37 @@
+services:
+  db:
+    image: postgres
+    container_name: postgres_db # Optional name for the container
+    restart: always
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: medsync!
+      POSTGRES_DB: medsync_db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h db"]
+      interval: 1s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "9000:5432"
+    volumes:
+      - medsync_db:/data/postgres
+ 
+  adminer:
+    image: adminer
+    restart: always
+    ports:
+      - 8080:8080
+  
+  iris:
+    container_name: iris-comm
+    image: intersystemsdc/iris-community:latest
+    restart: always
+    environment:
+      IRIS_PASSWORD: demo
+      IRIS_USERNAME: demo
+    ports:
+      - "1972:1972"
+      - "52773:52773"
+volumes:
+  medsync_db:
