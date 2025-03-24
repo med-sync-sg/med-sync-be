@@ -16,17 +16,16 @@ DATA_LOADER_URL = "http://127.0.0.1:8002"
 print("Loading UMLS data...")
 
 umls_df_dict: dict = {
-    "combined_df": None,
     "concepts_with_sty_def_df": None,
-    "patient_information_df": None,
+    # "patient_information_df": None,
 }
 
 concepts_with_sty_def = BytesIO(requests.get(f"{DATA_LOADER_URL}/umls-data/symptoms-and-diseases").content)
 umls_df_dict["concepts_with_sty_def_df"] = read_feather(concepts_with_sty_def)
 concepts_with_sty_def.close()
 
-patient_information = BytesIO(requests.get(f"{DATA_LOADER_URL}/umls-data/patient-information").content)
-umls_df_dict["patient_information_df"] = read_feather(patient_information)
-patient_information.close()
+# patient_information = BytesIO(requests.get(f"{DATA_LOADER_URL}/umls-data/patient-information").content)
+# umls_df_dict["patient_information_df"] = read_feather(patient_information)
+# patient_information.close()
 
 print("Loaded UMLS data!")
