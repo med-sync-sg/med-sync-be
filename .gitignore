@@ -1,7 +1,11 @@
 /umls
 .env
+/.venv
+/.venv-db
 /models
 /training
+/dist
+/build
 alembic.ini
 
 audio.rttm
