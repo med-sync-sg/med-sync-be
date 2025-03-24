@@ -1,7 +1,6 @@
 import os
 from os import environ 
 import pandas as pd
-import json
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.engine import Engine
 from typing import List
@@ -23,7 +22,7 @@ def create_session() -> sessionmaker:
     
 
 # Path to MRCONSO.RRF
-UMLS_ROOT_DIRECTORY = os.path.join("umls", "2024AB", "META")
+# UMLS_ROOT_DIRECTORY = os.path.join("umls", "2024AB", "META")
 
 SYMPTOMS_AND_DISEASES_TUI = [
     'T047',  # Disease or Syndrome
@@ -58,84 +57,88 @@ class DataStore:
         if cls._instance is None:
             print("Loading DataFrame...")
             with cls.SessionMaker() as session:
-                connection = session.get_bind()
+                # connection = session.get_bind()
                 # SQL DB loading
                 cls._instance = super(DataStore, cls).__new__(cls)
-                cls._instance.concepts_df = cls._instance.load_concepts(connection)
-                cls._instance.definitions_df = cls._instance.load_definitions(connection)
-                cls._instance.relationships_df = cls._instance.load_relationships(connection)
-                cls._instance.semantic_df = cls._instance.load_semantic_types(connection)
-                cls._instance.concepts_with_sty_def_df = cls._instance.get_concepts_with_sty_def(SYMPTOMS_AND_DISEASES_TUI, connection)
+                # if not os.path.exists(os.path.join("db_app", "data", "concepts_def_sty.csv")):
+                #     cls._instance.concepts_df = cls._instance.load_concepts(connection)
+                #     cls._instance.definitions_df = cls._instance.load_definitions(connection)
+                #     cls._instance.relationships_df = cls._instance.load_relationships(connection)
+                #     cls._instance.semantic_df = cls._instance.load_semantic_types(connection)
+                #     cls._instance.concepts_with_sty_def_df = cls._instance.get_concepts_with_sty_def(SYMPTOMS_AND_DISEASES_TUI, connection)
+                # else:
+                cls._instance.concepts_with_sty_def_df = pd.read_csv(os.path.join("db_app", "data", "concepts_def_sty.csv"), header=0)
+                print(cls._instance.concepts_with_sty_def_df.head())
                 print("Session loading completed.")
         return cls._instance
 
-    def load_concepts(self, connection: Engine):
-        columns = ["CUI", "LAT", "TS", "LUI", "STT", "SUI", "ISPREF",
-            "AUI", "SAUI", "SCUI", "SDUI", "SAB", "TTY", "CODE",
-            "STR", "SRL", "SUPPRESS", "CVF"]
+    # def load_concepts(self, connection: Engine):
+    #     columns = ["CUI", "LAT", "TS", "LUI", "STT", "SUI", "ISPREF",
+    #         "AUI", "SAUI", "SCUI", "SDUI", "SAB", "TTY", "CODE",
+    #         "STR", "SRL", "SUPPRESS", "CVF"]
         
-        # MRCONSO.RRF
-        inspector = inspect(connection)
-        table_name = "umls_concepts"
-        if inspector.has_table(table_name):
-            return pd.read_sql_table(table_name=table_name, con=connection)
-        else:        
-            concepts = pd.read_csv(os.path.join(UMLS_ROOT_DIRECTORY, "MRCONSO.RRF"), sep='|', names=columns, index_col=False)        
-            # Remove the last empty column caused by trailing delimiter
-            concepts = concepts.drop(concepts.columns[-1], axis=1)
-            concepts = concepts.loc[concepts["LAT"] == "ENG"]
-            # Keep only unique CUI-STR term pairs
-            concepts = concepts.drop_duplicates(subset=["CUI", "STR"])
-            print("UMLS English Concepts Loaded.")
-            # print("Uploading UMLS concepts to the db...")
-            # concepts.to_sql(table_name, con=connection)
-            return concepts[["CUI", "LAT", "STR"]]
+    #     # MRCONSO.RRF
+    #     inspector = inspect(connection)
+    #     table_name = "umls_concepts"
+    #     if inspector.has_table(table_name):
+    #         return pd.read_sql_table(table_name=table_name, con=connection)
+    #     else:        
+    #         concepts = pd.read_csv(os.path.join(UMLS_ROOT_DIRECTORY, "MRCONSO.RRF"), sep='|', names=columns, index_col=False)        
+    #         # Remove the last empty column caused by trailing delimiter
+    #         concepts = concepts.drop(concepts.columns[-1], axis=1)
+    #         concepts = concepts.loc[concepts["LAT"] == "ENG"]
+    #         # Keep only unique CUI-STR term pairs
+    #         concepts = concepts.drop_duplicates(subset=["CUI", "STR"])
+    #         print("UMLS English Concepts Loaded.")
+    #         # print("Uploading UMLS concepts to the db...")
+    #         # concepts.to_sql(table_name, con=connection)
+    #         return concepts[["CUI", "LAT", "STR"]]
 
-    def load_definitions(self, connection: Engine):
-        # MRDEF.RRF
-        cols = ["CUI", "AUI", "ATUI", "SATUI", "SAB", "DEF"]
-        inspector = inspect(connection)
-        table_name = "umls_definitions"
-        if inspector.has_table(table_name):
-            df = pd.read_sql_table(table_name=table_name, con=connection, columns=cols)
-            return df
-        else:        
-            df = pd.read_csv(os.path.join(UMLS_ROOT_DIRECTORY, "MRDEF.RRF"), sep="|", names=cols, index_col=False)
-            df = df[["CUI", "DEF"]]
-            print("UMLS Definitions Loaded.")
-            # print("Uploading UMLS definitions to the db...")
-            # df.to_sql(table_name, con=connection)
-            return df
+    # def load_definitions(self, connection: Engine):
+    #     # MRDEF.RRF
+    #     cols = ["CUI", "AUI", "ATUI", "SATUI", "SAB", "DEF"]
+    #     inspector = inspect(connection)
+    #     table_name = "umls_definitions"
+    #     if inspector.has_table(table_name):
+    #         df = pd.read_sql_table(table_name=table_name, con=connection, columns=cols)
+    #         return df
+    #     else:        
+    #         df = pd.read_csv(os.path.join(UMLS_ROOT_DIRECTORY, "MRDEF.RRF"), sep="|", names=cols, index_col=False)
+    #         df = df[["CUI", "DEF"]]
+    #         print("UMLS Definitions Loaded.")
+    #         # print("Uploading UMLS definitions to the db...")
+    #         # df.to_sql(table_name, con=connection)
+    #         return df
 
-    def load_semantic_types(self, connection: Engine):
-        # MRSTY.RRF
-        cols = ["CUI", "TUI", "STN", "STY", "ATUI", "CVF"]
-        inspector = inspect(connection)
-        table_name = "umls_semantic_types"
-        if inspector.has_table(table_name):
-            df = pd.read_sql_table(table_name=table_name, con=connection, columns=cols)
-            return df
-        else:        
-            df = pd.read_csv(os.path.join(UMLS_ROOT_DIRECTORY, "MRSTY.RRF"), sep="|", names=cols, index_col=False)
-            print("UMLS Semantic Types Loaded.")
-            # print("Uploading UMLS semantic types to the db...")
-            # df.to_sql(table_name, con=connection)
+    # def load_semantic_types(self, connection: Engine):
+    #     # MRSTY.RRF
+    #     cols = ["CUI", "TUI", "STN", "STY", "ATUI", "CVF"]
+    #     inspector = inspect(connection)
+    #     table_name = "umls_semantic_types"
+    #     if inspector.has_table(table_name):
+    #         df = pd.read_sql_table(table_name=table_name, con=connection, columns=cols)
+    #         return df
+    #     else:        
+    #         df = pd.read_csv(os.path.join(UMLS_ROOT_DIRECTORY, "MRSTY.RRF"), sep="|", names=cols, index_col=False)
+    #         print("UMLS Semantic Types Loaded.")
+    #         # print("Uploading UMLS semantic types to the db...")
+    #         # df.to_sql(table_name, con=connection)
 
-            return df[["CUI", "TUI", "STY"]]
+    #         return df[["CUI", "TUI", "STY"]]
     
-    def load_relationships(self, connection: Engine):
-        inspector = inspect(connection)
-        cols = ["CUI1", "AUI1", "STYPE1", "REL", "CUI2", "AUI2", "STYPE2", "RELA"]
-        table_name = "umls_relationships"
-        if inspector.has_table(table_name):
-            df = pd.read_sql_table(table_name=table_name, con=connection, columns=cols)
-            return df
-        else:
-            df = pd.read_csv(os.path.join(UMLS_ROOT_DIRECTORY, "MRREL.RRF"), sep="|", names=cols, usecols=[0,3,4,7], index_col=False)
-            print("UMLS Relationships Loaded.")
-            # print("Uploading UMLS relationships to the db...")
-            # df.to_sql(table_name, con=connection)
-            return df[["CUI1", "REL", "CUI2", "RELA"]]
+    # def load_relationships(self, connection: Engine):
+    #     inspector = inspect(connection)
+    #     cols = ["CUI1", "AUI1", "STYPE1", "REL", "CUI2", "AUI2", "STYPE2", "RELA"]
+    #     table_name = "umls_relationships"
+    #     if inspector.has_table(table_name):
+    #         df = pd.read_sql_table(table_name=table_name, con=connection, columns=cols)
+    #         return df
+    #     else:
+    #         df = pd.read_csv(os.path.join(UMLS_ROOT_DIRECTORY, "MRREL.RRF"), sep="|", names=cols, usecols=[0,3,4,7], index_col=False)
+    #         print("UMLS Relationships Loaded.")
+    #         # print("Uploading UMLS relationships to the db...")
+    #         # df.to_sql(table_name, con=connection)
+    #         return df[["CUI1", "REL", "CUI2", "RELA"]]
 
     
     def get_concepts_with_sty_def(self, target_tuis: List[str], connection: Engine):
