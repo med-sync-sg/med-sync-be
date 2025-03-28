@@ -2,22 +2,11 @@
 
 
 a = Analysis(
-    ['main.py'],
-    pathex=['.venv/Lib/site-packages'],
+    ['launcher.py'],
+    pathex=[],
     binaries=[],
-    datas=[('.env', '.env'), ('app', 'app')],
-    hiddenimports=[
-        "fastapi",
-        "fastapi.middleware.cors",
-        "uvicorn",
-        "uvicorn.importer",
-        "uvicorn.config",
-        "jose.jwt",
-        "spacy",
-        "spacy.lang.en",
-        "ahocorasick",
-        "sentence_transformers"
-    ],
+    datas=[],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -33,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='main',
+    name='launcher',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

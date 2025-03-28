@@ -206,9 +206,9 @@ class AudioCollector:
                     self.full_transcript_segments.append(transcription)
                     transcription_doc = process_text(self.full_transcript_text)
                     print(transcription_doc.ents)
-                    keyword_dicts = extract_prototype_features(doc=transcription_doc)
-                    print("Keyword Dicts: ",  keyword_dicts)
-                    self.buffer_keyword_dicts.extend(keyword_dicts)
+                    # keyword_dicts = extract_prototype_features(doc=transcription_doc)
+                    # print("Keyword Dicts: ",  keyword_dicts)
+                    # self.buffer_keyword_dicts.extend(keyword_dicts)
                     
                 for keyword_dict in self.buffer_keyword_dicts:
                     found = False

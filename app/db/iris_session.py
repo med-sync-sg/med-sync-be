@@ -9,11 +9,11 @@ import json
 from typing import Dict, List, Any, Tuple
 import copy
 from Levenshtein import ratio
-IRIS_USER = environ.get('IRIS_USER')
-IRIS_PASSWORD = environ.get('IRIS_PASSWORD')
-IRIS_HOST = environ.get('IRIS_HOST')
-IRIS_PORT = environ.get('IRIS_PORT')
-IRIS_NAMESPACE = environ.get('IRIS_NAMESPACE')
+IRIS_USER = environ.get('IRIS_USER', "demo")
+IRIS_PASSWORD = environ.get('IRIS_PASSWORD', "demo")
+IRIS_HOST = environ.get('IRIS_HOST', "localhost")
+IRIS_PORT = environ.get('IRIS_PORT', "1972")
+IRIS_NAMESPACE = environ.get('IRIS_NAMESPACE', "USER")
 
 CONNECTION_STRING = f"{IRIS_HOST}:{IRIS_PORT}/{IRIS_NAMESPACE}"
 
@@ -22,6 +22,27 @@ def cosine_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
 
 def dot_product_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
     return np.dot(vec1, vec2)
+
+def table_exists(cursor, table_name: str, schema_name: str = "medsync") -> bool:
+    """
+    Check if a table exists in the given schema.
+
+    Parameters:
+        cursor: A database cursor object.
+        table_name (str): The name of the table to check.
+        schema_name (str): The schema in which to look for the table. Default is "dbo".
+
+    Returns:
+        bool: True if the table exists, False otherwise.
+    """
+    sql = """
+    SELECT 1 
+    FROM INFORMATION_SCHEMA.TABLES 
+    WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+    """
+    cursor.execute(sql, (schema_name, table_name))
+    result = cursor.fetchone()
+    return result is not None
 
 '''
 IrisDataStore should be used when communicating with the InterSystems IRIS SQL database, which enables
@@ -43,44 +64,48 @@ class IrisDataStore:
             cls._instance.cursor = cls._instance.conn.cursor()
             print("Connected to IRIS successfully!")
             
-            # cls._instance.set_up_categories()
-            # cls._instance.set_up_category_embeddings()
-            # cls._instance.set_up_content_dictionary_embeddings()
+            cls._instance.set_up_categories()
+            cls._instance.set_up_category_embeddings()
+            cls._instance.set_up_content_dictionary_embeddings()
             
         return cls._instance
     
     def set_up_categories(self):
         table_name = "TextCategories"
         print("Setting up text categories...")
-        create_table_sql = f"CREATE TABLE IF NOT EXISTS {self.schema_name}.{table_name} (category VARCHAR(1000), description VARCHAR(20000), description_embeddings VECTOR(DOUBLE, 384))"
-        self.cursor.execute(create_table_sql)
-        data = {
-            "category": [],
-            "description": [],
-            "description_embeddings": [],
-        }
-        for text_category in TextCategoryEnum:
-            data["category"].append(text_category.name)
-            data["description"].append(text_category.value)
-            data["description_embeddings"].append(self.model.encode(text_category.value, normalize_embeddings=True))
-        
-        result_df = pd.DataFrame(data=data)
-        
-        data = [
-        (
-            row['category'], 
-            row['description'],
-            str(row["description_embeddings"])
-        )
-            for index, row in result_df.iterrows()
-        ]
-        
-        sql = f"""
-            INSERT INTO {self.schema_name}.{table_name}
-            (category, description, description_embeddings)
-            VALUES (?, ?, TO_VECTOR(?))
-        """
-        self.cursor.executemany(sql, data)
+        if not table_exists(self.cursor, table_name, self.schema_name):
+            create_table_sql = f"CREATE TABLE IF NOT EXISTS {self.schema_name}.{table_name} (category VARCHAR(1000), description VARCHAR(20000), description_embeddings VECTOR(DOUBLE, 384))"
+            self.cursor.execute(create_table_sql)
+            data = {
+                "category": [],
+                "description": [],
+                "description_embeddings": [],
+            }
+            for text_category in TextCategoryEnum:
+                data["category"].append(text_category.name)
+                data["description"].append(text_category.value)
+                data["description_embeddings"].append(self.model.encode(text_category.value, normalize_embeddings=True))
+            
+            result_df = pd.DataFrame(data=data)
+            
+            data = [
+            (
+                row['category'], 
+                row['description'],
+                str(row["description_embeddings"])
+            )
+                for index, row in result_df.iterrows()
+            ]
+            
+            sql = f"""
+                INSERT INTO {self.schema_name}.{table_name}
+                (category, description, description_embeddings)
+                VALUES (?, ?, TO_VECTOR(?))
+            """
+            self.cursor.executemany(sql, data)
+        else:
+            print("Table already exists!")
+
 
     def _get_category(tui: str) -> str:
         SYMPTOMS_AND_DISEASES_TUI = [
@@ -107,59 +132,60 @@ class IrisDataStore:
     def set_up_category_embeddings(self):
         print("Loading up category embeddings...")
         table_name = "TextCategoryEmbeddings"
-        create_table_sql = f"CREATE TABLE IF NOT EXISTS {self.schema_name}.{table_name} (cui VARCHAR(100), term VARCHAR(1000), term_embeddings VECTOR(DOUBLE, 384), category VARCHAR(1000), semantic_type VARCHAR(1000), description VARCHAR(20000), description_embeddings VECTOR(DOUBLE, 384))"
-        self.cursor.execute(create_table_sql)
-        
-        # Load concepts, semantic types, and definitions.        
-        concepts_with_sty_def_df = umls_df_dict["concepts_with_sty_def_df"]
-        patient_information_df = umls_df_dict["patient_information_df"]
-        
-        full_df = pd.concat([concepts_with_sty_def_df, patient_information_df])
-        
-        term_embeddings = self.model.encode(full_df["STR"].tolist(), normalize_embeddings=True).tolist()
-        term_embeddings = [str(embedding) for embedding in term_embeddings]
-        
-        description_embeddings = self.model.encode(full_df["DEF"].tolist(), normalize_embeddings=True).tolist()
-        description_embeddings = [str(embedding) for embedding in description_embeddings]
-        print("Successfully created embeddings.")
-        
-        categories = full_df["TUI"].apply(lambda element: IrisDataStore._get_category(tui=element))
-        print(categories)
-        data = {
-            "cui": full_df["CUI"].tolist(),
-            "term": full_df["STR"].tolist(),
-            "term_embeddings": term_embeddings,
-            "category": categories,
-            "semantic_type": full_df["STY"].tolist(),
-            "description": full_df["DEF"].tolist(),
-            "description_embeddings": description_embeddings
-        }
-        result = list(zip(
-            data["cui"],
-            data["term"],
-            data["term_embeddings"],
-            data["category"],
-            data["semantic_type"],
-            data["description"],
-            data["description_embeddings"]
-        ))
-        
-        
-        print(f"Number of terms with embeddings: {len(result)}")
+        if not table_exists(self.cursor, table_name, self.schema_name):
+            create_table_sql = f"CREATE TABLE IF NOT EXISTS {self.schema_name}.{table_name} (cui VARCHAR(100), term VARCHAR(1000), term_embeddings VECTOR(DOUBLE, 384), category VARCHAR(1000), semantic_type VARCHAR(1000), description VARCHAR(20000), description_embeddings VECTOR(DOUBLE, 384))"
+            self.cursor.execute(create_table_sql)
             
-        sql = f"""
-            INSERT INTO {self.schema_name}.{table_name}
-            (cui, term, term_embeddings, category, semantic_type, description, description_embeddings)
-            VALUES (?, ?, TO_VECTOR(?), ?, ?, ?, TO_VECTOR(?))
-        """
+            # Load concepts, semantic types, and definitions.        
+            concepts_with_sty_def_df = umls_df_dict["concepts_with_sty_def_df"]
+            # patient_information_df = umls_df_dict["patient_information_df"]
+            
+            # full_df = pd.concat([concepts_with_sty_def_df, patient_information_df])
+            full_df = concepts_with_sty_def_df
+            term_embeddings = self.model.encode(full_df["STR"].tolist(), normalize_embeddings=True).tolist()
+            term_embeddings = [str(embedding) for embedding in term_embeddings]
+            
+            description_embeddings = self.model.encode(full_df["DEF"].tolist(), normalize_embeddings=True).tolist()
+            description_embeddings = [str(embedding) for embedding in description_embeddings]
+            print("Successfully created embeddings.")
+            
+            categories = full_df["TUI"].apply(lambda element: IrisDataStore._get_category(tui=element))
+            print(categories)
+            data = {
+                "cui": full_df["CUI"].tolist(),
+                "term": full_df["STR"].tolist(),
+                "term_embeddings": term_embeddings,
+                "category": categories,
+                "semantic_type": full_df["STY"].tolist(),
+                "description": full_df["DEF"].tolist(),
+                "description_embeddings": description_embeddings
+            }
+            result = list(zip(
+                data["cui"],
+                data["term"],
+                data["term_embeddings"],
+                data["category"],
+                data["semantic_type"],
+                data["description"],
+                data["description_embeddings"]
+            ))
+            
+            
+            print(f"Number of terms with embeddings: {len(result)}")
                 
-        current = 0
-        batch_size = 1000
-        while current < len(result):
-            print(f"Uploading batch... index {current} with size {batch_size}")
-            self.cursor.executemany(sql, result[current: current + batch_size])
-            current = current + batch_size
-        print("Successfully uploaded embeddings to IRIS database.")
+            sql = f"""
+                INSERT INTO {self.schema_name}.{table_name}
+                (cui, term, term_embeddings, category, semantic_type, description, description_embeddings)
+                VALUES (?, ?, TO_VECTOR(?), ?, ?, ?, TO_VECTOR(?))
+            """
+                    
+            current = 0
+            batch_size = 1000
+            while current < len(result):
+                print(f"Uploading batch... index {current} with size {batch_size}")
+                self.cursor.executemany(sql, result[current: current + batch_size])
+                current = current + batch_size
+            print("Successfully uploaded embeddings to IRIS database.")
         
     def embed_text(self, text: str) -> np.ndarray:
         """
@@ -239,94 +265,95 @@ class IrisDataStore:
     
     def set_up_content_dictionary_embeddings(self):
         print("Setting up content dictionary embeddings...")
-        chief_complaint_example = {
-            "Main Symptom": {
-                "name": "The name of the primary symptom (e.g., headache, diarrhea)",
-                "duration": "The duration of the symptom (e.g., 3 days)",
-                "severity": "The severity level of the symptom (e.g., mild, moderate, severe)",
-                "additional_details": "Additional details regarding the symptom, such as frequency, triggers, or associated features"
-            }
-        }
-        
-        patient_information_example = {
-            "Demographics": {
-                "name": "Patient's full name",
-                "age": "Patient's age in years",
-                "gender": "Patient's gender (e.g., Male, Female)"
-            },
-            "Contact Information": {
-                "address": "Patient's address (e.g., street, city, country, postal code)",
-                "phone": "Patient's contact phone number"
-            },
-            "Occupation": "Patient's occupation (e.g., teacher, pharmaceutical manager)",
-            "Additional Details": "Other relevant personal details (e.g., marital status, living conditions, recent travel history)"
-        }
-        
-        medical_history_example = {
-            "Chronic Conditions": [
-                {
-                    "name": "The name of a chronic condition (e.g., eczema)",
-                    "diagnosed_date": "The date the condition was diagnosed (format: YYYY-MM-DD)",
-                    "severity": "The severity of the condition (e.g., mild, moderate, severe)",
-                    "notes": "Additional notes regarding the condition (e.g., treatment response, frequency of flare-ups)"
-                }
-            ],
-            "Past Diagnoses": [
-                {
-                    "name": "The name of a past diagnosis (e.g., asthma)",
-                    "diagnosed_date": "The date of diagnosis (format: YYYY-MM-DD)",
-                    "notes": "Additional details regarding the diagnosis (e.g., management, history)"
-                }
-            ],
-            "Medications": [
-                {
-                    "name": "The name of a medication (e.g., Ibuprofen)",
-                    "dosage": "The dosage of the medication (e.g., 200 mg)",
-                    "frequency": "The frequency at which the medication is taken (e.g., as needed)",
-                    "notes": "Additional notes (e.g., response, side effects)"
-                }
-            ],
-            "Allergies": [
-                {
-                    "substance": "The allergen or substance causing an allergic reaction (e.g., penicillin)",
-                    "notes": "Details about the allergy or any additional notes (e.g., NKDA if none)"
-                }
-            ]
-        }
-        
-        others_examples = {
-            "Other Observations": [
-                {
-                "observation": "A miscellaneous observation not covered by the primary categories",
-                "notes": "Additional details or context regarding the observation"
-                }
-            ]
-        }
-        
         table_name = "ContentDictionaryJson"
-        create_table_sql = f"CREATE TABLE IF NOT EXISTS {self.schema_name}.{table_name} (content_dictionary VARCHAR(32000), category VARCHAR(1000), description VARCHAR(20000), embeddings VECTOR(DOUBLE, 384), description_embeddings VECTOR(DOUBLE, 384))"
-        self.cursor.execute(create_table_sql)
-        
-        description_1 = "Contains chief complaints or main symptoms of the patient."
-        description_2 = "Contains patient information such as demographics."
-        description_3 = "Contains the medical history information of the patient such as current medications or chronic illnesses."
-        description_4 = "Any other information belongs to this section."
-        
-        data = [
-            (chief_complaint_example, TextCategoryEnum.CHIEF_COMPLAINT.name, description_1, self.embed_dictionary(chief_complaint_example), str(self.embed_text(description_1).tolist())),
-            (patient_information_example, TextCategoryEnum.PATIENT_INFORMATION.name, description_2, self.embed_dictionary(patient_information_example), str(self.embed_text(description_2).tolist())),
-            (medical_history_example, TextCategoryEnum.PATIENT_MEDICAL_HISTORY.name, description_3, self.embed_dictionary(medical_history_example), str(self.embed_text(description_3).tolist())),
-            (others_examples, TextCategoryEnum.OTHERS.name, description_4, self.embed_dictionary(others_examples), str(self.embed_text(description_4).tolist()))
-        ]
-        
-        sql = f"""
-            INSERT INTO {self.schema_name}.{table_name}
-            (content_dictionary, category, description, embeddings, description_embeddings)
-            VALUES (?, ?, ?, TO_VECTOR(?), TO_VECTOR(?))
-        """
 
-        self.cursor.executemany(sql, data)
-        print("Successfully set up dictionary embeddings in the IRIS database.")
+        if not table_exists(self.cursor, table_name, self.schema_name):
+            chief_complaint_example = {
+                "Main Symptom": {
+                    "name": "The name of the primary symptom (e.g., headache, diarrhea)",
+                    "duration": "The duration of the symptom (e.g., 3 days)",
+                    "severity": "The severity level of the symptom (e.g., mild, moderate, severe)",
+                    "additional_details": "Additional details regarding the symptom, such as frequency, triggers, or associated features"
+                }
+            }
+            
+            patient_information_example = {
+                "Demographics": {
+                    "name": "Patient's full name",
+                    "age": "Patient's age in years",
+                    "gender": "Patient's gender (e.g., Male, Female)"
+                },
+                "Contact Information": {
+                    "address": "Patient's address (e.g., street, city, country, postal code)",
+                    "phone": "Patient's contact phone number"
+                },
+                "Occupation": "Patient's occupation (e.g., teacher, pharmaceutical manager)",
+                "Additional Details": "Other relevant personal details (e.g., marital status, living conditions, recent travel history)"
+            }
+            
+            medical_history_example = {
+                "Chronic Conditions": [
+                    {
+                        "name": "The name of a chronic condition (e.g., eczema)",
+                        "diagnosed_date": "The date the condition was diagnosed (format: YYYY-MM-DD)",
+                        "severity": "The severity of the condition (e.g., mild, moderate, severe)",
+                        "notes": "Additional notes regarding the condition (e.g., treatment response, frequency of flare-ups)"
+                    }
+                ],
+                "Past Diagnoses": [
+                    {
+                        "name": "The name of a past diagnosis (e.g., asthma)",
+                        "diagnosed_date": "The date of diagnosis (format: YYYY-MM-DD)",
+                        "notes": "Additional details regarding the diagnosis (e.g., management, history)"
+                    }
+                ],
+                "Medications": [
+                    {
+                        "name": "The name of a medication (e.g., Ibuprofen)",
+                        "dosage": "The dosage of the medication (e.g., 200 mg)",
+                        "frequency": "The frequency at which the medication is taken (e.g., as needed)",
+                        "notes": "Additional notes (e.g., response, side effects)"
+                    }
+                ],
+                "Allergies": [
+                    {
+                        "substance": "The allergen or substance causing an allergic reaction (e.g., penicillin)",
+                        "notes": "Details about the allergy or any additional notes (e.g., NKDA if none)"
+                    }
+                ]
+            }
+            
+            others_examples = {
+                "Other Observations": [
+                    {
+                    "observation": "A miscellaneous observation not covered by the primary categories",
+                    "notes": "Additional details or context regarding the observation"
+                    }
+                ]
+            }
+    
+            examples = [
+                (chief_complaint_example, TextCategoryEnum.CHIEF_COMPLAINT.name, "Contains chief complaints or main symptoms of the patient."), 
+                        (patient_information_example, TextCategoryEnum.PATIENT_INFORMATION.name, "Contains patient information such as demographics."), 
+                        (medical_history_example, TextCategoryEnum.PATIENT_MEDICAL_HISTORY.name, "Contains the medical history information of the patient such as current medications or chronic illnesses."), 
+                        (others_examples, TextCategoryEnum.OTHERS.name, "Any other information belongs to this section.")
+                        ]            
+            create_table_sql = f"CREATE TABLE IF NOT EXISTS {self.schema_name}.{table_name} (content_dictionary VARCHAR(32000), category VARCHAR(1000), description VARCHAR(20000), embeddings VECTOR(DOUBLE, 384), description_embeddings VECTOR(DOUBLE, 384))"
+            self.cursor.execute(create_table_sql)
+            
+            data = [
+                (json.dumps(example), category, description, str(self.embed_dictionary(example).tolist()), str(self.embed_text(description).tolist()))
+                for example, category, description in examples
+            ]
+            
+            sql = f"""
+                INSERT INTO {self.schema_name}.{table_name}
+                (content_dictionary, category, description, embeddings, description_embeddings)
+                VALUES (?, ?, ?, TO_VECTOR(?), TO_VECTOR(?))
+            """
+
+            self.cursor.executemany(sql, data)
+            print("Successfully set up dictionary embeddings in the IRIS database.")
 
     def find_content_dictionary(self, keyword_dict: dict, category: str) -> dict:
         table_name = "ContentDictionaryJson"

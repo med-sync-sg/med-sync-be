@@ -1,16 +1,17 @@
 import os
 from os import environ 
+import sys
 import pandas as pd
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.engine import Engine
 from typing import List
 from sqlalchemy.orm import sessionmaker
 
-DB_USER = environ.get('DB_USER')
-DB_PASSWORD = environ.get('DB_PASSWORD')
-DB_HOST = environ.get('DB_HOST')
-DB_PORT = environ.get('DB_PORT')
-DB_NAME = environ.get('DB_NAME')
+DB_USER = environ.get('DB_USER', "root")
+DB_PASSWORD = environ.get('DB_PASSWORD', "medsync!")
+DB_HOST = environ.get('DB_HOST', "localhost")
+DB_PORT = environ.get('DB_PORT', "9000")
+DB_NAME = environ.get('DB_NAME', "medsync_db")
 
 DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
@@ -19,7 +20,17 @@ def create_session() -> sessionmaker:
     SessionMaker: sessionmaker = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     
     return SessionMaker
-    
+
+def resource_path(relative_path):
+    """
+    Get the absolute path to a resource, works for development and for PyInstaller onefile bundles.
+    """
+    try:
+        base_path = sys._MEIPASS  # PyInstaller creates a temp folder and stores path in _MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
 
 # Path to MRCONSO.RRF
 # UMLS_ROOT_DIRECTORY = os.path.join("umls", "2024AB", "META")
@@ -67,7 +78,7 @@ class DataStore:
                 #     cls._instance.semantic_df = cls._instance.load_semantic_types(connection)
                 #     cls._instance.concepts_with_sty_def_df = cls._instance.get_concepts_with_sty_def(SYMPTOMS_AND_DISEASES_TUI, connection)
                 # else:
-                cls._instance.concepts_with_sty_def_df = pd.read_csv(os.path.join("db_app", "data", "concepts_def_sty.csv"), header=0)
+                cls._instance.concepts_with_sty_def_df = pd.read_csv(resource_path(os.path.join("db_app", "data", "concepts_def_sty.csv")), header=0)
                 print(cls._instance.concepts_with_sty_def_df.head())
                 print("Session loading completed.")
         return cls._instance
