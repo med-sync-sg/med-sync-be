@@ -61,12 +61,12 @@ class DataStore:
     concepts_with_sty_def_df: pd.DataFrame
     schema_name = "med_sync"
     model = None  # Will be initialized on demand
-    
+    _initialized = False
     def __new__(cls):
         if cls._instance is None:
             logger.info("Initializing DataStore singleton")
             cls._instance = super(DataStore, cls).__new__(cls)
-            cls._instance._initialized = False
+            cls._instance._initialized = True
         return cls._instance
     
     def __init__(self):
