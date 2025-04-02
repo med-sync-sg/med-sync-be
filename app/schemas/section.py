@@ -3,8 +3,6 @@ from pydantic import BaseModel, Field
 from typing import Dict, Any, Union
 from enum import Enum
 
-from enum import Enum
-
 class TextCategoryEnum(str, Enum):
     """
     An Enum class representing the categories of text chunks (usually sentence-length or shorter)

@@ -4,9 +4,10 @@ from typing import List
 
 from app.models.models import Note
 from app.schemas.note import NoteCreate, NoteRead, NoteUpdate
-from app.db.local_session import get_db
+from app.db.local_session import LocalDataStore
 
 router = APIRouter()
+get_db = LocalDataStore().get_db
 
 @router.post("/", response_model=NoteRead, status_code=201)
 def create_note(note_in: NoteCreate, db: Session = Depends(get_db)):

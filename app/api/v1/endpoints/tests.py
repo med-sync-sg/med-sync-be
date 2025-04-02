@@ -1,7 +1,7 @@
 from app.utils.nlp.spacy_utils import process_text
 from app.utils.nlp.keyword_extractor import find_medical_modifiers
 from app.utils.speech_processor import AudioCollector
-from app.db.iris_session import IrisDataStore
+from app.db.data_loader import classify_text_category, find_content_dictionary, merge_flat_keywords_into_template 
 from fastapi import APIRouter
 from pydantic import BaseModel
 import logging
@@ -265,7 +265,6 @@ Doctor: Understood. Based on your symptoms, it looks like an upper respiratory t
 """
 from app.utils.nlp.spacy_utils import process_text
 from app.utils.speech_processor import AudioCollector
-from app.db.iris_session import IrisDataStore
 from fastapi import APIRouter
 from pydantic import BaseModel
 import logging
@@ -273,8 +272,6 @@ import json
 
 router = APIRouter()
 audio_collector = AudioCollector()
-iris_data_store = IrisDataStore()
-
 class TranscriptFragment(BaseModel):
     transcript: str
 
@@ -302,10 +299,10 @@ def test_with_sample_transcript():
     audio_collector.final_keyword_dicts = result_dicts
     result = []
     for result_keyword_dict in audio_collector.final_keyword_dicts:
-        category = iris_data_store.classify_text_category(result_keyword_dict["term"])
-        template = iris_data_store.find_content_dictionary(result_keyword_dict, category)
+        category = classify_text_category(result_keyword_dict["term"])
+        template = find_content_dictionary(result_keyword_dict, category)
         # Use the new prototype-based merging function.
-        merged_content = iris_data_store.merge_flat_keywords_into_template(result_keyword_dict, template, threshold=0.5)
+        merged_content = merge_flat_keywords_into_template(result_keyword_dict, template, threshold=0.5)
         logging.info("Merged Content Dictionary: %s", merged_content)
         if merged_content.get("Main Symptom") != None:
             if len(merged_content["Main Symptom"]["name"]) == 0:
@@ -337,9 +334,9 @@ def test_with_sample_transcript(fragment: TranscriptFragment):
     # Create sections based on final_keyword_dicts and prototype-based mapping.
     sections = []
     for result_keyword_dict in audio_collector.final_keyword_dicts:
-        category = iris_data_store.classify_text_category(result_keyword_dict["term"])
-        template = iris_data_store.find_content_dictionary(result_keyword_dict, category)
-        merged_content = iris_data_store.merge_flat_keywords_into_template(result_keyword_dict, template, threshold=0.5)
+        category = classify_text_category(result_keyword_dict["term"])
+        template = find_content_dictionary(result_keyword_dict, category)
+        merged_content = merge_flat_keywords_into_template(result_keyword_dict, template, threshold=0.5)
         if merged_content.get("Main Symptom") != None:
             if len(merged_content["Main Symptom"]["name"]) == 0:
                 print("Content not added as it has no name: ", merged_content)

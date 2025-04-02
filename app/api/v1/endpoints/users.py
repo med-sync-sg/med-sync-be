@@ -4,8 +4,10 @@ from typing import List
 
 from app.models.models import User
 from app.schemas.user import UserBase, UserRead, UserCreate, UserUpdate
-from app.db.local_session import get_db
+from app.db.local_session import LocalDataStore
 router = APIRouter()
+
+get_db = LocalDataStore().get_db
 
 @router.get("/", response_model=List[UserRead])
 def list_users(db: Session = Depends(lambda x: get_db())):

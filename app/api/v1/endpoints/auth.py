@@ -5,11 +5,13 @@ from typing import List
 from app.models.models import User  # SQLAlchemy user model
 from app.schemas.user import UserCreate
 from app.utils.auth_utils import create_access_token, verify_password, hash_password
-from app.db.local_session import get_db
+from app.db.local_session import LocalDataStore
 
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+get_db = LocalDataStore().get_db
 
 class TokenResponse(BaseModel):
     access_token: str
