@@ -5,13 +5,9 @@ from spacy.matcher import DependencyMatcher
 from typing import List, Dict, Any
 from app.utils.text_utils import normalize_text
 from app.schemas.section import TextCategoryEnum, SectionCreate
-from app.db.iris_session import IrisDataStore
 import numpy as np
 from sentence_transformers import SentenceTransformer
 import copy
-
-# Initialize IRIS data store (and its embedding model) if needed.
-iris_data_store = IrisDataStore()
 
 def extract_pp_object_span(token: Token) -> Span:
     """

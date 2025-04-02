@@ -7,7 +7,7 @@ from fastapi import APIRouter
 import spacy.tokenizer
 from spacy.tokens import Doc
 import spacy.tokens
-from app.db.umls_data_loader import umls_df_dict
+from app.db.data_loader import umls_df_dict
 from spacy import displacy
 from pathlib import Path
 from app.schemas.section import TextCategoryEnum
