@@ -1,9 +1,9 @@
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 from app.services.audio_service import AudioService
+from app.utils.speech_processor import SpeechProcessor
 from app.utils.text_utils import clean_transcription, correct_spelling
 from app.utils.nlp.spacy_utils import process_text
-from app.utils.speech_processor import SpeechProcessor
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -122,7 +122,7 @@ class TranscriptionService:
             return []
             
         try:
-            from app.utils.nlp.keyword_extractor import find_medical_modifiers
+            from app.utils.nlp.nlp_utils import find_medical_modifiers
             
             # Process the full transcript with NLP
             doc = process_text(self.full_transcript)

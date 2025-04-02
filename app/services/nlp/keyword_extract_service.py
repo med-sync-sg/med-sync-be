@@ -1,13 +1,13 @@
 import logging
 import copy
 from typing import List, Dict, Any, Optional
-from app.utils.nlp.keyword_extractor import find_medical_modifiers
+from app.utils.nlp.spacy_utils import find_medical_modifiers
 from app.schemas.section import SectionCreate, TextCategoryEnum
 from app.db.local_session import DatabaseManager
 # Configure logger
 logger = logging.getLogger(__name__)
 
-class KeywordService:
+class KeywordExtractService:
     """
     Service for extracting and processing medical keywords from text.
     Manages keyword extraction, classification, and template mapping.

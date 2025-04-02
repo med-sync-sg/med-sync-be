@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import List
@@ -6,54 +6,215 @@ from app.models.models import User  # SQLAlchemy user model
 from app.schemas.user import UserCreate
 from app.utils.auth_utils import create_access_token, verify_password, hash_password
 from app.db.local_session import DatabaseManager
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+import logging
 
+# Configure logger
+logger = logging.getLogger(__name__)
+
+# OAuth2 scheme for token authentication
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+
+# Get database session dependency
+get_session = DatabaseManager().get_session
+
+# Define response schemas
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user_id: int
+
+class SignupResponse(BaseModel):
+    user_id: int
+    access_token: str
+    token_type: str = "bearer"
+
+router = APIRouter()
+
+# Define request and response schemas
 class LoginRequest(BaseModel):
     username: str
     password: str
 
-get_session = DatabaseManager().get_session
-
 class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user_id: int
+
+class SignupResponse(BaseModel):
+    user_id: int
     access_token: str
     token_type: str = "bearer"
 
 router = APIRouter()
 
 @router.post("/login", response_model=TokenResponse)
-def login(login_req: LoginRequest, db: Session = Depends(get_session)):
-    db_user = db.query(User).filter(User.username == login_req.username).first()
-    if not db_user:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+async def login_with_form(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_session)
+):
+    """
+    Authenticate a user using form data and return an access token
+    
+    This endpoint accepts standard OAuth2 form data
+    """
+    return await authenticate_user(form_data.username, form_data.password, db)
 
-    if not verify_password(login_req.password, db_user.hashed_password):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+@router.post("/login-json", response_model=TokenResponse)
+async def login_with_json(
+    credentials: LoginRequest,
+    db: Session = Depends(get_session)
+):
+    """
+    Authenticate a user using JSON and return an access token
+    
+    This endpoint accepts JSON with username and password fields
+    """
+    return await authenticate_user(credentials.username, credentials.password, db)
 
-    # If OK, create JWT
-    token = create_access_token({"sub": db_user.username})
-    return TokenResponse(access_token=token)
-
-@router.post("/sign-up", status_code=201)
-def sign_up(user_in: UserCreate, db: Session = Depends(get_session)):
-    # Check if a user with the same username already exists
-    existing_user = db.query(User).filter(User.username == user_in.username).first()
-    if existing_user:
+async def authenticate_user(username: str, password: str, db: Session):
+    """
+    Authenticate a user and generate access token
+    
+    Args:
+        username: User's username
+        password: User's password
+        db: Database session
+        
+    Returns:
+        Token response with access token and user ID
+    """
+    # Find the user by username
+    user = db.query(User).filter(User.username == username).first()
+    
+    # Verify user exists and password is correct
+    if not user or not verify_password(password, user.hashed_password):
+        logger.warning(f"Failed login attempt for username: {username}")
         raise HTTPException(
-            status_code=400,
-            detail="Username already taken."
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Bearer"},
         )
     
-    # Hash the plaintext password
-    hashed_pw = hash_password(user_in.password)
+    # Generate JWT token
+    token_data = {"sub": str(user.id), "username": user.username}
+    access_token = create_access_token(token_data)
     
-    # Create a new user instance
-    new_user = User(
-        username=user_in.username,
-        age=user_in.age,
-        hashed_password=hashed_pw,
-        email=user_in.email
-    )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    token = create_access_token({"sub": new_user.username})
-    return { "id": new_user.id, "token": token }
+    logger.info(f"User {user.id} ({user.username}) logged in successfully")
+    return {"access_token": access_token, "token_type": "bearer", "user_id": user.id}
+
+@router.post("/validate-token")
+async def validate_token(token: str = Depends(oauth2_scheme), db: Session = Depends(get_session)):
+    """
+    Validate an access token and return user information
+    
+    Args:
+        token: JWT access token
+        db: Database session
+        
+    Returns:
+        User information if token is valid
+    """
+    try:
+        # Get current user from token
+        current_user = get_current_user(token, db)
+        
+        # Return user info (excluding sensitive fields)
+        return {
+            "valid": True,
+            "user_id": current_user.id,
+            "username": current_user.username
+        }
+    except HTTPException:
+        return {"valid": False}
+
+@router.post("/change-password", status_code=status.HTTP_200_OK)
+async def change_password(
+    old_password: str,
+    new_password: str,
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_session)
+):
+    """
+    Change user password
+    
+    Args:
+        old_password: Current password
+        new_password: New password
+        token: JWT access token
+        db: Database session
+        
+    Returns:
+        Success message
+    """
+    # Get current user from token
+    current_user = get_current_user(token, db)
+    
+    # Verify old password
+    if not verify_password(old_password, current_user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect"
+        )
+    
+    try:
+        # Hash and set new password
+        current_user.hashed_password = hash_password(new_password)
+        db.commit()
+        
+        logger.info(f"Password changed for user {current_user.id}")
+        return {"message": "Password changed successfully"}
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error changing password for user {current_user.id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to change password"
+        )
+
+# Helper function to get current user from token
+def get_current_user(token: str, db: Session) -> User:
+    """
+    Get the current user from a JWT token
+    
+    Args:
+        token: JWT access token
+        db: Database session
+        
+    Returns:
+        User object
+    """
+    from app.utils.auth_utils import decode_access_token
+    
+    try:
+        # Decode token
+        payload = decode_access_token(token)
+        user_id = payload.get("sub")
+        
+        if user_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+            
+        # Get user from database
+        user = db.query(User).filter(User.id == user_id).first()
+        
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+            
+        return user
+        
+    except Exception as e:
+        logger.error(f"Error authenticating user: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )

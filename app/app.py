@@ -3,11 +3,11 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, status
 from sqlalchemy.orm import Session
 import logging
 
-from app.api.v1.endpoints import auth, notes, users, reports, tests
+from app.api.v1.endpoints import auth, notes, users, reports
 from app.db.local_session import DatabaseManager
 from app.services.audio_service import AudioService
 from app.services.transcription_service import TranscriptionService
-from app.services.nlp_service import KeywordService
+from app.services.nlp.keyword_extract_service import KeywordExtractService
 from app.services.note_service import NoteService
 
 # Configure logger
@@ -28,7 +28,6 @@ def create_app() -> FastAPI:
     app.include_router(notes.router, prefix="/notes", tags=["note"])
     app.include_router(users.router, prefix="/users", tags=["user"])
     app.include_router(reports.router, prefix="/reports", tags=["report"])
-    app.include_router(tests.router, prefix="/tests", tags=["test"])
     
     # Add CORS middleware
     app.add_middleware(
@@ -45,9 +44,8 @@ def create_app() -> FastAPI:
 app = create_app()
 
 # Initialize service singletons
-audio_service = AudioService()
-transcription_service = TranscriptionService(audio_service)
-keyword_service = KeywordService()
+transcription_service = TranscriptionService()
+keyword_service = KeywordExtractService()
 
 # Get DB session
 get_session = DatabaseManager().get_session
@@ -143,6 +141,8 @@ async def process_audio_chunk(chunk_base64: str, user_id: int, note_id: int,
         
         # Decode base64 data
         audio_bytes = base64.b64decode(chunk_base64)
+        
+        audio_service = transcription_service.audio_service
         
         # Add to audio service
         audio_service.add_chunk(audio_bytes)

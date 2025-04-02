@@ -13,8 +13,6 @@ DB_NAME = environ.get('DB_NAME', "medsync_db")
 
 DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-            
-
 def create_engine_with_proper_pooling():
     """Create SQLAlchemy engine with optimized connection pooling"""
     return create_engine(

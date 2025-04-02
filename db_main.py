@@ -4,6 +4,7 @@ import sys
 import argparse
 from os import environ
 from typing import Optional
+import uvicorn
 
 def configure_logging(log_level: str = "INFO", log_file: Optional[str] = None):
     """
@@ -42,12 +43,30 @@ def configure_logging(log_level: str = "INFO", log_file: Optional[str] = None):
     if log_file:
         logging.info(f"Logs will be saved to: {log_file}")
 
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description="MedSync Data Service")
+    parser.add_argument("--host", default=environ.get("DB_HOST", "127.0.0.1"), help="Host address")
+    parser.add_argument("--port", type=int, default=8002, help="Port number")
+    parser.add_argument("--log-level", default="INFO", help="Logging level (DEBUG, INFO, WARNING, ERROR)")
+    parser.add_argument("--log-file", help="Optional log file path")
+    return parser.parse_args()
+
 if __name__ == "__main__":
-    import uvicorn
-    configure_logging()
+    # Parse command line arguments
+    args = parse_arguments()
     
-    def run_db():
-        """Runs the DataStore service without hot-reload (to persist heavy-loaded data)."""
-        uvicorn.run(app, host="127.0.0.1", port=8002)
-        
-    run_db()
+    # Setup logging
+    configure_logging(log_level=args.log_level, log_file=args.log_file)
+    
+    # Log startup configuration
+    logging.info(f"Starting Data Service on {args.host}:{args.port}")
+    
+    # Run the API without hot-reload to preserve the heavy data loading
+    uvicorn.run(
+        app, 
+        host=args.host,
+        port=args.port,
+        log_level=args.log_level.lower(),
+        reload=False  # Disable reload to prevent duplicate data loading
+    )
