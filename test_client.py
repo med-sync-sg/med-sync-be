@@ -1,68 +1,323 @@
-import asyncio
-import os
-import json
-import wave
-import base64
-import logging
+"""
+Test Client for MedSync Application
+
+This script tests the entire workflow of the MedSync application:
+1. Connection to the database service
+2. Retrieval of UMLS data
+3. WebSocket connection for audio processing
+4. Complete transcription and processing workflow
+
+Usage:
+    python test_client.py [--db-url DB_URL] [--app-url APP_URL] [--audio-file AUDIO_FILE]
+"""
 import argparse
-import websockets
+import asyncio
+import base64
+import json
+import logging
+import os
+import sys
+import time
+from typing import Dict, Any, List, Optional
+
+import aiohttp
 import requests
+import numpy as np
+import websockets
+import wave
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("audio_stream_tester")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger("test_client")
 
-async def stream_audio(uri, audio_file_path, chunk_size=1024):
-    """
-    Stream an audio file over a WebSocket connection, simulating real-time audio.
+# Default URLs
+DEFAULT_DB_URL = "http://127.0.0.1:8002"
+DEFAULT_APP_URL = "http://127.0.0.1:8001"
+DEFAULT_AUDIO_FILE = os.path.join("test_audios", "day1_consultation01_doctor.wav")
+
+class TestClient:
+    """Test client for MedSync application"""
     
-    Args:
-        uri (str): WebSocket server URI.
-        audio_file_path (str): Path to the audio file.
-        chunk_size (int): Number of frames to read per iteration.
-    """
-    try:
-        async with websockets.connect(f"{uri}?token=test-token&note_id={5}&user_id={1}") as websocket:
-            logger.info("WebSocket connected to %s", uri)
-            with wave.open(audio_file_path, 'rb') as wf:
-                framerate = wf.getframerate()
-                logger.info("Opened audio file %s with frame rate: %d", audio_file_path, framerate)
-                while True:
-                    data = wf.readframes(chunk_size * 10)
-                    if not data:
-                        logger.info("End of audio file reached.")
-                        break
-                    # Encode the binary data as base64 to embed in JSON.
-                    payload = {
-                        "data": base64.b64encode(data).decode("utf-8")
+    def __init__(self, db_url: str, app_url: str, audio_file: str):
+        """
+        Initialize test client
+        
+        Args:
+            db_url: URL for the database service
+            app_url: URL for the main application
+            audio_file: Path to an audio file for testing
+        """
+        self.db_url = db_url
+        self.app_url = app_url
+        self.audio_file = audio_file
+        
+        # Authentication info
+        self.token = None
+        self.user_id = None
+        self.note_id = None
+        
+        logger.info(f"Test client initialized with DB URL: {db_url}, App URL: {app_url}")
+        
+    def run_tests(self):
+        """Run all tests"""
+        try:
+            # Test database service
+            self.test_db_connection()
+            self.test_umls_data()
+            
+            # Test main application
+            self.authenticate()
+            self.create_test_note()
+            
+            # Test WebSocket (needs to run in an async context)
+            asyncio.run(self.test_websocket())
+            
+            logger.info("All tests completed successfully!")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Test failed: {str(e)}")
+            return False
+    
+    def test_db_connection(self):
+        """Test connection to the database service"""
+        logger.info("Testing database service connection...")
+        
+        try:
+            response = requests.get(f"{self.db_url}/status", timeout=5)
+            if response.status_code == 200:
+                status_data = response.json()
+                if status_data.get('status') == 'ready':
+                    logger.info("Database service connection successful!")
+                    logger.info(f"Service status: {json.dumps(status_data, indent=2)}")
+                else:
+                    logger.warning(f"Database service not ready: {status_data.get('message', 'Unknown reason')}")
+            else:
+                raise Exception(f"Database service returned status code {response.status_code}")
+        except requests.RequestException as e:
+            raise Exception(f"Could not connect to database service: {str(e)}")
+    
+    def test_umls_data(self):
+        """Test fetching UMLS data from the database service"""
+        logger.info("Testing UMLS data retrieval...")
+        
+        try:
+            # Test symptoms and diseases endpoint
+            response = requests.get(f"{self.db_url}/umls-data/symptoms-and-diseases", timeout=10)
+            if response.status_code != 200:
+                raise Exception(f"Failed to fetch symptoms data: {response.status_code}")
+            logger.info(f"Successfully retrieved symptoms data ({len(response.content)} bytes)")
+            
+            # Test drugs endpoint
+            response = requests.get(f"{self.db_url}/umls-data/drugs", timeout=10)
+            if response.status_code != 200:
+                raise Exception(f"Failed to fetch drugs data: {response.status_code}")
+            logger.info(f"Successfully retrieved drugs data ({len(response.content)} bytes)")
+            
+            logger.info("UMLS data retrieval test passed!")
+        except requests.RequestException as e:
+            raise Exception(f"Error fetching UMLS data: {str(e)}")
+    
+    def authenticate(self):
+        """Authenticate with the main application"""
+        logger.info("Authenticating with the main application...")
+        
+        try:
+            # Create a test user if needed
+            credentials = {
+                "username": "test_user",
+                "password": "test_password"
+            }
+            
+            # Try to sign up first (this might fail if user exists, which is OK)
+            try:
+                signup_data = {
+                    "username": "test_user",
+                    "password": "test_password",
+                    "first_name": "Test",
+                    "last_name": "User",
+                    "email": "test@example.com",
+                    "age": 30,
+                    "notes": []
+                }
+                requests.post(f"{self.app_url}/auth/sign-up", json=signup_data)
+            except:
+                logger.info("User may already exist, proceeding to login")
+            
+            # Login
+            response = requests.post(f"{self.app_url}/auth/login", json=credentials)
+            if response.status_code != 200:
+                raise Exception(f"Authentication failed: {response.status_code}")
+            
+            auth_data = response.json()
+            self.token = auth_data.get("access_token")
+            if not self.token:
+                raise Exception("No token received after authentication")
+            
+            # Get user ID
+            headers = {"Authorization": f"Bearer {self.token}"}
+            response = requests.get(f"{self.app_url}/users/", headers=headers)
+            if response.status_code != 200:
+                raise Exception(f"Failed to get user info: {response.status_code}")
+            
+            users = response.json()
+            if users and len(users) > 0:
+                self.user_id = users[0].get("id")
+                logger.info(f"Authentication successful! User ID: {self.user_id}")
+            else:
+                raise Exception("No user found after authentication")
+            
+        except requests.RequestException as e:
+            raise Exception(f"Authentication error: {str(e)}")
+    
+    def create_test_note(self):
+        """Create a test note for the authenticated user"""
+        logger.info("Creating a test note...")
+        
+        try:
+            if not self.token or not self.user_id:
+                raise Exception("Not authenticated")
+            
+            headers = {"Authorization": f"Bearer {self.token}"}
+            
+            # Create a note
+            note_data = {
+                "title": f"Test Note {int(time.time())}",
+                "patient_id": 12345,  # Test patient ID
+                "user_id": self.user_id,
+                "encounter_date": time.strftime("%Y-%m-%d"),
+                "sections": []  # Empty sections to start with
+            }
+            
+            response = requests.post(f"{self.app_url}/notes/", json=note_data, headers=headers)
+            if response.status_code != 201:
+                raise Exception(f"Failed to create note: {response.status_code}")
+            
+            note = response.json()
+            self.note_id = note.get("id")
+            if not self.note_id:
+                raise Exception("No note ID received after creation")
+            
+            logger.info(f"Test note created successfully! Note ID: {self.note_id}")
+            
+        except requests.RequestException as e:
+            raise Exception(f"Error creating test note: {str(e)}")
+    
+    async def test_websocket(self):
+        """Test WebSocket connection and audio processing"""
+        if not os.path.exists(self.audio_file):
+            logger.warning(f"Audio file {self.audio_file} not found, skipping WebSocket test")
+            return
+        
+        if not self.token or not self.user_id or not self.note_id:
+            raise Exception("Authentication or note creation failed, cannot test WebSocket")
+        
+        logger.info("Testing WebSocket connection and audio processing...")
+        
+        try:
+            # Prepare WebSocket URL with query parameters
+            ws_url = f"ws://{self.app_url.split('://')[-1]}/ws?token={self.token}&user_id={self.user_id}&note_id={self.note_id}"
+            
+            # Read audio file and encode in chunks for sending
+            audio_chunks = self._read_audio_chunks(self.audio_file)
+            logger.info(f"Audio file loaded: {len(audio_chunks)} chunks")
+            
+            # Connect to WebSocket
+            async with websockets.connect(ws_url) as websocket:
+                logger.info("WebSocket connection established")
+                
+                # Send audio chunks
+                for i, chunk in enumerate(audio_chunks):
+                    chunk_b64 = base64.b64encode(chunk).decode('utf-8')
+                    message = {
+                        "data": chunk_b64
                     }
-                    message = json.dumps(payload)
+                    await websocket.send(json.dumps(message))
+                    logger.info(f"Sent audio chunk {i+1}/{len(audio_chunks)}")
                     
-                    # Send the JSON payload over the WebSocket.
-                    await websocket.send(message)
-                    logger.info("Sent chunk of size %d bytes", len(data))
-                    # Simulate real-time delay: chunk_duration = frames / framerate
-                    delay = chunk_size / framerate
+                    # Give the server some time to process
+                    await asyncio.sleep(0.1)
                     
-    except websockets.exceptions.ConnectionClosed as e:
-        logger.error("WebSocket connection closed: %s", e)
-    except Exception as e:
-        logger.exception("Unexpected error during audio streaming: %s", e)
-
-def main():
-    parser = argparse.ArgumentParser(description="Test Audio Streaming Pipeline")
-    parser.add_argument('--uri', type=str, default="ws://127.0.0.1:8001/ws",
-                        help="WebSocket URI")
-    parser.add_argument('--file', type=str, default=os.path.join("test_audios", "day1_consultation01_doctor.wav"),
-                        help="Path to the audio file")
-    parser.add_argument('--chunk', type=int, default=1024,
-                        help="Chunk size in frames")
-    args = parser.parse_args()
+                    # Check for any responses
+                    try:
+                        # Set a timeout for receiving
+                        response = await asyncio.wait_for(websocket.recv(), timeout=0.2)
+                        response_data = json.loads(response)
+                        
+                        if "text" in response_data:
+                            logger.info(f"Received transcription: {response_data['text']}")
+                        
+                        if "sections" in response_data:
+                            logger.info(f"Received sections: {len(response_data['sections'])} sections")
+                            for section in response_data['sections']:
+                                logger.info(f"  - Section: {section.get('title', 'Untitled')}")
+                    except asyncio.TimeoutError:
+                        # No response yet, continue
+                        pass
+                
+                # Send empty data to indicate end of stream
+                await websocket.send(json.dumps({"data": None}))
+                logger.info("Sent end-of-stream signal")
+                
+                # Wait for final processing
+                try:
+                    # Wait for final response with a longer timeout
+                    final_response = await asyncio.wait_for(websocket.recv(), timeout=5.0)
+                    response_data = json.loads(final_response)
+                    logger.info(f"Final response received: {json.dumps(response_data, indent=2)}")
+                except asyncio.TimeoutError:
+                    logger.info("No final response received within timeout")
+                
+                logger.info("WebSocket test completed")
+                
+        except Exception as e:
+            raise Exception(f"WebSocket test error: {str(e)}")
     
-    test_url = "http://127.0.0.1:8001/tests"
-    # asyncio.run(stream_audio(args.uri, args.file, args.chunk))
-    response = requests.get(test_url)
-    print(response.status_code, response.content)
+    def _read_audio_chunks(self, audio_file: str, chunk_size: int = 4096) -> List[bytes]:
+        """
+        Read audio file as chunks for streaming
+        
+        Args:
+            audio_file: Path to WAV audio file
+            chunk_size: Size of each chunk in bytes
+            
+        Returns:
+            List of audio data chunks
+        """
+        try:
+            with wave.open(audio_file, 'rb') as wav_file:
+                # Get audio parameters
+                channels = wav_file.getnchannels()
+                sample_width = wav_file.getsampwidth()
+                frame_rate = wav_file.getframerate()
+                logger.info(f"Audio file: {channels} channels, {sample_width} bytes/sample, {frame_rate} Hz")
+                
+                # Read chunks
+                chunks = []
+                data = wav_file.readframes(chunk_size)
+                while data:
+                    chunks.append(data)
+                    data = wav_file.readframes(chunk_size)
+                
+                return chunks
+        except Exception as e:
+            logger.error(f"Error reading audio file: {str(e)}")
+            return []
+
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description="MedSync Test Client")
+    parser.add_argument("--db-url", default=DEFAULT_DB_URL, help="URL for database service")
+    parser.add_argument("--app-url", default=DEFAULT_APP_URL, help="URL for main application")
+    parser.add_argument("--audio-file", default=DEFAULT_AUDIO_FILE, help="Path to audio file for testing")
+    return parser.parse_args()
 
 if __name__ == "__main__":
-    main()
+    args = parse_arguments()
+    client = TestClient(args.db_url, args.app_url, args.audio_file)
+    success = client.run_tests()
+    sys.exit(0 if success else 1)

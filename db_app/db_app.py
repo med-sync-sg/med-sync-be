@@ -1,53 +1,193 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from db_app.session import DataStore, DRUGS_AND_MEDICINES_TUI, PATIENT_INFORMATION_TUI
+from fastapi.responses import StreamingResponse
+from db_app.session import DataStore, DRUGS_AND_MEDICINES_TUI, PATIENT_INFORMATION_TUI, SYMPTOMS_AND_DISEASES_TUI
 from pyarrow import feather
 import io
 import pandas as pd
-from fastapi.responses import StreamingResponse
+import logging
+
+# Configure logger
+logger = logging.getLogger(__name__)
 
 '''
 The db_app.py is run separately from app.py through db_main.py such that heavy and stationary DB data loading is offloaded to
 a different process.
 '''
 def create_app() -> FastAPI:
-    app = FastAPI(title="Backend Connection", version="1.0.0")
+    """Create and configure the FastAPI app for database operations"""
+    app = FastAPI(
+        title="MedSync Data Service", 
+        description="Service for providing UMLS and vector database access",
+        version="1.0.0"
+    )
+    
+    # Add CORS middleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    
     return app
 
-# Instantiate your DataStore once
-data_store = DataStore()
-
-# drugs_and_medicines_df = data_store.get_concepts_with_sty_def(DRUGS_AND_MEDICINES_TUI)
-# patient_information_df = data_store.get_concepts_with_sty_def(PATIENT_INFORMATION_TUI, )
+# Create the app
 app = create_app()
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Initialize DataStore singleton - logs will indicate initialization progress
+try:
+    logger.info("Initializing DataStore for API endpoints")
+    data_store = DataStore()
+    logger.info("DataStore initialization complete")
+except Exception as e:
+    logger.error(f"Error initializing DataStore: {str(e)}")
+    # Continue anyway - the app will handle errors in the endpoints
 
 def serialize_dataframe_to_feather(df: pd.DataFrame) -> io.BytesIO:
-    buffer = io.BytesIO()
-    feather.write_feather(df, buffer)
-    buffer.seek(0)
-    return buffer
+    """
+    Serialize a pandas DataFrame to feather format in memory
+    
+    Args:
+        df: DataFrame to serialize
+        
+    Returns:
+        BytesIO buffer with serialized data
+    """
+    try:
+        buffer = io.BytesIO()
+        feather.write_feather(df, buffer)
+        buffer.seek(0)
+        return buffer
+    except Exception as e:
+        logger.error(f"Error serializing DataFrame: {str(e)}")
+        raise
+
+@app.get("/")
+def root():
+    """Root endpoint with service info"""
+    return {
+        "service": "MedSync Data Service",
+        "status": "running",
+        "endpoints": [
+            "/umls-data/drugs",
+            "/umls-data/symptoms-and-diseases",
+            "/status"
+        ]
+    }
+
+@app.get("/status")
+def get_status():
+    """Get service status and information"""
+    try:
+        # Check if DataStore is initialized
+        if not hasattr(data_store, '_initialized') or not data_store._initialized:
+            return {
+                "status": "initializing",
+                "message": "DataStore is still initializing"
+            }
+        
+        # Get database schema info
+        table_status = {}
+        for table in ["TextCategories", "TextCategoryEmbeddings", "ContentDictionaryJson"]:
+            try:
+                count = data_store.get_row_count(table)
+                table_status[table] = {
+                    "exists": True,
+                    "row_count": count
+                }
+            except Exception:
+                table_status[table] = {
+                    "exists": False,
+                    "row_count": 0
+                }
+        
+        # Return status info
+        return {
+            "status": "ready",
+            "concepts_loaded": len(data_store.concepts_with_sty_def_df),
+            "database_schema": data_store.schema_name,
+            "tables": table_status
+        }
+    except Exception as e:
+        logger.error(f"Error getting status: {str(e)}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
 
 @app.get("/umls-data/drugs")
 def get_drugs():
-    buffer = serialize_dataframe_to_feather(data_store.concepts_with_sty_def_df)
-    return StreamingResponse(buffer, media_type="application/octet-stream")
-
+    """
+    Get drugs and medicines data as a feather-serialized dataframe
+    """
+    try:
+        # Filter the concepts dataframe to only include drugs/medicines
+        drugs_df = data_store.concepts_with_sty_def_df[
+            data_store.concepts_with_sty_def_df["TUI"].isin(DRUGS_AND_MEDICINES_TUI)
+        ]
+        
+        if len(drugs_df) == 0:
+            logger.warning("No drug data found")
+            
+        # Serialize and return
+        buffer = serialize_dataframe_to_feather(drugs_df)
+        return StreamingResponse(buffer, media_type="application/octet-stream")
+    
+    except Exception as e:
+        logger.error(f"Error processing drugs request: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing drugs data: {str(e)}"
+        )
 
 @app.get("/umls-data/symptoms-and-diseases")
 def get_symptoms_and_diseases():
-    buffer = serialize_dataframe_to_feather(data_store.concepts_with_sty_def_df)
-    return StreamingResponse(buffer, media_type="application/octet-stream")
+    """
+    Get symptoms and diseases data as a feather-serialized dataframe
+    """
+    try:
+        # Filter to symptoms and diseases
+        symptoms_df = data_store.concepts_with_sty_def_df[
+            data_store.concepts_with_sty_def_df["TUI"].isin(SYMPTOMS_AND_DISEASES_TUI)
+        ]
+        
+        if len(symptoms_df) == 0:
+            logger.warning("No symptoms/diseases data found")
+            
+        # Serialize and return
+        buffer = serialize_dataframe_to_feather(symptoms_df)
+        return StreamingResponse(buffer, media_type="application/octet-stream")
+    
+    except Exception as e:
+        logger.error(f"Error processing symptoms request: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing symptoms data: {str(e)}"
+        )
 
-# @app.get("/umls-data/patient-information")
-# def get_patient_information():
-#     buffer = serialize_dataframe_to_feather(patient_information_df)
-#     return StreamingResponse(buffer, media_type="application/octet-stream")
+@app.get("/umls-data/patient-information")
+def get_patient_information():
+    """
+    Get patient information data as a feather-serialized dataframe
+    """
+    try:
+        # Filter to patient information
+        patient_info_df = data_store.concepts_with_sty_def_df[
+            data_store.concepts_with_sty_def_df["TUI"].isin(PATIENT_INFORMATION_TUI)
+        ]
+        
+        if len(patient_info_df) == 0:
+            logger.warning("No patient information data found")
+            
+        # Serialize and return
+        buffer = serialize_dataframe_to_feather(patient_info_df)
+        return StreamingResponse(buffer, media_type="application/octet-stream")
+    
+    except Exception as e:
+        logger.error(f"Error processing patient info request: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing patient information data: {str(e)}"
+        )
