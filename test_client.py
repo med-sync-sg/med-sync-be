@@ -37,7 +37,7 @@ logger = logging.getLogger("test_client")
 # Default URLs
 DEFAULT_DB_URL = "http://127.0.0.1:8002"
 DEFAULT_APP_URL = "http://127.0.0.1:8001"
-DEFAULT_AUDIO_FILE = os.path.join("test_audios", "day1_consultation01_doctor.wav")
+DEFAULT_AUDIO_FILE = os.path.join("test_audios", "test_30sec.wav")
 
 class TestClient:
     """Test client for MedSync application"""
@@ -182,18 +182,18 @@ class TestClient:
             if not self.token or not self.user_id:
                 raise Exception("Not authenticated")
             
-            headers = {"Authorization": f"Bearer {self.token}"}
+            headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
             
             # Create a note
             note_data = {
                 "title": f"Test Note {int(time.time())}",
-                "patient_id": 12345,  # Test patient ID
                 "user_id": self.user_id,
-                "encounter_date": time.strftime("%Y-%m-%d"),
-                "sections": []  # Empty sections to start with
+                "patient_id": 12345,
+                "encounter_date": "2023-04-03",
+                "sections": []
             }
-            
-            response = requests.post(f"{self.app_url}/notes/", json=note_data, headers=headers)
+            response = requests.post(f"{self.app_url}/notes/create", json=note_data, headers=headers)
+            print(response.status_code, response.text)
             if response.status_code != 201:
                 raise Exception(f"Failed to create note: {response.status_code}")
             
@@ -206,6 +206,88 @@ class TestClient:
             
         except requests.RequestException as e:
             raise Exception(f"Error creating test note: {str(e)}")
+    
+    def test_text_processing(self):
+        """
+        Test direct text processing without audio transcription
+        
+        This sends a text file directly to the backend for processing
+        """
+        logger.info("Testing direct text processing...")
+        
+        try:
+            if not self.token or not self.user_id or not self.note_id:
+                raise Exception("Authentication or note creation failed, cannot test text processing")
+            
+            if not self.text_file or not os.path.exists(self.text_file):
+                raise Exception(f"Text file not found: {self.text_file}")
+            
+            # Read the text file
+            with open(self.text_file, 'r', encoding='utf-8') as file:
+                text_content = file.read()
+                
+            logger.info(f"Loaded text file ({len(text_content)} characters)")
+            
+            headers = {
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json"
+            }
+            
+            # Prepare the request data
+            request_data = {
+                "text": text_content,
+                "user_id": self.user_id,
+                "note_id": self.note_id
+            }
+            
+            # Send the text to the backend for processing
+            # NOTE: The endpoint '/api/v1/endpoints/tests/text-transcript' is a suggested endpoint
+            # Your backend might have a different endpoint for text processing
+            response = requests.post(
+                f"{self.app_url}/tests/text-transcript", 
+                json=request_data, 
+                headers=headers
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"Text processing failed: {response.status_code}")
+                logger.error(f"Response: {response.text}")
+                raise Exception(f"Failed to process text: {response.status_code}")
+            
+            # Process response
+            result = response.json()
+            
+            # Log the results
+            logger.info("Text processing successful!")
+            
+            if isinstance(result, list):
+                logger.info(f"Received {len(result)} processed sections")
+                for i, section in enumerate(result):
+                    if isinstance(section, str):
+                        # If it's a serialized JSON string, try to parse it
+                        try:
+                            section_obj = json.loads(section)
+                            logger.info(f"Section {i+1}:")
+                            # Check for common patterns in the returned data
+                            if "Main Symptom" in section_obj:
+                                symptom_name = section_obj["Main Symptom"].get("name", "Unknown")
+                                logger.info(f"  - Main symptom: {symptom_name}")
+                            # Log the full object if it's small enough
+                            if len(section) < 500:
+                                logger.info(f"  - Full content: {section}")
+                            else:
+                                logger.info(f"  - Full content omitted (too large)")
+                        except json.JSONDecodeError:
+                            logger.info(f"Section {i+1}: {section[:100]}...")
+                    else:
+                        logger.info(f"Section {i+1}: {section}")
+            else:
+                logger.info(f"Result: {result}")
+                
+            return result
+            
+        except Exception as e:
+            raise Exception(f"Text processing test error: {str(e)}")
     
     async def test_websocket(self):
         """Test WebSocket connection and audio processing"""
