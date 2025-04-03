@@ -33,45 +33,107 @@ automaton = ahocorasick.Automaton()
 
 @Language.component("ahocorasick")
 def AhoCorasickComponent(doc: Doc):
-    for index, row in df.iterrows():
-        term = row["STR"].strip().lower()  # Normalize
-        data = {
-            'term': term,
-            'cui': row['CUI'],
-            'semantic_type': row['STY'],
-            'tui': row["TUI"]
-        }
-        automaton.add_word(term, data)
-
-    automaton.make_automaton()
-
-    matches = []
+    """
+    A custom spaCy component that uses the Aho-Corasick algorithm to find medical terms in text.
+    This fixed version handles overlapping entity spans.
+    
+    Args:
+        doc: A spaCy Doc object
+        
+    Returns:
+        doc: The processed spaCy Doc with medical entities added
+    """
+    # Build the automaton if it's not already built
+    if not automaton.get_stats()['total_size']:
+        for index, row in df.iterrows():
+            term = row["STR"].strip().lower()  # Normalize
+            data = {
+                'term': term,
+                'cui': row['CUI'],
+                'semantic_type': row['STY'],
+                'tui': row["TUI"]
+            }
+            automaton.add_word(term, data)
+        automaton.make_automaton()
+    
     text_lower = doc.text.lower()
     
-    # Iterate over matches from the automaton.
-    for end_index, data in automaton.iter(doc.text.lower()):
+    # Get all potential matches
+    matches = []
+    for end_index, data in automaton.iter(text_lower):
         term = data['term']  # The stored term (lowercase)
         start_char = end_index - len(term) + 1
         end_char = end_index + 1
         # Extract the substring from the document.
         found_text = text_lower[start_char:end_char]
-        span = doc.char_span(start_char, end_char, label=data['semantic_type'], alignment_mode="expand")
-        if found_text.strip().lower() == term.strip().lower():            
-            span._.is_medical_term = True
-            matches.append(span)
-        else:
-            # Compute the Levenshtein ratio between the found text and the stored term.
-            sim = levenshtein_ratio(found_text, term)
-            # Accept the match if similarity is above the threshold.
-            if sim >= 0.85:
-                span = doc.char_span(start_char, end_char, label=data["semantic_type"], alignment_mode="expand")
-                if span is not None:
-                    # Mark this span as coming from Aho-Corasick.
+        
+        span = doc.char_span(start_char, end_char, label=data['semantic_type'], alignment_mode="contract")
+        if span is None:
+            # Try with expand if contract fails
+            span = doc.char_span(start_char, end_char, label=data['semantic_type'], alignment_mode="expand")
+            
+        if span is not None:
+            if found_text.strip().lower() == term.strip().lower():            
+                span._.is_medical_term = True
+                # Save all information we need for later
+                matches.append({
+                    'span': span,
+                    'score': 1.0,  # Perfect match
+                    'type': data['semantic_type'],
+                    'term': term
+                })
+            else:
+                # Compute the Levenshtein ratio between the found text and the stored term.
+                sim = levenshtein_ratio(found_text, term)
+                # Accept the match if similarity is above the threshold.
+                if sim >= 0.85:
                     span._.is_medical_term = True
-                    matches.append(span)
+                    matches.append({
+                        'span': span,
+                        'score': sim,  # Levenshtein similarity
+                        'type': data['semantic_type'],
+                        'term': term
+                    })
 
-    # Replace doc.ents entirely with our matches.
-    doc.ents = list(doc.ents) + matches
+    # Sort matches by score (higher is better)
+    matches.sort(key=lambda x: x['score'], reverse=True)
+    
+    # Resolve overlapping spans by keeping only the highest-scored spans
+    # that don't overlap with already selected spans
+    final_matches = []
+    used_tokens = set()
+    
+    for match in matches:
+        span = match['span']
+        # Check if any token in this span has already been used
+        if not any(token.i in used_tokens for token in span):
+            # If not, add this span and mark its tokens as used
+            final_matches.append(span)
+            used_tokens.update(token.i for token in span)
+    
+    # Create a new list combining existing non-medical entities with our medical entities
+    existing_ents = [ent for ent in doc.ents if not getattr(ent, '_.is_medical_term', False)]
+    merged_ents = existing_ents + final_matches
+    
+    # Filter out any remaining overlaps (should be none after our resolution)
+    # This is a safety check in case there are still conflicts
+    token_ent_map = {}
+    filtered_ents = []
+    
+    for ent in merged_ents:
+        valid = True
+        for token in ent:
+            if token.i in token_ent_map:
+                valid = False
+                break
+        
+        if valid:
+            filtered_ents.append(ent)
+            for token in ent:
+                token_ent_map[token.i] = len(filtered_ents) - 1
+    
+    # Set the final entities
+    doc.ents = filtered_ents
     return doc
 
 def summarize_text():
@@ -136,7 +198,7 @@ def find_modifiers_for_medical_span(span: Span) -> Dict[str, Any]:
                      plus any adjective children (with DEP "amod" or "attr") attached to the head,
       - "quantities": list of tokens (or extracted PP spans) that indicate numeric/compound modifiers.
     Only tokens in the same sentence as the target are considered.
-    Returns a list of dictionaries.
+    Returns a dictionary.
     """
     # Load the model (in practice, load this once externally)
     nlp_en = spacy.load("en_core_web_trf")
@@ -201,9 +263,9 @@ def find_modifiers_for_medical_span(span: Span) -> Dict[str, Any]:
 def find_medical_modifiers(doc: Doc) -> List[Dict[str, Any]]:
     """
     Iterate over all spans in the Doc (here, we assume medical terms appear as entities)
-    that have the custom extension 'is_medical' set to True.
+    that have the custom extension 'is_medical_term' set to True.
     For each such span, find and return its adjective and number modifiers.
-    Returns a dictionary mapping each medical span to a list of its modifiers.
+    Returns a list of dictionaries, each containing modifier information for a medical term.
     """
     features = []
     for span in doc.ents:
@@ -211,23 +273,60 @@ def find_medical_modifiers(doc: Doc) -> List[Dict[str, Any]]:
         if span._.is_medical_term == True:
             print("Medical term: ", span.text)
             mods = find_modifiers_for_medical_span(span)
-            features.append(mods)
-    features = merge_results_dicts(features)
-    print("Modifiers result: ", features)
-    return features
+            # Ensure we're adding a dictionary, not a list
+            if isinstance(mods, dict):
+                features.append(mods)
+            elif isinstance(mods, list):
+                # If for some reason find_modifiers_for_medical_span returns a list,
+                # extend features with the list items
+                for item in mods:
+                    if isinstance(item, dict):
+                        features.append(item)
+    
+    # Now merge the dictionaries to remove duplicates
+    merged_features = merge_results_dicts(features)
+    print("Modifiers result: ", merged_features)
+    return merged_features
 
 def merge_results_dicts(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Merge dictionaries with the same 'term' field, combining their modifiers and quantities lists.
+    
+    Args:
+        results: List of dictionaries, each with 'term', 'modifiers', and 'quantities' fields
+        
+    Returns:
+        List of merged dictionaries
+    """
+    if not results:
+        return []
+    
     merged = {}
-    for d in results:
-        term = d.get("term", "")
+    for item in results:
+        # Skip non-dictionary items
+        if not isinstance(item, dict):
+            print(f"Skipping non-dictionary item: {item}")
+            continue
+        
+        term = item.get("term", "")
+        if not term:  # Skip items without a term
+            continue
+            
         if term in merged:
-            merged[term]["modifiers"].extend(d.get("modifiers", []))
-            merged[term]["quantities"].extend(d.get("quantities", []))
+            # Extend existing modifiers and quantities lists
+            modifiers = item.get("modifiers", [])
+            quantities = item.get("quantities", [])
+            
+            if isinstance(modifiers, list):
+                merged[term]["modifiers"].extend(modifiers)
+            if isinstance(quantities, list):
+                merged[term]["quantities"].extend(quantities)
         else:
-            # Create a new entry copying the lists to avoid modifying the original lists.
+            # Create a new entry copying the lists to avoid modifying the original lists
             merged[term] = {
                 "term": term,
-                "modifiers": list(d.get("modifiers", [])),
-                "quantities": list(d.get("quantities", []))
+                "modifiers": list(item.get("modifiers", [])),
+                "quantities": list(item.get("quantities", []))
             }
+    
     return list(merged.values())

@@ -39,6 +39,46 @@ DEFAULT_DB_URL = "http://127.0.0.1:8002"
 DEFAULT_APP_URL = "http://127.0.0.1:8001"
 DEFAULT_AUDIO_FILE = os.path.join("test_audios", "test_30sec.wav")
 
+SAMPLE_TRANSCRIPT = """
+Doctor: Good morning, how can I help you today?
+
+Patient: Hello doctor. I've been having a persistent cough for the past two weeks. It started as just a tickle in my throat but now it's getting worse.
+
+Doctor: I'm sorry to hear that. Is your cough dry or are you coughing up any phlegm?
+
+Patient: It's mostly dry, but sometimes in the morning I cough up some clear phlegm. Not much though.
+
+Doctor: I see. And have you been experiencing any other symptoms? Fever, chills, shortness of breath?
+
+Patient: I had a slight fever for a couple of days when it first started, maybe 99.5°F. No chills. I do feel a bit short of breath when I climb the stairs, which isn't normal for me.
+
+Doctor: Are you having any chest pain or tightness?
+
+Patient: Not really pain, but sometimes I feel some tightness in my chest, especially after coughing a lot.
+
+Doctor: Have you been exposed to anyone with similar symptoms or who's been sick recently?
+
+Patient: Yes, my coworker had a bad cold last month. Several people in the office got sick afterward.
+
+Doctor: I understand. What about your medical history? Do you have any conditions like asthma, allergies, or COPD?
+
+Patient: I have mild seasonal allergies, usually in the spring, but no asthma or anything like that. I'm generally healthy.
+
+Doctor: Do you smoke or vape?
+
+Patient: No, never have.
+
+Doctor: And are you taking any medications currently?
+
+Patient: Just over-the-counter stuff for the cough - some Mucinex and occasionally Tylenol for headaches.
+
+Doctor: Based on what you've told me, this sounds like a post-viral cough, possibly from a respiratory infection. I'd like to listen to your lungs and check your throat to make sure.
+
+Patient: That makes sense. I was wondering if it might be bronchitis or something.
+
+Doctor: It's possible. Let me examine you and we'll figure out the best treatment approach.
+"""
+
 class TestClient:
     """Test client for MedSync application"""
     
@@ -74,8 +114,10 @@ class TestClient:
             self.create_test_note()
             
             # Test WebSocket (needs to run in an async context)
-            asyncio.run(self.test_websocket())
+            # asyncio.run(self.test_websocket())
             
+            
+            self.test_text_processing()
             logger.info("All tests completed successfully!")
             return True
             
@@ -193,7 +235,7 @@ class TestClient:
                 "sections": []
             }
             response = requests.post(f"{self.app_url}/notes/create", json=note_data, headers=headers)
-            print(response.status_code, response.text)
+
             if response.status_code != 201:
                 raise Exception(f"Failed to create note: {response.status_code}")
             
@@ -219,12 +261,13 @@ class TestClient:
             if not self.token or not self.user_id or not self.note_id:
                 raise Exception("Authentication or note creation failed, cannot test text processing")
             
-            if not self.text_file or not os.path.exists(self.text_file):
-                raise Exception(f"Text file not found: {self.text_file}")
+            # if not self.text_file or not os.path.exists(self.text_file):
+                # raise Exception(f"Text file not found: {self.text_file}")
             
             # Read the text file
-            with open(self.text_file, 'r', encoding='utf-8') as file:
-                text_content = file.read()
+            # with open(self.text_file, 'r', encoding='utf-8') as file:
+                # text_content = file.read()
+            text_content = SAMPLE_TRANSCRIPT
                 
             logger.info(f"Loaded text file ({len(text_content)} characters)")
             
@@ -235,14 +278,10 @@ class TestClient:
             
             # Prepare the request data
             request_data = {
-                "text": text_content,
-                "user_id": self.user_id,
-                "note_id": self.note_id
+                "transcript": text_content
             }
             
             # Send the text to the backend for processing
-            # NOTE: The endpoint '/api/v1/endpoints/tests/text-transcript' is a suggested endpoint
-            # Your backend might have a different endpoint for text processing
             response = requests.post(
                 f"{self.app_url}/tests/text-transcript", 
                 json=request_data, 

@@ -3,7 +3,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, status
 from sqlalchemy.orm import Session
 import logging
 
-from app.api.v1.endpoints import auth, notes, users, reports
+from app.api.v1.endpoints import auth, notes, users, reports, tests
 from app.db.local_session import DatabaseManager
 from app.services.audio_service import AudioService
 from app.services.transcription_service import TranscriptionService
@@ -29,6 +29,7 @@ def create_app() -> FastAPI:
     app.include_router(notes.router, prefix="/notes", tags=["note"])
     app.include_router(users.router, prefix="/users", tags=["user"])
     app.include_router(reports.router, prefix="/reports", tags=["report"])
+    app.include_router(tests.router, prefix="/tests", tags=["test"])
 
     # Add CORS middleware
     app.add_middleware(
