@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from typing import Optional, List
+from app.schemas.note import NoteRead
 
 class UserBase(BaseModel):
     username: str
@@ -8,7 +9,6 @@ class UserBase(BaseModel):
     last_name: str
     email: str
     age: int
-    notes: List
 
 class UserCreate(UserBase):
     password: str

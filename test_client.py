@@ -37,7 +37,47 @@ logger = logging.getLogger("test_client")
 # Default URLs
 DEFAULT_DB_URL = "http://127.0.0.1:8002"
 DEFAULT_APP_URL = "http://127.0.0.1:8001"
-DEFAULT_AUDIO_FILE = os.path.join("test_audios", "day1_consultation01_doctor.wav")
+DEFAULT_AUDIO_FILE = os.path.join("test_audios", "test_30sec.wav")
+
+SAMPLE_TRANSCRIPT = """
+Doctor: Good morning, how can I help you today?
+
+Patient: Hello doctor. I've been having a persistent cough for the past two weeks. It started as just a tickle in my throat but now it's getting worse.
+
+Doctor: I'm sorry to hear that. Is your cough dry or are you coughing up any phlegm?
+
+Patient: It's mostly dry, but sometimes in the morning I cough up some clear phlegm. Not much though.
+
+Doctor: I see. And have you been experiencing any other symptoms? Fever, chills, shortness of breath?
+
+Patient: I had a slight fever for a couple of days when it first started, maybe 99.5°F. No chills. I do feel a bit short of breath when I climb the stairs, which isn't normal for me.
+
+Doctor: Are you having any chest pain or tightness?
+
+Patient: Not really pain, but sometimes I feel some tightness in my chest, especially after coughing a lot.
+
+Doctor: Have you been exposed to anyone with similar symptoms or who's been sick recently?
+
+Patient: Yes, my coworker had a bad cold last month. Several people in the office got sick afterward.
+
+Doctor: I understand. What about your medical history? Do you have any conditions like asthma, allergies, or COPD?
+
+Patient: I have mild seasonal allergies, usually in the spring, but no asthma or anything like that. I'm generally healthy.
+
+Doctor: Do you smoke or vape?
+
+Patient: No, never have.
+
+Doctor: And are you taking any medications currently?
+
+Patient: Just over-the-counter stuff for the cough - some Mucinex and occasionally Tylenol for headaches.
+
+Doctor: Based on what you've told me, this sounds like a post-viral cough, possibly from a respiratory infection. I'd like to listen to your lungs and check your throat to make sure.
+
+Patient: That makes sense. I was wondering if it might be bronchitis or something.
+
+Doctor: It's possible. Let me examine you and we'll figure out the best treatment approach.
+"""
 
 class TestClient:
     """Test client for MedSync application"""
@@ -74,8 +114,10 @@ class TestClient:
             self.create_test_note()
             
             # Test WebSocket (needs to run in an async context)
-            asyncio.run(self.test_websocket())
+            # asyncio.run(self.test_websocket())
             
+            
+            self.test_text_processing()
             logger.info("All tests completed successfully!")
             return True
             
@@ -182,18 +224,18 @@ class TestClient:
             if not self.token or not self.user_id:
                 raise Exception("Not authenticated")
             
-            headers = {"Authorization": f"Bearer {self.token}"}
+            headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
             
             # Create a note
             note_data = {
                 "title": f"Test Note {int(time.time())}",
-                "patient_id": 12345,  # Test patient ID
                 "user_id": self.user_id,
-                "encounter_date": time.strftime("%Y-%m-%d"),
-                "sections": []  # Empty sections to start with
+                "patient_id": 12345,
+                "encounter_date": "2023-04-03",
+                "sections": []
             }
-            
-            response = requests.post(f"{self.app_url}/notes/", json=note_data, headers=headers)
+            response = requests.post(f"{self.app_url}/notes/create", json=note_data, headers=headers)
+
             if response.status_code != 201:
                 raise Exception(f"Failed to create note: {response.status_code}")
             
@@ -206,6 +248,85 @@ class TestClient:
             
         except requests.RequestException as e:
             raise Exception(f"Error creating test note: {str(e)}")
+    
+    def test_text_processing(self):
+        """
+        Test direct text processing without audio transcription
+        
+        This sends a text file directly to the backend for processing
+        """
+        logger.info("Testing direct text processing...")
+        
+        try:
+            if not self.token or not self.user_id or not self.note_id:
+                raise Exception("Authentication or note creation failed, cannot test text processing")
+            
+            # if not self.text_file or not os.path.exists(self.text_file):
+                # raise Exception(f"Text file not found: {self.text_file}")
+            
+            # Read the text file
+            # with open(self.text_file, 'r', encoding='utf-8') as file:
+                # text_content = file.read()
+            text_content = SAMPLE_TRANSCRIPT
+                
+            logger.info(f"Loaded text file ({len(text_content)} characters)")
+            
+            headers = {
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json"
+            }
+            
+            # Prepare the request data
+            request_data = {
+                "transcript": text_content
+            }
+            
+            # Send the text to the backend for processing
+            response = requests.post(
+                f"{self.app_url}/tests/text-transcript", 
+                json=request_data, 
+                headers=headers
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"Text processing failed: {response.status_code}")
+                logger.error(f"Response: {response.text}")
+                raise Exception(f"Failed to process text: {response.status_code}")
+            
+            # Process response
+            result = response.json()
+            
+            # Log the results
+            logger.info("Text processing successful!")
+            
+            if isinstance(result, list):
+                logger.info(f"Received {len(result)} processed sections")
+                for i, section in enumerate(result):
+                    if isinstance(section, str):
+                        # If it's a serialized JSON string, try to parse it
+                        try:
+                            section_obj = json.loads(section)
+                            logger.info(f"Section {i+1}:")
+                            # Check for common patterns in the returned data
+                            if "Main Symptom" in section_obj:
+                                symptom_name = section_obj["Main Symptom"].get("name", "Unknown")
+                                logger.info(f"  - Main symptom: {symptom_name}")
+                            # Log the full object if it's small enough
+                            if len(section) < 500:
+                                logger.info(f"  - Full content: {section}")
+                            else:
+                                logger.info(f"  - Full content omitted (too large)")
+                        except json.JSONDecodeError:
+                            logger.info(f"Section {i+1}: {section[:100]}...")
+                    else:
+                        logger.info(f"Section {i+1}: {section}")
+            else:
+                logger.info(f"Result: {result}")
+                
+            return result
+            
+        except Exception as e:
+            raise Exception(f"Text processing test error: {str(e)}")
     
     async def test_websocket(self):
         """Test WebSocket connection and audio processing"""

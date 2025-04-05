@@ -49,19 +49,7 @@ class SignupResponse(BaseModel):
 router = APIRouter()
 
 @router.post("/login", response_model=TokenResponse)
-async def login_with_form(
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    db: Session = Depends(get_session)
-):
-    """
-    Authenticate a user using form data and return an access token
-    
-    This endpoint accepts standard OAuth2 form data
-    """
-    return await authenticate_user(form_data.username, form_data.password, db)
-
-@router.post("/login-json", response_model=TokenResponse)
-async def login_with_json(
+async def login(
     credentials: LoginRequest,
     db: Session = Depends(get_session)
 ):
@@ -71,6 +59,77 @@ async def login_with_json(
     This endpoint accepts JSON with username and password fields
     """
     return await authenticate_user(credentials.username, credentials.password, db)
+
+
+@router.post("/sign-up", response_model=SignupResponse, status_code=status.HTTP_201_CREATED)
+async def signup(user_data: UserCreate, db: Session = Depends(get_session)):
+    """
+    Register a new user
+    
+    Args:
+        user_data: User creation data
+        db: Database session
+        
+    Returns:
+        New user information and access token
+    """
+    # Check if username already exists
+    existing_user = db.query(User).filter(User.username == user_data.username).first()
+    if existing_user:
+        logger.warning(f"Signup attempt with existing username: {user_data.username}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already taken"
+        )
+    
+    # Check if email already exists (if provided)
+    if user_data.email:
+        existing_email = db.query(User).filter(User.email == user_data.email).first()
+        if existing_email:
+            logger.warning(f"Signup attempt with existing email: {user_data.email}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered"
+            )
+    
+    try:
+        # Hash the password
+        hashed_password = hash_password(user_data.password)
+        
+        # Create user object
+        new_user = User(
+            username=user_data.username,
+            email=user_data.email,
+            hashed_password=hashed_password,
+            first_name=user_data.first_name,
+            middle_name=user_data.middle_name,
+            last_name=user_data.last_name,
+            age=user_data.age
+        )
+        
+        # Save to database
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+        
+        # Generate JWT token
+        token_data = {"sub": str(new_user.id), "username": new_user.username}
+        access_token = create_access_token(token_data)
+        
+        logger.info(f"New user registered: ID {new_user.id}, username {new_user.username}")
+        return {
+            "user_id": new_user.id,
+            "access_token": access_token,
+            "token_type": "bearer"
+        }
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error during user registration: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Registration failed. Please try again later."
+        )
 
 async def authenticate_user(username: str, password: str, db: Session):
     """

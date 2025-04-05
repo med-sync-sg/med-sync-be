@@ -1,0 +1,49 @@
+[
+    {
+      "case_id": 1,
+      "transcript": "Patient: Doctor, I've had a sore throat for the past three days, and it's getting worse. It feels scratchy, and swallowing is uncomfortable.\nDoctor: I see. Has it been painful enough to affect eating or drinking?\nPatient: No, but I also have a mild cough and keep sneezing a lot. My nose has been running non-stop.",
+      "entities": [
+        {
+          "text": "sore throat",
+          "label": "SYMPTOM",
+          "start": 19,
+          "end": 30
+        },
+        {
+          "text": "mild cough",
+          "label": "SYMPTOM",
+          "start": 181,
+          "end": 191
+        },
+        {
+          "text": "sneezing",
+          "label": "SYMPTOM",
+          "start": 203,
+          "end": 211
+        },
+        {
+          "text": "runny nose",
+          "label": "SYMPTOM",
+          "start": 237,
+          "end": 247
+        }
+      ],
+      "expected_keywords": [
+        {
+          "term": "sore throat",
+          "modifiers": ["scratchy", "uncomfortable"],
+          "quantities": ["three days"]
+        },
+        {
+          "term": "cough",
+          "modifiers": ["mild"],
+          "quantities": []
+        },
+        {
+          "term": "runny nose",
+          "modifiers": [],
+          "quantities": []
+        }
+      ]
+    }
+  ]

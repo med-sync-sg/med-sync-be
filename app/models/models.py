@@ -2,6 +2,7 @@ from sqlalchemy import Column, Integer, String, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from sqlalchemy.orm import relationship, declarative_base, Mapped, mapped_column, Session
 from app.schemas.section import TextCategoryEnum, SectionCreate
+from typing import Optional 
 
 Base = declarative_base()
 
@@ -10,6 +11,10 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     username: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    first_name: Mapped[str] = mapped_column(String, nullable=False)
+    middle_name: Mapped[str] = mapped_column(String, nullable=True)
+    last_name: Mapped[str] = mapped_column(String, nullable=False)
+
     email: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
     age: Mapped[int] = mapped_column(Integer, nullable=True)
     hashed_password: Mapped[str] = mapped_column(String, nullable=False)
@@ -21,7 +26,7 @@ class Note(Base):
     __tablename__ = "notes"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    patient_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    patient_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     title: Mapped[str] = mapped_column(String, nullable=False)
     encounter_date: Mapped[str] = mapped_column(String)  # Can also be Date if preferred
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
@@ -33,7 +38,7 @@ class Section(Base):
     
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     note_id: Mapped[int] = mapped_column(Integer, ForeignKey("notes.id"), nullable=False)
-    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     title: Mapped[str] = mapped_column(String, default="")
     content = Column(JSONB)
     section_type: Mapped[str] = mapped_column(String, default=TextCategoryEnum.OTHERS.name)
