@@ -6,6 +6,7 @@ import logging
 import json
 import time
 import os
+import traceback
 
 from sqlalchemy.orm import Session
 from app.db.local_session import DatabaseManager
@@ -47,395 +48,344 @@ class TranscriptFragment(BaseModel):
     """Request model for text transcript processing"""
     transcript: str
 
-class TestConfig(BaseModel):
-    """Configuration for test execution"""
-    detailed_logging: bool = False
-    include_raw_nlp: bool = False
-    return_sections: bool = True
-    benchmark: bool = False
+class BasicTestRequest(BaseModel):
+    """Request model for basic test endpoint"""
+    text: str
 
-class DiagnosticInfo(BaseModel):
-    """Model for diagnostic information about the processing pipeline"""
-    elapsed_time: float
-    entity_count: int
-    keyword_count: int
-    section_count: int
-
-class ProcessingResult(BaseModel):
-    """Comprehensive response model for processing results"""
+class MetricsResponse(BaseModel):
+    """Response model with metrics information"""
     success: bool
-    message: str
-    sections: Optional[List[Dict[str, Any]]] = None
-    diagnostic: Optional[DiagnosticInfo] = None
-    raw_nlp: Optional[Dict[str, Any]] = None
-
-@router.get("/")
-def test_with_sample_transcript():
-    """
-    Run a test using the built-in sample transcript
-    
-    Returns a list of processed medical data structures
-    """
-    transcription_doc = process_text(demo_transcript)
-    logging.info(f"Entities: {transcription_doc.ents}")
-        
-    # Extract prototype features from the transcript
-    keyword_extract_service.buffer_keywords = find_medical_modifiers(doc=transcription_doc)
-    logging.info(f"Extracted keywords: {keyword_extract_service.buffer_keywords}")
-    
-    # Merge duplicate entries based on the 'term'
-    result_dicts = []
-    for keyword_dict in keyword_extract_service.buffer_keywords:
-        found = False
-        for i, existing_dict in enumerate(result_dicts):
-            if keyword_dict["term"] == existing_dict["term"]:
-                # If duplicate found, skip
-                found = True
-                break
-        if not found:
-            result_dicts.append(keyword_dict)
-    keyword_extract_service.final_keywords = result_dicts
-    
-    result = []
-    for result_keyword_dict in keyword_extract_service.final_keywords:
-        category = classify_text_category(result_keyword_dict["term"])
-        template = find_content_dictionary(result_keyword_dict, category)
-        # Use the prototype-based merging function
-        merged_content = merge_flat_keywords_into_template(result_keyword_dict, template, threshold=0.5)
-        logging.info("Merged Content Dictionary: %s", merged_content)
-        if merged_content.get("Main Symptom") is not None:
-            if len(merged_content["Main Symptom"]["name"]) == 0:
-                print("Content not added as it has no name: ", merged_content)
-            else:
-                result.append(merged_content)
-    return result
-
-@router.post("/text-transcript", response_model=List[str])
-def process_text_transcript(fragment: TranscriptFragment):
-    """
-    Process a text transcript fragment
-    
-    Takes a text transcript and runs it through the NLP pipeline,
-    returning the generated sections as JSON strings
-    
-    Args:
-        fragment: TranscriptFragment object containing the transcript text
-        
-    Returns:
-        List of JSON-serialized section objects
-    """
-    text = fragment.transcript
-    transcription_doc = process_text(text)
-    logging.info(f"Entities: {transcription_doc.ents}")
-    
-    keyword_extract_service.buffer_keywords = find_medical_modifiers(doc=transcription_doc)
-    logging.info(f"Extracted keywords: {keyword_extract_service.buffer_keywords}")
-    
-    result_dicts = []
-    for keyword_dict in keyword_extract_service.buffer_keywords:
-        found = False
-        for i, existing_dict in enumerate(result_dicts):
-            if keyword_dict["term"] == existing_dict["term"]:
-                found = True
-                break
-        if not found:
-            result_dicts.append(keyword_dict)
-    keyword_extract_service.final_keywords = result_dicts
-    
-    # Create sections based on final_keyword_dicts and prototype-based mapping
-    sections = []
-    for result_keyword_dict in keyword_extract_service.final_keywords:
-        category = classify_text_category(result_keyword_dict["term"])
-        template = find_content_dictionary(result_keyword_dict, category)
-        merged_content = merge_flat_keywords_into_template(result_keyword_dict, template, threshold=0.5)
-        if merged_content.get("Main Symptom") is not None:
-            if len(merged_content["Main Symptom"]["name"]) == 0:
-                print("Content not added as it has no name: ", merged_content)
-            else:
-                sections.append(merged_content)    
-    
-    sections_json = []
-    for section in sections:
-        sections_json.append(json.dumps(section))
-    return sections_json
-
-@router.post("/advanced-text-processing", response_model=ProcessingResult)
-def advanced_text_processing(
-    fragment: TranscriptFragment = Body(...),
-    config: TestConfig = Body(TestConfig()),
-    db: Session = Depends(get_session)
-):
-    """
-    Advanced text processing endpoint with detailed diagnostics
-    
-    Processes a text transcript with configurable options for
-    diagnostic information, section generation, and benchmarking
-    
-    Args:
-        fragment: TranscriptFragment containing the transcript text
-        config: TestConfig with processing configuration options
-        db: Database session
-        
-    Returns:
-        ProcessingResult with sections and diagnostic information
-    """
-    start_time = time.time()
-    
-    try:
-        text = fragment.transcript
-        
-        if config.detailed_logging:
-            logger.info(f"Processing transcript ({len(text)} characters)")
-        
-        # Process text through NLP pipeline
-        transcription_doc = process_text(text)
-        
-        # Extract and merge keywords
-        keywords = find_medical_modifiers(doc=transcription_doc)
-        
-        # Remove duplicates
-        result_dicts = []
-        for keyword_dict in keywords:
-            found = False
-            for i, existing_dict in enumerate(result_dicts):
-                if keyword_dict["term"] == existing_dict["term"]:
-                    found = True
-                    break
-            if not found:
-                result_dicts.append(keyword_dict)
-        
-        # Create sections
-        sections = []
-        for result_keyword_dict in result_dicts:
-            category = classify_text_category(result_keyword_dict["term"])
-            template = find_content_dictionary(result_keyword_dict, category)
-            merged_content = merge_flat_keywords_into_template(
-                result_keyword_dict, template, threshold=0.5
-            )
-            
-            if config.detailed_logging:
-                logger.info(f"Processed term '{result_keyword_dict.get('term', '')}' as category '{category}'")
-            
-            if merged_content.get("Main Symptom") is not None:
-                if len(merged_content["Main Symptom"]["name"]) > 0:
-                    sections.append(merged_content)
-                    
-        # Create diagnostic information
-        elapsed_time = time.time() - start_time
-        diagnostic = DiagnosticInfo(
-            elapsed_time=elapsed_time,
-            entity_count=len(transcription_doc.ents),
-            keyword_count=len(result_dicts),
-            section_count=len(sections)
-        )
-        
-        if config.detailed_logging:
-            logger.info(f"Processing completed in {elapsed_time:.2f} seconds")
-            logger.info(f"Found {len(transcription_doc.ents)} entities, {len(result_dicts)} keywords, {len(sections)} sections")
-        
-        # Create result object
-        result = ProcessingResult(
-            success=True,
-            message="Transcript processed successfully",
-            diagnostic=diagnostic
-        )
-        
-        # Include sections if requested
-        if config.return_sections:
-            result.sections = sections
-        
-        # Include raw NLP data if requested
-        if config.include_raw_nlp:
-            result.raw_nlp = {
-                "entities": [{"text": ent.text, "label": ent.label_} for ent in transcription_doc.ents],
-                "keywords": result_dicts
-            }
-        
-        return result
-    
-    except Exception as e:
-        logger.error(f"Error processing transcript: {str(e)}")
-        return ProcessingResult(
-            success=False,
-            message=f"Error: {str(e)}",
-            diagnostic=DiagnosticInfo(
-                elapsed_time=time.time() - start_time,
-                entity_count=0,
-                keyword_count=0,
-                section_count=0
-            )
-        )
-
-@router.post("/end-to-end", response_model=Dict[str, Any])
-async def end_to_end_test(
-    transcript: TranscriptFragment,
-    user_id: int = Body(...),
-    db: Session = Depends(get_session)
-):
-    """
-    Run an end-to-end test of text processing and note generation
-    
-    This creates a real note in the database with sections derived from
-    the transcript text, demonstrating the complete pipeline functionality
-    
-    Args:
-        transcript: TranscriptFragment with the transcript text
-        user_id: ID of the user to associate with the note
-        db: Database session
-        
-    Returns:
-        Dictionary with results of the test including the created note ID
-    """
-    try:
-        # Process the transcript
-        transcription_doc = process_text(transcript.transcript)
-        
-        # Generate a summary for the note title
-        summary = generate_summary(transcript.transcript, top_n=1)
-        title = f"Test Note: {summary[:50]}..."
-        
-        # Create a new note
-        note_create = NoteCreate(
-            title=title,
-            patient_id=1,  # Test patient ID
-            user_id=user_id,
-            encounter_date=time.strftime("%Y-%m-%d"),
-            sections=[]  # We'll add sections after creating the note
-        )
-        
-        # Add the note to the database
-        db_note = Note(
-            title=note_create.title,
-            patient_id=note_create.patient_id,
-            user_id=note_create.user_id,
-            encounter_date=note_create.encounter_date
-        )
-        db.add(db_note)
-        db.commit()
-        db.refresh(db_note)
-        
-        # Extract and process keywords
-        keyword_extract_service.buffer_keywords = find_medical_modifiers(doc=transcription_doc)
-        
-        # Remove duplicates
-        result_dicts = []
-        for keyword_dict in keyword_extract_service.buffer_keywords:
-            found = False
-            for i, existing_dict in enumerate(result_dicts):
-                if keyword_dict["term"] == existing_dict["term"]:
-                    found = True
-                    break
-            if not found:
-                result_dicts.append(keyword_dict)
-        keyword_extract_service.final_keywords = result_dicts
-        
-        # Create sections
-        sections = []
-        for result_keyword_dict in result_dicts:
-            category = classify_text_category(result_keyword_dict["term"])
-            template = find_content_dictionary(result_keyword_dict, category)
-            merged_content = merge_flat_keywords_into_template(
-                result_keyword_dict, template, threshold=0.5
-            )
-            
-            if merged_content.get("Main Symptom") is not None and len(merged_content["Main Symptom"]["name"]) > 0:
-                # Create a section object
-                section_create = SectionCreate(
-                    user_id=user_id,
-                    note_id=db_note.id,
-                    title=result_keyword_dict.get("term", "Section"),
-                    content=merged_content,
-                    section_type=category,
-                    section_description=TextCategoryEnum[category].value
-                )
-                
-                # Add to database
-                db_section = Section(
-                    user_id=section_create.user_id,
-                    note_id=section_create.note_id,
-                    title=section_create.title,
-                    content=section_create.content,
-                    section_type=section_create.section_type,
-                    section_description=section_create.section_description
-                )
-                db.add(db_section)
-                sections.append(section_create)
-        
-        # Commit all sections
-        db.commit()
-        
-        # Return results
-        return {
-            "success": True,
-            "note_id": db_note.id,
-            "title": db_note.title,
-            "sections_created": len(sections),
-            "sections": [section.model_dump() for section in sections]
-        }
-    
-    except Exception as e:
-        logger.error(f"End-to-end test error: {str(e)}")
-        # Make sure we rollback the transaction on error
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"End-to-end test failed: {str(e)}")
+    entity_count: int
+    entities: List[Dict[str, Any]]
+    metrics: Optional[Dict[str, float]] = None
+    error: Optional[str] = None
 
 @router.get("/health")
 async def health_check():
     """
-    Health check endpoint for the tests router
-    
-    Tests if the core dependencies are available and working
+    Health check endpoint for the tests service
     
     Returns:
-        Status of the test service and its dependencies
+        Status of the test service
     """
-    status = {
-        "status": "ok",
-        "timestamp": time.time(),
-        "components": {}
-    }
-    
-    # Test NLP components
     try:
-        # Simple text to test NLP pipeline
+        # Test the NLP pipeline with a simple text
         test_text = "Patient has a fever and cough."
         doc = process_text(test_text)
-        status["components"]["nlp"] = {
-            "status": "ok",
-            "entities_found": len(doc.ents)
+        
+        return {
+            "status": "healthy",
+            "timestamp": time.time(),
+            "nlp_pipeline": "working",
+            "entities_detected": len(doc.ents),
+            "entity_samples": [{"text": ent.text, "label": ent.label_} for ent in doc.ents][:3]
         }
     except Exception as e:
-        status["components"]["nlp"] = {
-            "status": "error",
+        logger.error(f"Health check failed: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {
+            "status": "unhealthy",
+            "timestamp": time.time(),
             "error": str(e)
         }
-        status["status"] = "degraded"
+
+@router.post("/basic-test")
+async def basic_test(request: BasicTestRequest):
+    """
+    Basic test endpoint for NLP processing
     
-    # Test database components
+    Process a text through the NLP pipeline and return entities with metrics
+    
+    Args:
+        request: Request with text to process
+        
+    Returns:
+        Processing results with entities and metrics
+    """
     try:
-        # Database connection will be tested through dependency
-        status["components"]["database"] = {
-            "status": "ok"
+        # Process the text
+        start_time = time.time()
+        doc = process_text(request.text)
+        processing_time = time.time() - start_time
+        
+        # Extract entities
+        entities = []
+        for ent in doc.ents:
+            is_medical = getattr(ent, "_.is_medical_term", False)
+            entities.append({
+                "text": ent.text,
+                "label": ent.label_,
+                "start": ent.start_char,
+                "end": ent.end_char,
+                "is_medical": is_medical
+            })
+        
+        # Calculate basic metrics
+        metrics = {
+            "processing_time_ms": processing_time * 1000,
+            "medical_entity_ratio": sum(1 for e in entities if e.get("is_medical", False)) / len(entities) if entities else 0
         }
+        
+        return {
+            "success": True,
+            "entity_count": len(entities),
+            "entities": entities,
+            "metrics": metrics
+        }
+        
     except Exception as e:
-        status["components"]["database"] = {
-            "status": "error",
+        logger.error(f"Error in basic test: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {
+            "success": False,
+            "entity_count": 0,
+            "entities": [],
             "error": str(e)
         }
-        status["status"] = "degraded"
+
+@router.post("/text-transcript", response_model=List[str])
+async def process_text_transcript(fragment: TranscriptFragment):
+    """
+    Process a text transcript and extract medical entities and sections
     
-    # Test if we can load UMLS data
+    Args:
+        fragment: TranscriptFragment with the transcript text
+        
+    Returns:
+        List of JSON-serialized section objects
+    """
     try:
-        result = classify_text_category("fever")
-        status["components"]["umls_data"] = {
-            "status": "ok",
-            "test_classification": result
-        }
-    except Exception as e:
-        status["components"]["umls_data"] = {
-            "status": "error",
-            "error": str(e)
-        }
-        status["status"] = "degraded"
+        text = fragment.transcript
+        
+        # Input validation
+        if not text or len(text.strip()) == 0:
+            raise HTTPException(status_code=400, detail="Empty transcript provided")
+            
+        # Limit very long transcripts to prevent overloading
+        max_length = 10000  # Character limit
+        if len(text) > max_length:
+            logger.warning(f"Transcript truncated from {len(text)} to {max_length} characters")
+            text = text[:max_length]
+        
+        # Process text through NLP pipeline
+        transcription_doc = process_text(text)
+        logger.info(f"Entities found: {len(transcription_doc.ents)}")
+        
+        # Extract keywords safely
+        try:
+            extracted_keywords = find_medical_modifiers(doc=transcription_doc)
+            keyword_extract_service.buffer_keywords = extracted_keywords if isinstance(extracted_keywords, list) else []
+            logger.info(f"Extracted keywords: {len(keyword_extract_service.buffer_keywords)}")
+        except Exception as e:
+            logger.error(f"Error extracting keywords: {str(e)}")
+            logger.error(traceback.format_exc())
+            keyword_extract_service.buffer_keywords = []
+        
+        # Ensure buffer_keyword_dicts is a list of dictionaries
+        if not isinstance(keyword_extract_service.buffer_keywords, list):
+            keyword_extract_service.buffer_keywords = []
+        
+        # Remove duplicates
+        result_dicts = []
+        for keyword_dict in keyword_extract_service.buffer_keywords:
+            if not isinstance(keyword_dict, dict):
+                logger.warning(f"Skipping non-dictionary keyword: {keyword_dict}")
+                continue
+                
+            found = False
+            for i, existing_dict in enumerate(result_dicts):
+                if keyword_dict.get("term", "") == existing_dict.get("term", ""):
+                    found = True
+                    break
+            if not found:
+                result_dicts.append(keyword_dict)
+        
+        keyword_extract_service.final_keywords = result_dicts
+        
+        # Create sections based on final_keyword_dicts
+        sections = []
+        for result_keyword_dict in keyword_extract_service.final_keywords:
+            try:
+                category = classify_text_category(result_keyword_dict.get("term", ""))
+                template = find_content_dictionary(result_keyword_dict, category)
+                merged_content = merge_flat_keywords_into_template(result_keyword_dict, template, threshold=0.5)
+                
+                if merged_content.get("Main Symptom") is not None:
+                    if "name" in merged_content["Main Symptom"] and merged_content["Main Symptom"]["name"]:
+                        sections.append(merged_content)
+                    else:
+                        logger.info(f"Content not added as it has no name: {result_keyword_dict.get('term', '')}")
+            except Exception as section_error:
+                # Log the error but continue processing other sections
+                logger.error(f"Error processing section for term '{result_keyword_dict.get('term', '')}': {str(section_error)}")
+                continue
+        
+        # Convert sections to JSON strings
+        sections_json = []
+        for section in sections:
+            try:
+                sections_json.append(json.dumps(section))
+            except Exception as json_error:
+                logger.error(f"Error serializing section to JSON: {str(json_error)}")
+                # Include a simplified version instead
+                sections_json.append(json.dumps({
+                    "error": "Serialization error", 
+                    "term": result_keyword_dict.get("term", "unknown")
+                }))
+        
+        return sections_json
     
-    return status
+    except Exception as e:
+        logger.error(f"Error processing transcript: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing transcript: {str(e)}"
+        )
+
+@router.post("/advanced-test")
+async def advanced_test(
+    request: BasicTestRequest,
+    calculate_metrics: bool = True,
+    include_raw_data: bool = False
+):
+    """
+    Advanced test endpoint with detailed metrics
+    
+    Args:
+        request: Request with text to process
+        calculate_metrics: Whether to calculate detailed metrics
+        include_raw_data: Whether to include raw NLP data
+        
+    Returns:
+        Detailed processing results
+    """
+    try:
+        # Process the text
+        start_time = time.time()
+        doc = process_text(request.text)
+        processing_time = time.time() - start_time
+        
+        # Extract entities
+        entities = []
+        for ent in doc.ents:
+            is_medical = getattr(ent, "_.is_medical_term", False)
+            entities.append({
+                "text": ent.text,
+                "label": ent.label_,
+                "start": ent.start_char,
+                "end": ent.end_char,
+                "is_medical": is_medical
+            })
+        
+        # Extract keywords
+        keyword_start = time.time()
+        try:
+            keywords = find_medical_modifiers(doc=doc) if calculate_metrics else []
+            if not isinstance(keywords, list):
+                keywords = []
+        except Exception as e:
+            logger.error(f"Error extracting keywords: {str(e)}")
+            keywords = []
+        keyword_time = time.time() - keyword_start
+        
+        # Calculate metrics
+        metrics = {
+            "processing_time_ms": processing_time * 1000,
+            "keyword_extraction_time_ms": keyword_time * 1000,
+            "total_time_ms": (processing_time + keyword_time) * 1000,
+            "entity_count": len(entities),
+            "medical_entity_count": sum(1 for e in entities if e.get("is_medical", False)),
+            "keyword_count": len(keywords)
+        }
+        
+        if len(entities) > 0:
+            metrics["medical_entity_ratio"] = metrics["medical_entity_count"] / metrics["entity_count"]
+        
+        # Prepare response
+        response = {
+            "success": True,
+            "entity_count": len(entities),
+            "entities": entities,
+            "metrics": metrics
+        }
+        
+        # Include keywords if requested
+        if include_raw_data:
+            response["keywords"] = keywords
+            response["tokens"] = [{"text": token.text, "pos": token.pos_, "dep": token.dep_} 
+                                 for token in doc]
+            
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error in advanced test: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {
+            "success": False,
+            "entity_count": 0,
+            "entities": [],
+            "error": str(e),
+            "traceback": traceback.format_exc() if include_raw_data else None
+        }
+
+@router.post("/entity-metrics")
+async def calculate_entity_metrics(
+    gold_standard: List[Dict[str, Any]] = Body(...),
+    predicted: List[Dict[str, Any]] = Body(...)
+):
+    """
+    Calculate metrics between gold standard and predicted entities
+    
+    Args:
+        gold_standard: List of gold standard entities
+        predicted: List of predicted entities
+        
+    Returns:
+        Dictionary with precision, recall, F1 and error rate
+    """
+    try:
+        # Convert to lowercase for comparison
+        gold_texts = [entity['text'].lower() for entity in gold_standard]
+        pred_texts = [entity['text'].lower() for entity in predicted]
+        
+        # Count true positives, false positives, false negatives
+        true_positives = sum(1 for text in pred_texts if text in gold_texts)
+        false_positives = sum(1 for text in pred_texts if text not in gold_texts)
+        false_negatives = sum(1 for text in gold_texts if text not in pred_texts)
+        
+        # Calculate metrics
+        precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
+        recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+        
+        # Error rate (1 - F1)
+        error_rate = 1.0 - f1
+        
+        return {
+            "metrics": {
+                "precision": precision,
+                "recall": recall,
+                "f1_score": f1,
+                "error_rate": error_rate
+            },
+            "counts": {
+                "true_positives": true_positives,
+                "false_positives": false_positives,
+                "false_negatives": false_negatives,
+                "gold_count": len(gold_texts),
+                "pred_count": len(pred_texts)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error calculating metrics: {str(e)}")
+        return {
+            "error": str(e),
+            "metrics": {
+                "precision": 0,
+                "recall": 0,
+                "f1_score": 0,
+                "error_rate": 1.0
+            }
+        }
