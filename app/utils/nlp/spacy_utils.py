@@ -74,7 +74,7 @@ def AhoCorasickComponent(doc: Doc):
             
         if span is not None:
             if found_text.strip().lower() == term.strip().lower():            
-                span._.is_medical_term = True
+                span._.set("is_medical_term", True)
                 # Save all information we need for later
                 matches.append({
                     'span': span,
