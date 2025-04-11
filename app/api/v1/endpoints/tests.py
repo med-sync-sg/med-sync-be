@@ -388,7 +388,7 @@ async def process_audio(
             "traceback": traceback.format_exc()
         }
 
-@router.post("/text-transcript", response_model=List[str])
+@router.post("/text-transcript")
 async def process_text_transcript(fragment: TranscriptFragment):
     """
     Process a text transcript and extract medical entities and sections
@@ -397,7 +397,7 @@ async def process_text_transcript(fragment: TranscriptFragment):
         fragment: TranscriptFragment with the transcript text
         
     Returns:
-        List of JSON-serialized section objects
+        Dictionary with transcription, entities, and sections in the same format as process-audio
     """
     try:
         text = fragment.transcript
@@ -415,6 +415,18 @@ async def process_text_transcript(fragment: TranscriptFragment):
         # Process text through NLP pipeline
         transcription_doc = process_text(text)
         logger.info(f"Entities found: {len(transcription_doc.ents)}")
+        
+        # Extract entities
+        entities = []
+        for ent in transcription_doc.ents:
+            is_medical = ent._.get("is_medical_term")
+            entities.append({
+                "text": ent.text,
+                "label": ent.label_,
+                "start": ent.start_char,
+                "end": ent.end_char,
+                "is_medical": is_medical
+            })
         
         # Extract keywords safely
         try:
@@ -448,8 +460,8 @@ async def process_text_transcript(fragment: TranscriptFragment):
         keyword_extract_service.final_keywords = result_dicts
         
         # Create sections based on final_keyword_dicts
-        sections = []
-        for result_keyword_dict in keyword_extract_service.final_keywords:
+        section_objects = []
+        for i, result_keyword_dict in enumerate(keyword_extract_service.final_keywords):
             try:
                 category = classify_text_category(result_keyword_dict.get("term", ""))
                 template = find_content_dictionary(result_keyword_dict, category)
@@ -457,7 +469,17 @@ async def process_text_transcript(fragment: TranscriptFragment):
                 
                 if merged_content.get("Main Symptom") is not None:
                     if "name" in merged_content["Main Symptom"] and merged_content["Main Symptom"]["name"]:
-                        sections.append(merged_content)
+                        # Create a SectionRead object
+                        section_read = SectionRead(
+                            id=i,  # Dummy ID
+                            note_id=0,  # Dummy note ID
+                            user_id=0,  # Dummy user ID
+                            title=result_keyword_dict.get("term", "Section"),
+                            content=merged_content,
+                            section_type=category,
+                            section_description=TextCategoryEnum[category].value
+                        )
+                        section_objects.append(section_read.model_dump())
                     else:
                         logger.info(f"Content not added as it has no name: {result_keyword_dict.get('term', '')}")
             except Exception as section_error:
@@ -465,28 +487,25 @@ async def process_text_transcript(fragment: TranscriptFragment):
                 logger.error(f"Error processing section for term '{result_keyword_dict.get('term', '')}': {str(section_error)}")
                 continue
         
-        # Convert sections to JSON strings
-        sections_json = []
-        for section in sections:
-            try:
-                sections_json.append(json.dumps(section))
-            except Exception as json_error:
-                logger.error(f"Error serializing section to JSON: {str(json_error)}")
-                # Include a simplified version instead
-                sections_json.append(json.dumps({
-                    "error": "Serialization error", 
-                    "term": result_keyword_dict.get("term", "unknown")
-                }))
+        # Prepare the response in the same format as process-audio
+        response = {
+            "success": True,
+            "transcription": text,
+            "entity_count": len(entities),
+            "entities": entities,
+            "sections": section_objects
+        }
         
-        return sections_json
+        return response
     
     except Exception as e:
         logger.error(f"Error processing transcript: {str(e)}")
         logger.error(traceback.format_exc())
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error processing transcript: {str(e)}"
-        )
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
 
 @router.post("/advanced-test")
 async def advanced_test(

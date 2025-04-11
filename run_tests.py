@@ -6,6 +6,8 @@ import os
 import sys
 
 def main():
+    
+    
     parser = argparse.ArgumentParser(description="Run MedSync tests")
     parser.add_argument("--unit", action="store_true", help="Run unit tests only")
     parser.add_argument("--integration", action="store_true", help="Run integration tests only")
