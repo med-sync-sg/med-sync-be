@@ -1,0 +1,10 @@
+Patient: Doctor, I've had a sore throat for the past three days, and it's getting worse. It feels scratchy, and swallowing is uncomfortable.
+Doctor: I see. Has it been painful enough to affect eating or drinking?
+Patient: No, but I also have a mild cough and keep sneezing a lot. My nose has been running non-stop.
+Doctor: Sounds like you're experiencing some nasal irritation. Have you noticed any thick or discolored mucus?
+Patient: Yeah, sometimes I feel some mucus at the back of my throat.
+Doctor: Alright. Do you feel any tightness in your chest or shortness of breath when coughing?
+Patient: No, but I've been feeling a bit feverish since last night. I haven't checked my temperature though. My body feels tired too.
+Doctor: Fatigue and feverishness can be common with viral infections. Any chills or sweating?
+Patient: No.
+Doctor: Understood. Based on your symptoms, it looks like an upper respiratory tract infection, likely viral. Let me examine your throat to confirm.

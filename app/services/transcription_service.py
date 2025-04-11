@@ -47,10 +47,12 @@ class TranscriptionService:
         try:
             # Check for minimum audio duration
             if not self.audio_service.has_minimum_audio():
+                logger.info(f"Audio is too short.")
                 return False
             
             # Check for silence (indicating end of utterance)
             if not self.audio_service.detect_silence():
+                logger.info(f"Audio is silent.")
                 return False
                 
             logger.info(f"Processing audio segment for user {user_id}, note {note_id}")

@@ -1,150 +1,188 @@
-# MedSync Backend API
+# MedSync Backend
 
-A FastAPI-based backend for medical transcription and analysis, designed to process audio streams, transcribe them, and extract medical information.
+MedSync is a medical transcription and analysis system designed to help healthcare professionals efficiently document and process patient interactions. The backend provides a complete API for real-time audio transcription, medical entity extraction, note management, and report generation.
 
-## Project Structure
+## Key Features
 
-```
-app/
-├── api/
-│   └── v1/
-│       ├── endpoints/
-│       │   ├── auth.py         # Authentication endpoints
-│       │   ├── notes.py        # Note management endpoints
-│       │   ├── reports.py      # Report generation endpoints
-│       │   ├── tests.py        # Test endpoints for debugging
-│       │   └── users.py        # User management endpoints
-├── db/
-│   ├── local_session.py        # PostgreSQL database connection
-│   └── umls_data_loader.py     # UMLS medical terminology loader
-├── models/
-│   └── models.py               # SQLAlchemy ORM models
-├── schemas/
-│   ├── base.py                 # Base Pydantic schemas
-│   ├── note.py                 # Note schemas
-│   ├── section.py              # Section schemas
-│   └── user.py                 # User schemas
-├── utils/
-│   ├── auth_utils.py           # Authentication utilities
-│   ├── constants.py            # Constant definitions
-│   ├── report_generator.py     # Report generation utilities
-│   ├── speech_processor.py     # Audio processing and transcription
-│   ├── text_utils.py           # Text processing utilities
-│   ├── websocket_manager.py    # WebSocket connection management
-│   └── nlp/
-│       ├── keyword_extractor.py # Medical keyword extraction
-│       ├── spacy_utils.py       # SpaCy NLP pipeline utilities
-│       ├── summarizer.py        # Text summarization
-│       └── report_templates/    # HTML templates for reports
-├── app.py                      # FastAPI application setup
-└── __init__.py                 # Package initialization
-main.py                         # Application entry point
-```
+- Real-time speech-to-text transcription through WebSocket connection
+- Medical entity recognition and extraction using NLP
+- Secure authentication with JWT tokens
+- Patient and doctor report generation with customizable templates
+- Structured note and section management
+- RESTful API for CRUD operations
 
-## Key Components
+## Tech Stack
 
-### Speech Processing
-
-The speech processing pipeline includes:
-
-- **AudioCollector**: A singleton class that accumulates audio chunks in real-time, detects silence (end of utterance), and triggers transcription.
-- **SpeechProcessor**: Handles the actual audio-to-text transcription using the Wav2Vec2 model.
-
-### NLP Pipeline
-
-The NLP pipeline processes transcribed text to extract medical information:
-
-- **SpaCy Utils**: Configure SpaCy with custom components for medical entity recognition
-- **Keyword Extractor**: Extracts medical terms and their modifiers from the text
-- **Text Utils**: Provides text cleaning and normalization utilities
-
-### Data Storage
-
-Two database systems are used:
-
-- **PostgreSQL**: Relational database for user data, notes, and sections
-
-### WebSocket API
-
-Real-time communication for audio streaming:
-
-- **WebSocketManager**: Handles WebSocket connections, validates users, and processes audio chunks
-- **Authentication**: Token-based authentication for secure connections
+- **Framework**: FastAPI
+- **Database**: PostgreSQL with SQLAlchemy ORM
+- **Authentication**: JWT with bcrypt password hashing
+- **NLP Processing**: spaCy with custom medical entity components
+- **Audio Processing**: Wav2Vec2 model for transcription
+- **Template Engine**: Jinja2 for report generation
 
 ## Getting Started
 
 ### Prerequisites
 
 - Python 3.8+
-- PostgreSQL
-- UMLS API access
+- PostgreSQL 12+
+- Virtual environment tool (optional but recommended)
 
-### Installation
+### Environment Setup
 
-1. Clone the repository
-2. Install dependencies:
+1. Clone the repository:
+   ```bash
+   git clone <repository-url>
+   cd medsync-backend
    ```
+
+2. Create and activate a virtual environment:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+
+3. Install dependencies:
+   ```bash
    pip install -r requirements.txt
    ```
-3. Set up environment variables:
+
+4. Environment Variables:
+   Create a `.env` file in the project root with the following variables:
    ```
-   export DB_USER=your_postgres_user
-   export DB_PASSWORD=your_postgres_password
-   export DB_HOST=localhost
-   export DB_PORT=5432
-   export DB_NAME=medsync_db
-   
-   export JWT_SECRET_KEY=your_secret_key
-   export JWT_ALGORITHM=HS256
+   DB_USER=root
+   DB_PASSWORD=medsync!
+   DB_HOST=localhost
+   DB_PORT=9000
+   DB_NAME=medsync_db
+   JWT_SECRET_KEY=your-secret-key
+   JWT_ALGORITHM=HS256
    ```
 
-### Running the API
+2. Run database migrations:
+   ```bash
+   alembic upgrade head
+   ```
 
-Run the API with default settings:
+### Running the Application
+
+1. Start the application:
+   ```bash
+   python db_main.py
+   python main.py
+   ```
+
+2. The API will be available at `http://127.0.0.1:8001`
+
+## API Documentation
+
+Once the server is running, you can access the API documentation at:
+- Swagger UI: `http://127.0.0.1:8001/docs`
+- ReDoc: `http://127.0.0.1:8001/redoc`
+
+## Project Structure
 
 ```
-python main.py
+app/
+├── api/                  # API routes and endpoints
+│   └── v1/
+│       └── endpoints/    # API endpoint implementations
+├── db/                   # Database configuration and utilities
+├── models/               # SQLAlchemy ORM models
+├── schemas/              # Pydantic schemas for validation
+├── services/             # Business logic services
+├── utils/                # Utility functions and helpers
+│   └── nlp/              # NLP processing utilities
+└── app.py                # FastAPI application initialization
+
+main.py                   # Application entry point
 ```
 
-With custom host and port:
-
-```
-python main.py --host 0.0.0.0 --port 8080
-```
-
-Enable auto-reload during development:
-
-```
-python main.py --reload
-```
-
-## API Endpoints
+## Key Components
 
 ### Authentication
 
-- `POST /auth/login`: Log in with username and password
-- `POST /auth/sign-up`: Create a new user account
+The system uses JWT tokens for authentication. Users can register and login through the `/auth/sign-up` and `/auth/login` endpoints.
 
-### Notes
+```python
+# Example authentication flow
+POST /auth/sign-up  # Register a new user
+POST /auth/login    # Login and receive JWT token
+```
 
-- `GET /notes`: Get all notes
-- `GET /notes/{note_id}`: Get a specific note
-- `POST /notes`: Create a new note
-- `PUT /notes/{note_id}`: Update a note
-- `DELETE /notes/{note_id}`: Delete a note
+### Note Management
 
-### Users
+Notes are the primary data structure for storing patient interactions:
 
-- `GET /users`: Get all users
-- `GET /users/{user_id}`: Get a specific user
-- `PUT /users/{user_id}`: Update a user
-- `DELETE /users/{user_id}`: Delete a user
+```python
+# Example note operations
+POST /notes/create  # Create a new note
+GET /notes/{id}     # Get a specific note
+GET /notes/         # List all notes
+```
 
-### Reports
+### Real-time Transcription
 
-- `GET /reports/{user_id}/{report_id}`: Get a specific report
-- `POST /reports`: Create a new report
+Real-time transcription is available through WebSocket connection:
 
-### WebSocket
+```
+WebSocket: /ws?token={jwt_token}&user_id={user_id}&note_id={note_id}
+```
 
-- `/ws`: WebSocket endpoint for real-time audio streaming and transcription
+The client sends audio chunks, and the server responds with transcribed text and extracted medical entities.
+
+### Report Generation
+
+The system can generate both patient-friendly and doctor-focused reports from notes:
+
+```python
+# Example report generation
+GET /reports/{note_id}/doctor   # Generate doctor report
+GET /reports/{note_id}/patient  # Generate patient report
+```
+
+## Development Guidelines
+
+### Adding New Endpoints
+
+1. Create a new file in `app/api/v1/endpoints/` or add to an existing one
+2. Define the route using FastAPI decorators
+3. Register the router in `app/app.py`
+
+### Database Changes
+
+1. Create a new model in `app/models/`
+2. Create corresponding Pydantic schemas in `app/schemas/`
+3. Generate and run migrations:
+   ```bash
+   alembic revision --autogenerate -m "Description"
+   alembic upgrade head
+   ```
+
+### NLP Pipeline Extensions
+
+To extend the NLP capabilities:
+
+1. Add new utilities in `app/utils/nlp/`
+2. Register custom pipeline components in `app/utils/nlp/spacy_utils.py`
+3. Update the keyword extraction in `app/services/nlp/keyword_extract_service.py`
+
+## Testing
+
+Run tests with pytest:
+
+```bash
+pytest
+```
+
+For API testing, use the test endpoints provided in `app/api/v1/endpoints/tests.py`.
+
+## Contributing
+
+1. Create a feature branch
+2. Make changes and add tests
+3. Submit a pull request
+
+## License
+
+[License details here]
