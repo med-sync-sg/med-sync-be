@@ -40,43 +40,16 @@ DEFAULT_APP_URL = "http://127.0.0.1:8001"
 DEFAULT_AUDIO_FILE = os.path.join("test_audios", "test_30sec.wav")
 
 SAMPLE_TRANSCRIPT = """
-Doctor: Good morning, how can I help you today?
-
-Patient: Hello doctor. I've been having a persistent cough for the past two weeks. It started as just a tickle in my throat but now it's getting worse.
-
-Doctor: I'm sorry to hear that. Is your cough dry or are you coughing up any phlegm?
-
-Patient: It's mostly dry, but sometimes in the morning I cough up some clear phlegm. Not much though.
-
-Doctor: I see. And have you been experiencing any other symptoms? Fever, chills, shortness of breath?
-
-Patient: I had a slight fever for a couple of days when it first started, maybe 99.5°F. No chills. I do feel a bit short of breath when I climb the stairs, which isn't normal for me.
-
-Doctor: Are you having any chest pain or tightness?
-
-Patient: Not really pain, but sometimes I feel some tightness in my chest, especially after coughing a lot.
-
-Doctor: Have you been exposed to anyone with similar symptoms or who's been sick recently?
-
-Patient: Yes, my coworker had a bad cold last month. Several people in the office got sick afterward.
-
-Doctor: I understand. What about your medical history? Do you have any conditions like asthma, allergies, or COPD?
-
-Patient: I have mild seasonal allergies, usually in the spring, but no asthma or anything like that. I'm generally healthy.
-
-Doctor: Do you smoke or vape?
-
-Patient: No, never have.
-
-Doctor: And are you taking any medications currently?
-
-Patient: Just over-the-counter stuff for the cough - some Mucinex and occasionally Tylenol for headaches.
-
-Doctor: Based on what you've told me, this sounds like a post-viral cough, possibly from a respiratory infection. I'd like to listen to your lungs and check your throat to make sure.
-
-Patient: That makes sense. I was wondering if it might be bronchitis or something.
-
-Doctor: It's possible. Let me examine you and we'll figure out the best treatment approach.
+Patient: Doctor, I've had a sore throat for the past three days, and it's getting worse. It feels scratchy, and swallowing is uncomfortable.
+Doctor: I see. Has it been painful enough to affect eating or drinking?
+Patient: No, but I also have a mild cough and keep sneezing a lot. My nose has been running non-stop.
+Doctor: Sounds like you're experiencing some nasal irritation. Have you noticed any thick or discolored mucus?
+Patient: Yeah, sometimes I feel some mucus at the back of my throat.
+Doctor: Alright. Do you feel any tightness in your chest or shortness of breath when coughing?
+Patient: No, but I've been feeling a bit feverish since last night. I haven't checked my temperature though. My body feels tired too.
+Doctor: Fatigue and feverishness can be common with viral infections. Any chills or sweating?
+Patient: No.
+Doctor: Understood. Based on your symptoms, it looks like an upper respiratory tract infection, likely viral. Let me examine your throat to confirm.
 """
 
 class TestClient:

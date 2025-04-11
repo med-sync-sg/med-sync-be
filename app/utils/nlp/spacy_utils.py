@@ -164,6 +164,18 @@ def process_text(text: str) -> Doc:
 
     return doc
 
+def extract_basic_modifiers(target: Token):
+    modifiers = []
+    # Expand this list to capture more modifiers
+    target_dep_relations = ["amod", "attr", "advmod", "compound", "nmod", "npadvmod"]
+    
+    # Then use these in your extraction logic
+    for child in target.children:
+        if child.dep_ in target_dep_relations:
+            modifiers.append(child.text)
+            
+    return modifiers
+
 def extract_pp_object_span(token: Token) -> Span:
     """
     Given a target token, look for a child that is a preposition (ADP),
@@ -188,6 +200,210 @@ def extract_pp_object_span(token: Token) -> Span:
                     span = token.doc[start+1:end]
                 return span
     return None
+
+def extract_contextual_modifiers(span, window_size=3):
+    """Extract modifiers based on a window around the span"""
+    modifiers = []
+    doc = span.doc
+    
+    # Get start and end indices with window
+    start_idx = max(0, span[0].i - window_size)
+    end_idx = min(len(doc), span[-1].i + window_size + 1)
+    
+    # Analyze the window
+    for token in doc[start_idx:end_idx]:
+        # Skip the actual term
+        if token.i >= span[0].i and token.i <= span[-1].i:
+            continue
+            
+        # Check if token is an adjective, adverb, or other relevant POS
+        if token.pos_ in ["ADJ", "ADV"]:
+            modifiers.append(token.text)
+            
+    return modifiers
+
+def detect_negation(span):
+    """Detect if a medical term is negated"""
+    doc = span.doc
+    
+    # Look for common negation words
+    negation_tokens = ["no", "not", "n't", "none", "never", "without"]
+    
+    # Check if any negation token is within a certain distance
+    start_idx = max(0, span[0].i - 3)  # Look 3 tokens before
+    
+    for i in range(start_idx, span[0].i):
+        token = doc[i]
+        if token.lower_ in negation_tokens or token.lemma_ == "deny":
+            return True
+            
+    return False
+
+def extract_temporal_info(span):
+    """Extract temporal information related to a medical term"""
+    doc = span.doc
+    temporal_info = []
+    
+    # Common time-related words
+    temporal_tokens = ["day", "week", "month", "year", "hour", "minute", "since", "for"]
+    
+    # Look for time-related information within a window
+    window_start = max(0, span[0].i - 5)
+    window_end = min(len(doc), span[-1].i + 5)
+    
+    # Extract phrases containing numbers and temporal tokens
+    for i in range(window_start, window_end):
+        token = doc[i]
+        if token.like_num or token.lower_ in temporal_tokens:
+            # Extract the phrase containing the temporal information
+            # This is simplified and would need refinement
+            if token.like_num and i+1 < len(doc) and doc[i+1].lower_ in temporal_tokens:
+                temporal_info.append(f"{token.text} {doc[i+1].text}")
+    
+    return temporal_info
+
+def find_modifiers_for_medical_span(span: Span) -> Dict[str, Any]:
+    """
+    Enhanced function to find modifiers for medical terms using both
+    dependency parsing and NER.
+    """
+    result_dict = {
+        "term": span.text,
+        "modifiers": [],
+        "quantities": [],
+        "temporal": []
+    }
+    
+    doc = span.doc
+    sent = span.sent
+    
+    # 1. Process dependency-based modifiers
+    target_tokens = [span[0]]  # Start with the first token of the span
+    
+    # If span has a head outside itself, include that too
+    if span.root.head.i < span.start or span.root.head.i >= span.end:
+        target_tokens.append(span.root.head)
+    
+    # Go through each relevant token and its children
+    for token in target_tokens:
+        # Check for adjective modifiers
+        for child in token.children:
+            # Adjectives, adverbs, and compounds as modifiers
+            if child.pos_ in ["ADJ", "ADV"] or child.dep_ in ["amod", "advmod", "compound", "nmod"]:
+                result_dict["modifiers"].append(child.text)
+            
+            # Find numerical modifiers and classifiers
+            if child.dep_ in ["nummod", "quantmod"] or child.pos_ == "NUM":
+                # Check for compound quantities like "three days"
+                quantity_phrase = []
+                quantity_phrase.append(child.text)
+                
+                # Look for nouns or time units following the number
+                for gchild in child.children:
+                    if gchild.pos_ in ["NOUN"] or gchild.text in ["days", "weeks", "months", "years"]:
+                        quantity_phrase.append(gchild.text)
+                
+                result_dict["quantities"].append(" ".join(quantity_phrase))
+    
+    # 2. Use NER to extract quantities and temporal information
+    for ent in doc.ents:
+        # Skip if the entity is part of the medical term itself
+        if (ent.start >= span.start and ent.start < span.end) or \
+           (ent.end > span.start and ent.end <= span.end):
+            continue
+        
+        # Check if entity appears in the same sentence or nearby context
+        if ent.sent == sent or abs(ent.start - span.end) <= 10 or abs(span.start - ent.end) <= 10:
+            # Temporal information
+            if ent.label_ in ["DATE", "TIME", "DURATION"]:
+                # Check if this entity is related to our term using dependency path
+                if is_entity_related_to_span(ent, span):
+                    result_dict["temporal"].append(ent.text)
+            
+            # Quantities
+            elif ent.label_ in ["CARDINAL", "QUANTITY", "ORDINAL", "PERCENT"]:
+                if is_entity_related_to_span(ent, span):
+                    result_dict["quantities"].append(ent.text)
+    
+    # 3. Handle special patterns like "X feels Y"
+    extract_special_patterns(span, result_dict)
+    
+    # Remove duplicates while preserving order
+    result_dict["modifiers"] = list(dict.fromkeys(result_dict["modifiers"]))
+    result_dict["quantities"] = list(dict.fromkeys(result_dict["quantities"]))
+    result_dict["temporal"] = list(dict.fromkeys(result_dict["temporal"]))
+    
+    return result_dict
+
+def is_entity_related_to_span(ent: Span, span: Span) -> bool:
+    """
+    Determine if an entity is related to a span using dependency path analysis.
+    
+    Args:
+        ent: Named entity span
+        span: Medical term span
+        
+    Returns:
+        True if related, False otherwise
+    """
+    # Simple proximity check
+    if abs(ent.start - span.end) <= 5 or abs(span.start - ent.end) <= 5:
+        return True
+    
+    # Check for specific patterns that indicate relation
+    # For example: "pain for 3 days" - "3 days" is related to "pain"
+    
+    # Check for preposition relationship
+    for token in span:
+        # Look for prepositions after the span
+        for child in token.children:
+            if child.pos_ == "ADP" and child.i > span.end:
+                # Check if entity appears after the preposition
+                if child.i < ent.start:
+                    return True
+    
+    # More complex path analysis could be added here
+    
+    return False
+
+def extract_special_patterns(span: Span, result_dict: Dict[str, Any]) -> None:
+    """
+    Extract modifiers using common symptom description patterns.
+    
+    Args:
+        span: Medical term span
+        result_dict: Dictionary to update with extracted information
+    """
+    doc = span.doc
+    sent = span.sent
+    
+    # Pattern: "X feels Y" where X is the term and Y is a modifier
+    for token in sent:
+        if token.lemma_ in ["feel", "seem", "appear", "be"] and is_token_related_to_span(token, span):
+            for child in token.children:
+                if child.pos_ == "ADJ":
+                    result_dict["modifiers"].append(child.text)
+    
+    # Pattern: "X for Y" where Y is temporal
+    for token in sent:
+        if token.text == "for" and is_token_related_to_span(token, span):
+            for child in token.children:
+                if child.pos_ == "NUM" or child.dep_ == "nummod":
+                    temporal_phrase = [t.text for t in child.subtree]
+                    result_dict["temporal"].append(" ".join(temporal_phrase))
+
+def is_token_related_to_span(token: Token, span: Span) -> bool:
+    """Check if a token is directly related to a span via dependency path"""
+    for sp_token in span:
+        # Check direct path
+        if token.head == sp_token or sp_token.head == token:
+            return True
+        
+        # Check one level up
+        if token.head == sp_token.head:
+            return True
+    
+    return False
 
 def find_modifiers_for_medical_span(span: Span) -> Dict[str, Any]:
     """

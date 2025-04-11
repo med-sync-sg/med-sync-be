@@ -1,49 +1,118 @@
 [
-    {
-      "case_id": 1,
-      "transcript": "Patient: Doctor, I've had a sore throat for the past three days, and it's getting worse. It feels scratchy, and swallowing is uncomfortable. \nDoctor: I see. Has it been painful enough to affect eating or drinking?\nPatient: No, but I also have a mild cough and keep sneezing a lot. My nose has been running non-stop.\nDoctor: Sounds like you're experiencing some nasal irritation. Have you noticed any thick or discolored mucus?\nPatient: Yeah, sometimes I feel some mucus at the back of my throat.\nDoctor: Alright. Do you feel any tightness in your chest or shortness of breath when coughing?\nPatient: No, but I've been feeling a bit feverish since last night. I haven't checked my temperature though. My body feels tired too.\nDoctor: Fatigue and feverishness can be common with viral infections. Any chills or sweating?\nPatient: No.\nDoctor: Understood. Based on your symptoms, it looks like an upper respiratory tract infection, likely viral. Let me examine your throat to confirm.",
-      "entities": [
-        {
-          "text": "sore throat",
-          "label": "SYMPTOM",
-          "start": 19,
-          "end": 30
-        },
-        {
-          "text": "mild cough",
-          "label": "SYMPTOM",
-          "start": 181,
-          "end": 191
-        },
-        {
-          "text": "sneezing",
-          "label": "SYMPTOM",
-          "start": 203,
-          "end": 211
-        },
-        {
-          "text": "runny nose",
-          "label": "SYMPTOM",
-          "start": 237,
-          "end": 247
-        }
-      ],
-      "expected_keywords": [
-        {
-          "term": "sore throat",
-          "modifiers": ["scratchy", "uncomfortable"],
-          "quantities": ["three days"]
-        },
-        {
-          "term": "cough",
-          "modifiers": ["mild"],
-          "quantities": []
-        },
-        {
-          "term": "runny nose",
-          "modifiers": [],
-          "quantities": []
-        }
-      ]
-    }
-  ]
+  {
+    "case_id": 1,
+    "transcript": "Patient: Doctor, I've had a sore throat for the past three days, and it's getting worse. It feels scratchy, and swallowing is uncomfortable.\nDoctor: I see. Has it been painful enough to affect eating or drinking?\nPatient: No, but I also have a mild cough and keep sneezing a lot. My nose has been running non-stop.\nDoctor: Sounds like you're experiencing some nasal irritation. Have you noticed any thick or discolored mucus?\nPatient: Yeah, sometimes I feel some mucus at the back of my throat.\nDoctor: Alright. Do you feel any tightness in your chest or shortness of breath when coughing?\nPatient: No, but I've been feeling a bit feverish since last night. I haven't checked my temperature though. My body feels tired too.\nDoctor: Fatigue and feverishness can be common with viral infections. Any chills or sweating?\nPatient: No.\nDoctor: Understood. Based on your symptoms, it looks like an upper respiratory tract infection, likely viral. Let me examine your throat to confirm.",
+    "entities": [
+      {
+        "text": "sore throat",
+        "label": "Sign or Symptom",
+        "start": 28,
+        "end": 39
+      },
+      {
+        "text": "painful",
+        "label": "Sign or Symptom",
+        "start": 169,
+        "end": 176
+      },
+      {
+        "text": "symptoms",
+        "label": "Sign or Symptom",
+        "start": 874,
+        "end": 882
+      },
+      {
+        "text": "sneezing",
+        "label": "Sign or Symptom",
+        "start": 266,
+        "end": 274
+      },
+      {
+        "text": "cough",
+        "label": "Sign or Symptom",
+        "start": 251,
+        "end": 256
+      },
+      {
+        "text": "runny nose",
+        "label": "Sign or Symptom",
+        "start": 285,
+        "end": 306
+      },
+      {
+        "text": "mucus",
+        "label": "Sign or Symptom",
+        "start": 422,
+        "end": 427
+      },
+      {
+        "text": "feverish",
+        "label": "Sign or Symptom",
+        "start": 637,
+        "end": 645
+      }
+    ],
+    "expected_keywords": [
+      {
+        "term": "sore throat",
+        "modifiers": [
+          "scratchy",
+          "uncomfortable"
+        ],
+        "quantities": [
+          "three days"
+        ]
+      },
+      {
+        "term": "painful",
+        "modifiers": [
+          "enough to affect eating or drinking"
+        ],
+        "quantities": []
+      },
+      {
+        "term": "symptoms",
+        "modifiers": [],
+        "quantities": []
+      },
+      {
+        "term": "sneezing",
+        "modifiers": [
+          "a lot"
+        ],
+        "quantities": []
+      },
+      {
+        "term": "cough",
+        "modifiers": [
+          "mild"
+        ],
+        "quantities": []
+      },
+      {
+        "term": "runny nose",
+        "modifiers": [
+          "non-stop"
+        ],
+        "quantities": []
+      },
+      {
+        "term": "mucus",
+        "modifiers": [
+          "some",
+          "at the back of throat"
+        ],
+        "quantities": []
+      },
+      {
+        "term": "feverish",
+        "modifiers": [
+          "bit"
+        ],
+        "quantities": [
+          "since last night"
+        ]
+      }
+    ]
+  }
+]
