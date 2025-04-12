@@ -3,7 +3,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, status
 from sqlalchemy.orm import Session
 import logging
 
-from app.api.v1.endpoints import auth, notes, users, reports, tests
+from app.api.v1.endpoints import auth, notes, users, reports, tests, calibration
 from app.db.local_session import DatabaseManager
 from app.services.audio_service import AudioService
 from app.services.transcription_service import TranscriptionService
@@ -30,6 +30,7 @@ def create_app() -> FastAPI:
     app.include_router(users.router, prefix="/users", tags=["user"])
     app.include_router(reports.router, prefix="/reports", tags=["report"])
     app.include_router(tests.router, prefix="/tests", tags=["test"])
+    app.include_router(calibration.router, prefix="/calibration", tags=["calibration"])  # Add new calibration router
 
     # Add CORS middleware
     app.add_middleware(
@@ -62,7 +63,8 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_ses
     WebSocket endpoint for audio streaming and transcription
     
     Expected message format:
-    { "data": "<base64-encoded audio chunk>" }
+    { "data": "<base64-encoded audio chunk>" } or
+    { "data": "<text>", "type": "text" }
     """
     # Connection parameters
     connection_id = None
@@ -73,16 +75,10 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_ses
         # Get connection parameters
         params = websocket.query_params
         token = params.get("token")
-        user_id = params.get("user_id")
-        note_id = params.get("note_id")
+        user_id = params.get("user_id", "0")
+        note_id = params.get("note_id", "0")
         
-        # Validate parameters
-        if not all([token, user_id, note_id]):
-            logger.warning("Missing required WebSocket parameters")
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-            return
-            
-        # Accept the connection
+        # Accept the connection (even for anonymous/test users)
         await websocket.accept()
         
         # Generate unique connection ID
@@ -91,109 +87,137 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_ses
         
         logger.info(f"WebSocket connected: user_id={user_id}, note_id={note_id}")
         
-        # Initialize note service for this connection
-        note_service = NoteService(db)
+        # For anonymous/test mode, use default IDs
+        try:
+            user_id = int(user_id)
+            note_id = int(note_id)
+        except ValueError:
+            user_id = 0
+            note_id = 0
+            logger.warning("Using anonymous mode (user_id=0, note_id=0)")
         
         # Main message loop
         while True:
             # Receive message
             data = await websocket.receive_json()
             
-            # Process audio chunk if present
-            if data and "data" in data and data["data"]:
-                await process_audio_chunk(
-                    data["data"], 
-                    int(user_id), 
-                    int(note_id), 
-                    websocket,
-                    note_service
-                )
-            else:
-                logger.info("Received empty data, closing connection")
-                break
+            # Handle the message using our refactored handler
+            await handle_websocket_message(data, user_id, note_id, websocket, db)
                 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected: user_id={user_id}, note_id={note_id}")
     except Exception as e:
         logger.error(f"WebSocket error: {str(e)}")
+        # logger.error(traceback.format_exc())
     finally:
         # Clean up
         if connection_id and connection_id in active_connections:
             del active_connections[connection_id]
             
-        # Reset state
+        # Reset state in services
         transcription_service.reset()
         keyword_service.clear()
         
         logger.info(f"WebSocket resources cleaned up for user_id={user_id}, note_id={note_id}")
 
-async def process_audio_chunk(chunk_base64: str, user_id: int, note_id: int, 
-                             websocket: WebSocket, note_service: NoteService):
+async def handle_websocket_message(data, user_id, note_id, websocket, db):
     """
-    Process an audio chunk using the service layer
+    Process a message from WebSocket (either audio or text)
+    This function delegates to the appropriate service layer methods
     
     Args:
-        chunk_base64: Base64-encoded audio data
+        data: Message data (dict from JSON)
         user_id: User ID for the session
         note_id: Note ID for the session
-        websocket: WebSocket connection
-        note_service: Note service instance
+        websocket: WebSocket connection object
+        db: Database session
     """
+    # Initialize services (use existing singletons when possible)
+    note_service = NoteService(db)
+    
     try:
-        import base64
-        
-        # Decode base64 data
-        audio_bytes = base64.b64decode(chunk_base64)
-        
-        audio_service = transcription_service.audio_service
-        
-        # Add to audio service
-        audio_service.add_chunk(audio_bytes)
-        
-        # Process with transcription service
-        did_transcribe = transcription_service.process_audio_segment(user_id, note_id)
-        
-        if did_transcribe:
-            # Get current transcript
-            transcript_info = transcription_service.get_current_transcript()
-            logger.info(f"Current transcript: {transcript_info}")
-            # Extract keywords
+        # Check if this is a text message
+        if data.get("type") == "text" and "data" in data:
+            # Process text directly
+            text_content = data["data"]
+            
+            # Use the transcription service to process text
+            transcription_service.full_transcript = text_content
+            transcription_service.transcript_segments.append(text_content)
+            
+            # Extract keywords 
             keywords = transcription_service.extract_keywords()
-            
-            # Process keywords
-            keyword_service.process_and_buffer_keywords(keywords)
-            keyword_service.merge_keywords()
-            
-            # Create sections
-            sections = keyword_service.create_sections(user_id, note_id)
             
             # Send transcript update to client
             await websocket.send_json({
-                'text': transcript_info['text']
+                'text': text_content
             })
             
-            # Add sections to note and send to client
-            sections_json = []
-            for section in sections:
-                # Save section to database
-                db_section = note_service.add_section_to_note(note_id, section)
-                if db_section:
-                    # Convert to JSON for websocket response
-                    sections_json.append({
-                        'id': db_section.id,
-                        'title': db_section.title,
-                        'content': db_section.content,
-                        'section_type': db_section.section_type
-                    })
+        elif "data" in data and data["data"]:
+            # This is audio data - process with AudioService
+            audio_data = data["data"]
             
-            # Send sections to client
-            if sections_json:
-                await websocket.send_json({
-                    'sections': sections_json
-                })
+            # Add to audio service if it's base64 data
+            import base64
+            try:
+                audio_bytes = base64.b64decode(audio_data)
+                audio_service = transcription_service.audio_service
+                audio_service.add_chunk(audio_bytes)
+            except:
+                logger.warning("Failed to decode audio data")
+                return
+            
+            # Let the transcription service process the audio
+            did_transcribe = transcription_service.process_audio_segment(user_id, note_id)
+            if not did_transcribe:
+                return
                 
-            logger.info(f"Processed audio chunk: transcribed={did_transcribe}, sections={len(sections_json)}")
+            # Get the transcript
+            transcript_info = transcription_service.get_current_transcript()
             
+            # Extract keywords
+            keywords = transcription_service.extract_keywords()
+            
+            # Send transcript to client
+            await websocket.send_json({
+                'text': transcript_info['text']
+            })
+        else:
+            # Empty data or heartbeat - just acknowledge
+            await websocket.send_json({
+                'status': 'connected'
+            })
+            return
+        
+        # Process keywords
+        keyword_service.process_and_buffer_keywords(keywords)
+        keyword_service.merge_keywords()
+        
+        # Create sections
+        sections = keyword_service.create_sections(user_id, note_id)
+        
+        # Add sections to the note and prepare for response
+        sections_json = []
+        for section in sections:
+            db_section = note_service.add_section_to_note(note_id, section)
+            if db_section:
+                sections_json.append({
+                    'id': db_section.id,
+                    'title': db_section.title,
+                    'content': db_section.content,
+                    'section_type': db_section.section_type
+                })
+        
+        # Send sections to client
+        if sections_json:
+            await websocket.send_json({
+                'sections': sections_json
+            })
+        
     except Exception as e:
-        logger.error(f"Error processing audio chunk: {str(e)}")
-        # Don't re-raise; allow connection to continue
+        logger.error(f"Error handling WebSocket message: {str(e)}")
+        # logger.error(traceback.format_exc())
+        # Send error to client
+        await websocket.send_json({
+            'error': str(e)
+        })
