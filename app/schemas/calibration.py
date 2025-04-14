@@ -22,17 +22,6 @@ class SpeakerProfileBase(BaseModel):
     is_active: bool = True
     description: Optional[str] = None
 
-class SpeakerProfileCreate(SpeakerProfileBase):
-    """Schema for creating a speaker profile"""
-    profile_data: bytes  # Binary profile data
-
-class SpeakerProfileRead(SpeakerProfileBase):
-    """Schema for reading a speaker profile"""
-    id: int
-    created_at: datetime
-    updated_at: datetime
-    stats: Optional[Dict[str, Any]] = None
-
     class Config:
         orm_mode = True
 
@@ -82,3 +71,19 @@ class ProfileCreationResponse(BaseModel):
     message: str
     user_id: int
     profile_id: Optional[int] = None
+    
+class RecordingBase(BaseModel):
+    """Base schema for calibration recordings"""
+    user_id: int
+    phrase_id: int
+    duration_ms: Optional[float] = None
+    sample_rate: Optional[int] = None
+    feature_type: str = "mfcc"
+
+class RecordingStatus(BaseModel):
+    """Schema for reading recording status"""
+    phrase_id: int
+    status: str  # 'completed', 'pending', 'failed'
+    timestamp: Optional[str] = None
+    phrase_text: Optional[str] = None
+    duration_ms: Optional[float] = None
