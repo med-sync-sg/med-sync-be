@@ -4,8 +4,10 @@ import logging
 import json
 import base64
 import numpy as np
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any, Union, Tuple
 import time
+import asyncio
+from contextlib import asynccontextmanager
 
 from app.db.local_session import DatabaseManager
 from app.services.audio_service import AudioService
@@ -24,8 +26,40 @@ get_session = DatabaseManager().get_session
 # Create speech processor singleton
 speech_processor = SpeechProcessor()
 
-# Active WebSocket connections
-active_connections = {}
+# Active WebSocket connections with cleanup management
+active_connections: Dict[str, Dict[str, Any]] = {}
+
+# Constants
+MAX_BUFFER_SIZE = 1024 * 1024 * 5  # 5MB maximum buffer size
+HEARTBEAT_INTERVAL = 30  # Seconds between heartbeats
+
+@asynccontextmanager
+async def managed_websocket_connection(websocket: WebSocket, connection_id: str):
+    """
+    Context manager for WebSocket connections that ensures proper cleanup
+    """
+    try:
+        await websocket.accept()
+        logger.info(f"WebSocket connected: {connection_id}")
+        yield websocket
+    except Exception as e:
+        logger.error(f"WebSocket error in {connection_id}: {str(e)}")
+    finally:
+        # Clean up resources
+        if connection_id in active_connections:
+            connection_data = active_connections[connection_id]
+            # Clear services
+            if 'transcription_service' in connection_data:
+                connection_data['transcription_service'].reset()
+            if 'keyword_service' in connection_data:
+                connection_data['keyword_service'].clear()
+            if 'audio_service' in connection_data:
+                # Clear audio buffers
+                connection_data['audio_service'].clear_session()
+            
+            # Remove from active connections
+            del active_connections[connection_id]
+            logger.info(f"WebSocket resources cleaned up for {connection_id}")
 
 async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_session)):
     """
@@ -73,131 +107,214 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_ses
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
             
-        # Accept the connection
-        await websocket.accept()
-        
         # Generate unique connection ID
         connection_id = f"{user_id}_{note_id}_{id(websocket)}"
-        active_connections[connection_id] = websocket
         
-        logger.info(f"WebSocket connected: user_id={user_id}, note_id={note_id}, use_adaptation={use_adaptation}")
-        
-        # Initialize services for this connection
-        note_service = NoteService(db)
-        audio_service = AudioService()
-        transcription_service = TranscriptionService(
-            audio_service=audio_service,
-            speech_processor=speech_processor
-        )
-        keyword_service = KeywordExtractService()
-        
-        # Verify adaptation is possible
-        if use_adaptation and adaptation_user_id is not None:
-            status = calibration_service.get_calibration_status(adaptation_user_id, db)
-            if not status.calibration_complete:
-                use_adaptation = False
-                # Always send as a JSON string
-                await websocket.send_text(json.dumps({
-                    "warning": "No completed voice calibration found",
-                    "adaptation_enabled": False
-                }))
-                logger.warning(f"No completed calibration for user {adaptation_user_id}")
-        
-        # Main message loop
-        while True:
-            # Receive message
-            raw_data = await websocket.receive_text()
-            data = json.loads(raw_data)
+        # Set up services within the managed context
+        async with managed_websocket_connection(websocket, connection_id) as ws:
+            # Initialize services for this connection
+            note_service = NoteService(db)
+            audio_service = AudioService()
+            transcription_service = TranscriptionService(
+                audio_service=audio_service,
+                speech_processor=speech_processor
+            )
+            keyword_service = KeywordExtractService()
             
-            # Check if this is a configuration update
-            if "config_update" in data:
-                config = data["config_update"]
-                use_adaptation = config.get("use_adaptation", use_adaptation)
-                adaptation_user_id = config.get("user_id", adaptation_user_id)
-                
-                logger.info(f"Updated configuration: use_adaptation={use_adaptation}, user_id={adaptation_user_id}")
-                
-                # Verify adaptation is possible
-                if use_adaptation and adaptation_user_id is not None:
-                    status = calibration_service.get_calibration_status(adaptation_user_id, db)
-                    if not status.calibration_complete:
-                        use_adaptation = False
-                        # Always send as a JSON string
-                        await websocket.send_text(json.dumps({
-                            "warning": "No completed voice calibration found",
-                            "adaptation_enabled": False
-                        }))
-                        logger.warning(f"No completed calibration for user {adaptation_user_id}")
-                    else:
-                        # Always send as a JSON string
-                        await websocket.send_text(json.dumps({
-                            "info": "Using voice calibration",
-                            "adaptation_enabled": True,
-                            "profile_id": status.profile_id
-                        }))
-                
-                continue
+            # Store services for cleanup in case of unexpected disconnection
+            active_connections[connection_id] = {
+                'websocket': ws,
+                'audio_service': audio_service,
+                'transcription_service': transcription_service,
+                'keyword_service': keyword_service,
+                'last_heartbeat': time.time()
+            }
             
-            # Process audio chunk if present
-            if data and "data" in data:
-                try:
-                    # Extract audio data
-                    audio_base64 = data["data"]
-                    if not audio_base64:
-                        logger.info("Received end of stream signal.")
-                        break
-                    
-                    audio_bytes = base64.b64decode(audio_base64)
-                    
-                    # Check for adaptation settings in the message
-                    message_use_adaptation = data.get("use_adaptation", use_adaptation)
-                    message_user_id = data.get("user_id", adaptation_user_id)
-                    
-                    # Update settings if changed
-                    if message_use_adaptation != use_adaptation or message_user_id != adaptation_user_id:
-                        use_adaptation = message_use_adaptation
-                        adaptation_user_id = message_user_id
-                        logger.info(f"Updated settings from message: use_adaptation={use_adaptation}, user_id={adaptation_user_id}")
-                    
-                    # Process the audio
-                    await process_audio_chunk(
-                        audio_bytes, 
-                        int(user_id), 
-                        int(note_id), 
-                        websocket,
-                        note_service,
-                        transcription_service,
-                        keyword_service,
-                        use_adaptation,
-                        adaptation_user_id,
-                        db
-                    )
-                except Exception as e:
-                    logger.error(f"Error processing audio chunk: {str(e)}")
-                    # Always send as a JSON string
-                    await websocket.send_text(json.dumps({
-                        "error": f"Error processing audio: {str(e)}"
+            # Verify adaptation is possible
+            if use_adaptation and adaptation_user_id is not None:
+                status = calibration_service.get_calibration_status(adaptation_user_id, db)
+                if not status.calibration_complete:
+                    use_adaptation = False
+                    await ws.send_text(json.dumps({
+                        "warning": "No completed voice calibration found",
+                        "adaptation_enabled": False
                     }))
-            else:
-                logger.info("Received malformed data or control message")
-                continue
+                    logger.warning(f"No completed calibration for user {adaptation_user_id}")
+            
+            # Start heartbeat task
+            heartbeat_task = asyncio.create_task(send_heartbeats(connection_id))
+            
+            # Main message loop
+            while True:
+                # Receive message with timeout
+                try:
+                    raw_data = await asyncio.wait_for(
+                        ws.receive_text(),
+                        timeout=HEARTBEAT_INTERVAL * 1.5
+                    )
+                    data = json.loads(raw_data)
+                    
+                    # Update last heartbeat time
+                    active_connections[connection_id]['last_heartbeat'] = time.time()
+                except asyncio.TimeoutError:
+                    # Check if connection is still active
+                    if time.time() - active_connections[connection_id]['last_heartbeat'] > HEARTBEAT_INTERVAL * 2:
+                        logger.warning(f"Connection {connection_id} timed out")
+                        break
+                    continue
+                except WebSocketDisconnect:
+                    logger.info(f"WebSocket disconnected: {connection_id}")
+                    break
+                
+                # Check if this is a configuration update
+                if "config_update" in data:
+                    await handle_config_update(
+                        ws, data["config_update"], 
+                        connection_id, db, 
+                        use_adaptation, adaptation_user_id
+                    )
+                    continue
+                
+                # Process audio chunk if present
+                if data and "data" in data:
+                    await handle_audio_data(
+                        ws, data, db,
+                        connection_id, int(user_id), int(note_id),
+                        use_adaptation, adaptation_user_id,
+                        note_service, transcription_service, keyword_service, audio_service
+                    )
+                else:
+                    logger.info("Received malformed data or control message")
+                    continue
+                    
+            # Cancel heartbeat task
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
                 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected: user_id={user_id}, note_id={note_id}")
     except Exception as e:
         logger.error(f"WebSocket error: {str(e)}")
+        if websocket.client_state == WebSocket.application_state.CONNECTED:
+            await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
     finally:
-        # Clean up
-        if connection_id and connection_id in active_connections:
-            del active_connections[connection_id]
+        # Clean up will be handled by the context manager
+        pass
+
+async def send_heartbeats(connection_id: str):
+    """Send periodic heartbeats to keep the connection alive"""
+    try:
+        while connection_id in active_connections:
+            # Send heartbeat
+            websocket = active_connections[connection_id]['websocket']
+            await websocket.send_text(json.dumps({"heartbeat": time.time()}))
             
-        # Reset state
-        if 'transcription_service' in locals():
-            transcription_service.reset()
-        if 'keyword_service' in locals():
-            keyword_service.clear()
+            # Update timestamp
+            active_connections[connection_id]['last_heartbeat'] = time.time()
+            
+            # Wait for next interval
+            await asyncio.sleep(HEARTBEAT_INTERVAL)
+    except asyncio.CancelledError:
+        # Task was cancelled, exit gracefully
+        pass
+    except Exception as e:
+        logger.error(f"Error in heartbeat for {connection_id}: {str(e)}")
+
+async def handle_config_update(
+    websocket: WebSocket,
+    config: Dict[str, Any],
+    connection_id: str,
+    db: Session,
+    use_adaptation: bool,
+    adaptation_user_id: Optional[int]
+) -> Tuple[bool, Optional[int]]:
+    """Handle configuration update messages"""
+    try:
+        new_use_adaptation = config.get("use_adaptation", use_adaptation)
+        new_adaptation_user_id = config.get("user_id", adaptation_user_id)
         
-        logger.info(f"WebSocket resources cleaned up for user_id={user_id}, note_id={note_id}")
+        logger.info(f"Updated configuration: use_adaptation={new_use_adaptation}, user_id={new_adaptation_user_id}")
+        
+        # Verify adaptation is possible
+        if new_use_adaptation and new_adaptation_user_id is not None:
+            status = calibration_service.get_calibration_status(new_adaptation_user_id, db)
+            if not status.calibration_complete:
+                new_use_adaptation = False
+                await websocket.send_text(json.dumps({
+                    "warning": "No completed voice calibration found",
+                    "adaptation_enabled": False
+                }))
+                logger.warning(f"No completed calibration for user {new_adaptation_user_id}")
+            else:
+                await websocket.send_text(json.dumps({
+                    "info": "Using voice calibration",
+                    "adaptation_enabled": True,
+                    "profile_id": status.profile_id
+                }))
+        
+        return new_use_adaptation, new_adaptation_user_id
+    except Exception as e:
+        logger.error(f"Error processing config update: {str(e)}")
+        await websocket.send_text(json.dumps({
+            "error": f"Error updating configuration: {str(e)}"
+        }))
+        return use_adaptation, adaptation_user_id
+
+async def handle_audio_data(
+    websocket: WebSocket,
+    data: Dict[str, Any],
+    db: Session,
+    connection_id: str,
+    user_id: int,
+    note_id: int,
+    use_adaptation: bool,
+    adaptation_user_id: Optional[int],
+    note_service: NoteService,
+    transcription_service: TranscriptionService,
+    keyword_service: KeywordExtractService,
+    audio_service: AudioService
+) -> None:
+    """Handle incoming audio data"""
+    try:
+        # Extract audio data
+        audio_base64 = data["data"]
+        if not audio_base64:
+            logger.info("Received end of stream signal.")
+            return
+        
+        audio_bytes = base64.b64decode(audio_base64)
+        
+        # Check for adaptation settings in the message
+        message_use_adaptation = data.get("use_adaptation", use_adaptation)
+        message_user_id = data.get("user_id", adaptation_user_id)
+        
+        # Update settings if changed
+        if message_use_adaptation != use_adaptation or message_user_id != adaptation_user_id:
+            use_adaptation = message_use_adaptation
+            adaptation_user_id = message_user_id
+            logger.info(f"Updated settings from message: use_adaptation={use_adaptation}, user_id={adaptation_user_id}")
+        
+        # Process the audio
+        await process_audio_chunk(
+            audio_bytes, 
+            user_id, 
+            note_id, 
+            websocket,
+            note_service,
+            transcription_service,
+            keyword_service,
+            use_adaptation,
+            adaptation_user_id,
+            db
+        )
+    except Exception as e:
+        logger.error(f"Error processing audio chunk: {str(e)}")
+        await websocket.send_text(json.dumps({
+            "error": f"Error processing audio: {str(e)}"
+        }))
 
 async def process_audio_chunk(
     chunk_bytes: bytes, 
@@ -228,6 +345,17 @@ async def process_audio_chunk(
     """
     try:
         audio_service = transcription_service.audio_service
+        
+        # Check buffer size before adding
+        current_size = len(audio_service.current_buffer) + len(audio_service.session_buffer)
+        if current_size + len(chunk_bytes) > MAX_BUFFER_SIZE:
+            # Buffer too large, send warning and clear partial data
+            await websocket.send_text(json.dumps({
+                "warning": "Audio buffer too large, clearing oldest data"
+            }))
+            # Clear oldest 25% of the session buffer to make room
+            trim_size = len(audio_service.session_buffer) // 4
+            audio_service.session_buffer = audio_service.session_buffer[trim_size:]
         
         # Add to audio service
         audio_service.add_chunk(chunk_bytes)
@@ -285,7 +413,7 @@ async def process_audio_chunk(
         # Reset buffer for next segment
         audio_service.reset_current_buffer()
         
-        # Send transcript update to client - ALWAYS AS JSON STRING
+        # Send transcript update to client
         await websocket.send_text(json.dumps({
             'text': transcript_info['text'],
             'using_adaptation': use_adaptation,
@@ -295,18 +423,27 @@ async def process_audio_chunk(
         # Add sections to note and send to client
         sections_json = []
         for section in sections:
-            # Save section to database
-            db_section = note_service.add_section_to_note(note_id, section)
-            if db_section:
-                # Convert to JSON for websocket response
-                sections_json.append({
-                    'id': db_section.id,
-                    'title': db_section.title,
-                    'content': db_section.content,
-                    'section_type': db_section.section_type
-                })
+            try:
+                # Validate section data before saving
+                if not section.content:
+                    logger.warning(f"Skipping empty section for note {note_id}")
+                    continue
+                    
+                # Save section to database
+                db_section = note_service.add_section_to_note(note_id, section)
+                if db_section:
+                    # Convert to JSON for websocket response
+                    sections_json.append({
+                        'id': db_section.id,
+                        'title': db_section.title,
+                        'content': db_section.content,
+                        'section_type': db_section.section_type,
+                        'section_description': db_section.section_description
+                    })
+            except Exception as section_error:
+                logger.error(f"Error adding section: {str(section_error)}")
         
-        # Send sections to client - ALWAYS AS JSON STRING
+        # Send sections to client
         if sections_json:
             await websocket.send_text(json.dumps({
                 'sections': sections_json
@@ -321,7 +458,7 @@ async def process_audio_chunk(
             "error": f"Error processing audio: {str(e)}"
         }))
 
-def get_active_connections() -> Dict[str, WebSocket]:
+def get_active_connections() -> Dict[str, Dict[str, Any]]:
     """Get all active WebSocket connections"""
     return active_connections
 
@@ -332,8 +469,9 @@ async def broadcast_message(message: Union[str, Dict[str, Any]]) -> None:
     Args:
         message: Message to broadcast (string or JSON-serializable dict)
     """
-    for connection_id, websocket in active_connections.items():
+    for connection_id, connection_data in active_connections.items():
         try:
+            websocket = connection_data['websocket']
             if isinstance(message, str):
                 await websocket.send_text(message)
             else:

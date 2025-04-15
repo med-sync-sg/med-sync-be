@@ -501,7 +501,6 @@ def find_medical_modifiers(doc: Doc) -> List[Dict[str, Any]]:
     
     # Now merge the dictionaries to remove duplicates
     merged_features = merge_results_dicts(features)
-    print("Modifiers result: ", merged_features)
     return merged_features
 
 def merge_results_dicts(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
