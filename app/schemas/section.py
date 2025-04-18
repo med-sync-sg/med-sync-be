@@ -35,6 +35,7 @@ class SectionRead(BaseAuthModel):
         orm_mode = True
 
 class SectionUpdate(BaseAuthModel):
+    id: int
     note_id: int
     title: Union[str, None] = None
     content: Union[Dict[str, Any], None] = None

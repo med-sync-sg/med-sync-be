@@ -3,21 +3,10 @@
 
 a = Analysis(
     ['main.py'],
-    pathex=['.venv/Lib/site-packages'],
+    pathex=[],
     binaries=[],
-    datas=[('.env', '.env'), ('app', 'app')],
-    hiddenimports=[
-        "fastapi",
-        "fastapi.middleware.cors",
-        "uvicorn",
-        "uvicorn.importer",
-        "uvicorn.config",
-        "jose.jwt",
-        "spacy",
-        "spacy.lang.en",
-        "ahocorasick",
-        "sentence_transformers"
-    ],
+    datas=[],
+    hiddenimports=['app.api.v1.endpoints.auth', 'app.api.v1.endpoints.notes', 'app.api.v1.endpoints.users', 'app.api.v1.endpoints.reports', 'app.api.v1.endpoints.tests', 'app.api.v1.endpoints.calibration'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

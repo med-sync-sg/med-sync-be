@@ -106,20 +106,25 @@ def debug_note_creation(data: Dict[str, Any] = Body(...)):
             "error": str(e)
         }
 
-@router.get("/", response_model=List[NoteRead])
-def list_notes(db: Session = Depends(get_session)):
-    """
-    List all notes
-    """
-    notes = db.query(Note).options(joinedload(Note.sections)).all()
-    return notes
-
-@router.get("/{note_id}", response_model=NoteRead)
-def get_note(note_id: int, db: Session = Depends(get_session)):
+@router.get("/{user_id}", response_model=List[NoteRead])
+def list_notes_by_user_id(user_id: int, db: Session = Depends(get_session)):
     """
     Get a specific note by ID
     """
-    db_note = db.query(Note).filter(Note.id == note_id).first()
+    notes = db.query(Note).options(joinedload(Note.sections)).filter(Note.user_id == user_id).all()
+    if not notes:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Notes not found"
+        )
+    return notes
+
+@router.get("/{user_id}/{note_id}", response_model=NoteRead)
+def get_note_by_user_id(user_id: int, note_id: int, db: Session = Depends(get_session)):
+    """
+    Get a specific note by ID
+    """
+    db_note = db.query(Note).filter(Note.user_id == user_id, Note.id == note_id).first()
     if not db_note:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -127,12 +132,13 @@ def get_note(note_id: int, db: Session = Depends(get_session)):
         )
     return db_note
 
-@router.put("/{note_id}", response_model=NoteRead)
-def update_note(note_id: int, note_in: NoteUpdate, db: Session = Depends(get_session)):
+
+@router.put("/{user_id}/{note_id}", response_model=NoteRead)
+def update_note(user_id: int, note_id: int, note_in: NoteUpdate, db: Session = Depends(get_session)):
     """
     Update an existing note
     """
-    db_note = db.query(Note).filter(Note.id == note_id).first()
+    db_note = db.query(Note).filter(Note.id == note_id, Note.user_id == user_id).first()
     if not db_note:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -149,10 +155,15 @@ def update_note(note_id: int, note_in: NoteUpdate, db: Session = Depends(get_ses
     
     # Update sections if provided
     if note_in.sections:
-        # This would require more complex logic to update/delete/add sections
-        # For simplicity, we'll just log that sections are being ignored
-        logger.warning("Note section updates are not implemented in this endpoint")
-    
+        db_sections = db.query(Section).filter(Section.note_id == note_id).all()
+
+        for section in note_in.sections:
+            for db_section in db_sections:
+                if db_section.id == section.id:
+                    # Update section
+                    db_section.content = section.content
+                    db_section.title = section.title
+             
     db.commit()
     db.refresh(db_note)
     return db_note

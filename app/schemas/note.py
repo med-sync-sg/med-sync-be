@@ -48,14 +48,16 @@ class NoteRead(BaseModel):
     patient_id: Optional[int]
     user_id: int
     encounter_date: date
-    sections: List[Union[SectionCreate, Dict[str, Any]]] = []
+    sections: List[Union[SectionRead, Dict[str, Any]]] = []
     class Config:
         orm_mode = True
+
 class NoteUpdate(BaseModel):
     """Schema for updating a note"""
     title: Optional[str] = None
     patient_id: Optional[int] = None
+    user_id: int
     encounter_date: Optional[date] = None
-    sections: List[Union[SectionCreate, Dict[str, Any]]] = []
+    sections: List[Union[SectionUpdate, Dict[str, Any]]] = []
     class Config:
         orm_mode = True
