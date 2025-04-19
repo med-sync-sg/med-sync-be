@@ -4,13 +4,7 @@ from sqlalchemy.orm import Session
 import logging
 import json
 
-from app.api.v1.endpoints import auth, notes, users, reports, tests
-from app.api.v1.endpoints.calibration import router as calibration_router
-from app.db.local_session import DatabaseManager
-from app.services.audio_service import AudioService
-from app.services.transcription_service import TranscriptionService
-from app.services.nlp.keyword_extract_service import KeywordExtractService
-from app.services.note_service import NoteService
+from app.api.v1.endpoints import auth, notes, users, reports, tests, calibration
 from app.utils.websocket_handler import websocket_endpoint
 
 # Configure logger
@@ -32,7 +26,7 @@ def create_app() -> FastAPI:
     app.include_router(users.router, prefix="/users", tags=["user"])
     app.include_router(reports.router, prefix="/reports", tags=["report"])
     app.include_router(tests.router, prefix="/tests", tags=["test"])
-    app.include_router(calibration_router, prefix="/calibration", tags=["calibration"])
+    app.include_router(calibration.router, prefix="/calibration", tags=["calibration"])
 
     # Add CORS middleware
     app.add_middleware(

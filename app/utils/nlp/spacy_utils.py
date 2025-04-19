@@ -7,13 +7,7 @@ from fastapi import APIRouter
 import spacy.tokenizer
 from spacy.tokens import Doc, Token
 import spacy.tokens
-from app.db.data_loader import umls_df_dict
-from spacy import displacy
 from spacy.matcher import DependencyMatcher
-from pathlib import Path
-from app.schemas.section import TextCategoryEnum
-from sentence_transformers import SentenceTransformer, util
-import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch.nn.functional as F
 from os import environ
@@ -28,7 +22,6 @@ HF_TOKEN = environ.get("HF_ACCESS_TOKEN")
 
 router = APIRouter()
 
-df = umls_df_dict["concepts_with_sty_def_df"]
 automaton = ahocorasick.Automaton()
 
 @Language.component("ahocorasick")
@@ -43,6 +36,8 @@ def AhoCorasickComponent(doc: Doc):
     Returns:
         doc: The processed spaCy Doc with medical entities added
     """
+    from app.db.data_loader import umls_df_dict
+    df = umls_df_dict["concepts_with_sty_def_df"]
     # Build the automaton if it's not already built
     if not automaton.get_stats()['total_size']:
         for index, row in df.iterrows():

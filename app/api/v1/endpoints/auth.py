@@ -1,279 +1,108 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
-from typing import List
-from app.models.models import User  # SQLAlchemy user model
-from app.schemas.user import UserCreate
-from app.utils.auth_utils import create_access_token, verify_password, hash_password
+from jose import JWTError, jwt
+from datetime import datetime, timedelta
+from typing import Optional
+
 from app.db.local_session import DatabaseManager
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-import logging
+from app.models.models import User
+import os
+# Configure JWT settings
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY")  # Change this to a secure key in production
+ALGORITHM = os.environ.get("JWT_ALGORITHM")
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-# Configure logger
-logger = logging.getLogger(__name__)
+router = APIRouter()
 
-# OAuth2 scheme for token authentication
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
-
-# Get database session dependency
 get_session = DatabaseManager().get_session
+DEV_MODE = os.environ.get("DEV_MODE", "True").lower() == "true"
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login", auto_error=not DEV_MODE)
 
-# Define response schemas
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    user_id: int
-
-class SignupResponse(BaseModel):
-    user_id: int
-    access_token: str
-    token_type: str = "bearer"
-
-router = APIRouter()
-
-# Define request and response schemas
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    user_id: int
-
-class SignupResponse(BaseModel):
-    user_id: int
-    access_token: str
-    token_type: str = "bearer"
-
-router = APIRouter()
-
-@router.post("/login", response_model=TokenResponse)
-async def login(
-    credentials: LoginRequest,
-    db: Session = Depends(get_session)
-):
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     """
-    Authenticate a user using JSON and return an access token
-    
-    This endpoint accepts JSON with username and password fields
+    Create a JWT access token
     """
-    return await authenticate_user(credentials.username, credentials.password, db)
+    to_encode = data.copy()
+    
+    if expires_delta:
+        expire = datetime.now() + expires_delta
+    else:
+        expire = datetime.now() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
 
-
-@router.post("/sign-up", response_model=SignupResponse, status_code=status.HTTP_201_CREATED)
-async def signup(user_data: UserCreate, db: Session = Depends(get_session)):
+def verify_token(token: str):
     """
-    Register a new user
-    
-    Args:
-        user_data: User creation data
-        db: Database session
-        
-    Returns:
-        New user information and access token
-    """
-    # Check if username already exists
-    existing_user = db.query(User).filter(User.username == user_data.username).first()
-    if existing_user:
-        logger.warning(f"Signup attempt with existing username: {user_data.username}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username already taken"
-        )
-    
-    # Check if email already exists (if provided)
-    if user_data.email:
-        existing_email = db.query(User).filter(User.email == user_data.email).first()
-        if existing_email:
-            logger.warning(f"Signup attempt with existing email: {user_data.email}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
-            )
-    
-    try:
-        # Hash the password
-        hashed_password = hash_password(user_data.password)
-        
-        # Create user object
-        new_user = User(
-            username=user_data.username,
-            email=user_data.email,
-            hashed_password=hashed_password,
-            first_name=user_data.first_name,
-            middle_name=user_data.middle_name,
-            last_name=user_data.last_name,
-            age=user_data.age
-        )
-        
-        # Save to database
-        db.add(new_user)
-        db.commit()
-        db.refresh(new_user)
-        
-        # Generate JWT token
-        token_data = {"sub": str(new_user.id), "username": new_user.username}
-        access_token = create_access_token(token_data)
-        
-        logger.info(f"New user registered: ID {new_user.id}, username {new_user.username}")
-        return {
-            "user_id": new_user.id,
-            "access_token": access_token,
-            "token_type": "bearer"
-        }
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error during user registration: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Registration failed. Please try again later."
-        )
-
-async def authenticate_user(username: str, password: str, db: Session):
-    """
-    Authenticate a user and generate access token
-    
-    Args:
-        username: User's username
-        password: User's password
-        db: Database session
-        
-    Returns:
-        Token response with access token and user ID
-    """
-    # Find the user by username
-    user = db.query(User).filter(User.username == username).first()
-    
-    # Verify user exists and password is correct
-    if not user or not verify_password(password, user.hashed_password):
-        logger.warning(f"Failed login attempt for username: {username}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    # Generate JWT token
-    token_data = {"sub": str(user.id), "username": user.username}
-    access_token = create_access_token(token_data)
-    
-    logger.info(f"User {user.id} ({user.username}) logged in successfully")
-    return {"access_token": access_token, "token_type": "bearer", "user_id": user.id}
-
-@router.post("/validate-token")
-async def validate_token(token: str = Depends(oauth2_scheme), db: Session = Depends(get_session)):
-    """
-    Validate an access token and return user information
-    
-    Args:
-        token: JWT access token
-        db: Database session
-        
-    Returns:
-        User information if token is valid
+    Verify a JWT token
     """
     try:
-        # Get current user from token
-        current_user = get_current_user(token, db)
-        
-        # Return user info (excluding sensitive fields)
-        return {
-            "valid": True,
-            "user_id": current_user.id,
-            "username": current_user.username
-        }
-    except HTTPException:
-        return {"valid": False}
-
-@router.post("/change-password", status_code=status.HTTP_200_OK)
-async def change_password(
-    old_password: str,
-    new_password: str,
-    token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_session)
-):
-    """
-    Change user password
-    
-    Args:
-        old_password: Current password
-        new_password: New password
-        token: JWT access token
-        db: Database session
-        
-    Returns:
-        Success message
-    """
-    # Get current user from token
-    current_user = get_current_user(token, db)
-    
-    # Verify old password
-    if not verify_password(old_password, current_user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Current password is incorrect"
-        )
-    
-    try:
-        # Hash and set new password
-        current_user.hashed_password = hash_password(new_password)
-        db.commit()
-        
-        logger.info(f"Password changed for user {current_user.id}")
-        return {"message": "Password changed successfully"}
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error changing password for user {current_user.id}: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to change password"
-        )
-
-# Helper function to get current user from token
-def get_current_user(token: str, db: Session) -> User:
-    """
-    Get the current user from a JWT token
-    
-    Args:
-        token: JWT access token
-        db: Database session
-        
-    Returns:
-        User object
-    """
-    from app.utils.auth_utils import decode_access_token
-    
-    try:
-        # Decode token
-        payload = decode_access_token(token)
-        user_id = payload.get("sub")
-        
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: int = payload.get("sub")
         if user_id is None:
+            return None
+        return user_id
+    except JWTError:
+        return None
+
+async def get_current_user(
+    request: Request,
+    token: Optional[str] = Depends(oauth2_scheme), 
+    db: Session = Depends(get_session)
+):
+    """
+    Get the current authenticated user based on the JWT token.
+    In development mode, will use the user ID from the X-User-ID header.
+    """
+    # Development mode - check for user ID in headers
+    if DEV_MODE and (token is None or token == "dev_mode_dummy_token"):
+        try:
+            # Check for user ID in header
+            user_id_header = request.headers.get("X-User-ID")
+            if user_id_header:
+                user_id = int(user_id_header)
+                user = db.query(User).filter(User.id == user_id).first()
+                if user:
+                    return user
+                
+                print(f"WARNING: User ID {user_id} from header not found in database")
+            else:
+                print("WARNING: No X-User-ID header provided in development mode")
+                
+            # Fallback to first user in database if header is missing or invalid
+            user = db.query(User).first()
+            if user:
+                print(f"Using fallback user: ID={user.id}, Username={user.username}")
+                return user
+                
+            # If no users exist, raise an exception
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token",
-                headers={"WWW-Authenticate": "Bearer"},
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No users found in the database"
             )
-            
-        # Get user from database
-        user = db.query(User).filter(User.id == user_id).first()
-        
-        if user is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-            
-        return user
-        
-    except Exception as e:
-        logger.error(f"Error authenticating user: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+                
+        except ValueError:
+            print(f"WARNING: Invalid user ID format in X-User-ID header: {user_id_header}")
+    
+    # Normal authentication flow for production
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        raise credentials_exception
+    
+    return user

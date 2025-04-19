@@ -1,9 +1,6 @@
 import json
 import requests
 from os import environ
-from typing import Dict, Any, Tuple, List
-import pandas as pd
-import pyarrow as pa
 from pyarrow.feather import read_feather
 from io import BytesIO
 import copy
