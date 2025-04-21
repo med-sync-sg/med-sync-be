@@ -1,9 +1,15 @@
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 from app.services.audio_service import AudioService
 from app.utils.speech_processor import SpeechProcessor
 from app.utils.text_utils import clean_transcription, correct_spelling
 from app.utils.nlp.spacy_utils import process_text, find_medical_modifiers
+from app.services.whisperx_service import WhisperXService
+import tempfile
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -17,6 +23,8 @@ class TranscriptionService:
     def __init__(self, 
                  audio_service: AudioService = None, 
                  speech_processor: SpeechProcessor = None):
+                 speech_processor: SpeechProcessor = None,
+                 hf_token: Optional[str] = None):
         """
         Initialize transcription service with dependencies
         
@@ -26,7 +34,8 @@ class TranscriptionService:
         """
         self.audio_service = audio_service or AudioService()
         self.speech_processor = speech_processor or SpeechProcessor()
-        
+        self.whisperx_service = WhisperXService(hf_token or os.getenv("HUGGINGFACE_TOKEN"))
+
         # Transcript state
         self.full_transcript = ""
         self.transcript_segments = []
@@ -77,7 +86,46 @@ class TranscriptionService:
         except Exception as e:
             logger.error(f"Error during audio processing: {str(e)}")
             return False
-            
+        
+    def process_audio_segment_with_diarization(self, user_id: int, note_id: int) -> List[Dict[str, Any]]:
+        """
+        Process current audio buffer and perform transcription with speaker diarization
+
+        Args:
+            user_id: User ID for the transcription
+            note_id: Note ID for the transcription
+
+        Returns:
+            List of segments with speaker labels and text
+        """
+        try:
+            # Step 1: Check if audio is valid
+            if not self.audio_service.has_minimum_audio():
+                logger.info("Audio is too short.")
+                return []
+
+            if not self.audio_service.detect_silence():
+                logger.info("Silence not detected yet.")
+                return []
+
+            # Step 2: Save to a temporary file
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_audio:
+                self.audio_service.save_audio(tmp_audio.name)
+
+            # Step 3: Make sure WhisperX is ready
+            if not self.whisperx_service:
+                raise ValueError("WhisperXService not initialized. Hugging Face token missing.")
+
+            # Step 4: Run WhisperX transcription + diarization
+            result = self.whisperx_service.transcribe_and_diarize(tmp_audio.name)
+
+            # Step 5: Return speaker-tagged segments
+            return result["segments"]
+
+        except Exception as e:
+            logger.error(f"Error in diarized transcription: {e}")
+            return []
+                   
     def _process_transcription_text(self, text: str) -> bool:
         """
         Process transcribed text: clean, correct, and update transcript
