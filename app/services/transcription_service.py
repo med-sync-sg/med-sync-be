@@ -22,7 +22,7 @@ class TranscriptionService:
         
         Args:
             audio_service: Service for audio processing (uses singleton if None)
-            speech_processor: Processor for speech-to-text conversion (creates if None)
+            speech_processor: SpeechProcessor for transcription (creates if None)
         """
         self.audio_service = audio_service or AudioService()
         self.speech_processor = speech_processor or SpeechProcessor()
@@ -33,13 +33,19 @@ class TranscriptionService:
         
         logger.info("TranscriptionService initialized")
 
-    def process_audio_segment(self, user_id: int, note_id: int) -> bool:
+    def process_audio_segment(self, user_id: int, note_id: int, 
+                              use_adaptation: bool = False, 
+                              adaptation_user_id: Optional[int] = None,
+                              db_session = None) -> bool:
         """
         Process current audio buffer and attempt transcription
         
         Args:
             user_id: User ID for the transcription
             note_id: Note ID for the transcription
+            use_adaptation: Whether to use speaker adaptation
+            adaptation_user_id: User ID for adaptation profile
+            db_session: Optional database session
             
         Returns:
             True if transcription occurred, False otherwise
@@ -47,19 +53,28 @@ class TranscriptionService:
         try:
             # Check for minimum audio duration
             if not self.audio_service.has_minimum_audio():
-                logger.info(f"Audio is too short.")
                 return False
             
             # Check for silence (indicating end of utterance)
             if not self.audio_service.detect_silence():
-                logger.info(f"Audio is silent.")
                 return False
                 
-            logger.info(f"Processing audio segment for user {user_id}, note {note_id}")
+            logger.info(f"Processing audio segment for user {user_id}, note {note_id}, adaptation={use_adaptation}")
             
             # Get audio data and transcribe
             audio_samples = self.audio_service.get_wave_data()
-            transcription = self.speech_processor.transcribe(audio_samples)
+            
+            # Perform transcription with or without adaptation
+            if use_adaptation and adaptation_user_id is not None:
+                transcription = self.speech_processor.transcribe_with_adaptation(
+                    audio_samples, 
+                    adaptation_user_id,
+                    db_session
+                )
+                logger.info(f"Used speaker adaptation for user {adaptation_user_id}")
+            else:
+                transcription = self.speech_processor.transcribe(audio_samples)
+                logger.info("Used standard transcription")
             
             if not transcription:
                 logger.warning("Transcription produced empty result")
@@ -151,6 +166,54 @@ class TranscriptionService:
             "word_count": len(self.full_transcript.split()) if self.full_transcript else 0
         }
     
+    def reset(self) -> None:
+        """Reset transcription state"""
+        self.full_transcript = ""
+        self.transcript_segments = []
+        logger.info("Transcription state reset")
+    
+    def generate_transcript_with_timestamps(self, 
+                                           user_id: Optional[int] = None,
+                                           db_session = None) -> Dict[str, Any]:
+        """
+        Generate a transcript with word-level timestamps using the current audio buffer
+        
+        Args:
+            user_id: Optional user ID for adaptation
+            db_session: Optional database session
+            
+        Returns:
+            Dictionary with transcript text and timestamps
+        """
+        try:
+            # Get audio data
+            audio_samples = self.audio_service.get_wave_data(use_session_buffer=True)
+            
+            # Generate transcript with timestamps
+            if user_id is not None and db_session is not None:
+                # Use adaptation if user ID provided
+                result = self.speech_processor.transcribe_with_timestamps(
+                    audio_samples,
+                    user_id=user_id,
+                    db=db_session
+                )
+            else:
+                # Standard transcription
+                result = self.speech_processor.transcribe_with_timestamps(
+                    audio_samples
+                )
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error generating timestamp transcript: {str(e)}")
+            return {
+                "text": "",
+                "timestamps": [],
+                "words": [],
+                "error": str(e)
+            }
+            
     def reset(self) -> None:
         """Reset transcription state"""
         self.full_transcript = ""

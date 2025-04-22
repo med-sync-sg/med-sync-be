@@ -17,7 +17,6 @@ from app.db.local_session import DatabaseManager
 from app.utils.nlp.spacy_utils import process_text, find_medical_modifiers
 from app.utils.nlp.summarizer import generate_summary
 from app.utils.nlp.nlp_utils import merge_flat_keywords_into_template
-from app.utils.speech_processor import SpeechProcessor
 from app.db.data_loader import classify_text_category, find_content_dictionary
 
 from app.models.models import Note, Section
@@ -653,3 +652,83 @@ async def calculate_entity_metrics(
                 "error_rate": 1.0
             }
         }
+        
+@router.post("/text-chunk")
+async def process_text_chunk(
+    chunk: str = Body(..., embed=True),
+    user_id: int = Body(0, embed=True),
+    note_id: int = Body(0, embed=True),
+    db: Session = Depends(get_session)
+):
+    """
+    Process a text chunk to simulate real-time transcription
+    
+    Args:
+        chunk: Text chunk to process
+        user_id: User ID for the session
+        note_id: Note ID for the session
+        db: Database session
+        
+    Returns:
+        Processed text with any extracted sections
+    """
+    try:
+        # Input validation
+        if not chunk or len(chunk.strip()) == 0:
+            raise HTTPException(status_code=400, detail="Empty text chunk provided")
+            
+        # Limit very long texts
+        max_length = 5000  # Character limit
+        if len(chunk) > max_length:
+            logger.warning(f"Text chunk truncated from {len(chunk)} to {max_length} characters")
+            chunk = chunk[:max_length]
+        
+        # Use existing services
+        from app.services.transcription_service import TranscriptionService
+        from app.services.nlp.keyword_extract_service import KeywordExtractService
+        from app.services.note_service import NoteService
+        
+        # Initialize services
+        transcription_service = TranscriptionService()
+        keyword_service = KeywordExtractService()
+        note_service = NoteService(db)
+        
+        # Manually update transcription service state
+        transcription_service.full_transcript = chunk
+        transcription_service.transcript_segments.append(chunk)
+        
+        # Extract keywords
+        keywords = transcription_service.extract_keywords()
+        
+        # Process keywords using the existing service methods
+        keyword_service.process_and_buffer_keywords(keywords)
+        keyword_service.merge_keywords()
+        sections = keyword_service.create_sections(user_id, note_id)
+        
+        # Add sections to note and format for response
+        sections_data = []
+        for section in sections:
+            # Save section to database
+            db_section = note_service.add_section_to_note(note_id, section)
+            if db_section:
+                # Convert to JSON for response
+                sections_data.append({
+                    'id': db_section.id,
+                    'title': db_section.title,
+                    'content': db_section.content,
+                    'section_type': db_section.section_type
+                })
+        
+        return {
+            'text': chunk,
+            'entities_count': len(keywords),
+            'sections': sections_data
+        }
+        
+    except Exception as e:
+        logger.error(f"Error processing text chunk: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing text chunk: {str(e)}"
+        )

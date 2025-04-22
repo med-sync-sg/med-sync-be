@@ -1,10 +1,4 @@
-import spacy
-import spacy.tokens
-from spacy.tokens import Span, Token, Doc
-from spacy.matcher import DependencyMatcher
 from typing import List, Dict, Any, Tuple
-from app.utils.text_utils import normalize_text
-from app.schemas.section import TextCategoryEnum, SectionCreate
 import numpy as np
 from sentence_transformers import SentenceTransformer
 import copy

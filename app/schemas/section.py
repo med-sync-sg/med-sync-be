@@ -14,7 +14,6 @@ class TextCategoryEnum(str, Enum):
     OTHERS ="This text refers to all other contents not classified as the CHIEF_COMPLAINT, PATIENT_INFORMATION, PATIENT_MEDICAL_HISTORY categories."
 
 class SectionCreate(BaseAuthModel):
-    note_id: int
     title: str
     content: Dict[str, Any] = {}
     section_type: str = Field(default=TextCategoryEnum.OTHERS.value)
@@ -35,6 +34,7 @@ class SectionRead(BaseAuthModel):
         orm_mode = True
 
 class SectionUpdate(BaseAuthModel):
+    id: int
     note_id: int
     title: Union[str, None] = None
     content: Union[Dict[str, Any], None] = None
