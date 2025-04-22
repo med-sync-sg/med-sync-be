@@ -1,44 +1,53 @@
+import sys
 import subprocess
 import time
 import os
-import sys
+import argparse
 
-# Configuration variables
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# Define the relative paths for your executables.
-DB_MAIN_PATH = os.path.join(BASE_DIR, "Python", "db_main.exe")
-MAIN_EXE_PATH = os.path.join(BASE_DIR, "Python", "main.exe")
-MED_SYNC_PATH = os.path.join(BASE_DIR, "Release", "med_sync.exe")
-
-# Delays (in seconds) between launching processes
-DB_MAIN_DELAY = 5    # Wait 5 seconds after launching db_main.exe
-MAIN_EXE_DELAY = 5   # Wait 5 seconds after launching main.exe
-
-def launch_process(exe_path, delay=0, wait_for_termination=False):
-    """Launch a process and optionally wait for it or delay execution."""
-    try:
-        print(f"Launching: {exe_path}")
-        proc = subprocess.Popen([exe_path])
-        if delay > 0:
-            time.sleep(delay)
-        if wait_for_termination:
-            proc.wait()
-        return proc
-    except Exception as e:
-        print(f"Error launching {exe_path}: {e}")
-        sys.exit(1)
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="MedSync Unified Launcher")
+    parser.add_argument("--db-only", action="store_true", help="Start only the database service")
+    parser.add_argument("--main-only", action="store_true", help="Start only the main application")
+    parser.add_argument("--db-host", default="127.0.0.1", help="Database host address")
+    parser.add_argument("--db-port", type=int, default=8002, help="Database port")
+    parser.add_argument("--main-host", default="127.0.0.1", help="Main server host address")
+    parser.add_argument("--main-port", type=int, default=8001, help="Main server port")
+    return parser.parse_args()
 
 def main():
-    # Step 1: Launch the backend that sets up the database.
-    launch_process(DB_MAIN_PATH, delay=DB_MAIN_DELAY, wait_for_termination=False)
+    args = parse_arguments()
     
-    # Step 2: Launch the main backend process.
-    launch_process(MAIN_EXE_PATH, delay=MAIN_EXE_DELAY, wait_for_termination=False)
-    
-    # Step 3: Launch the Flutter UI.
-    launch_process(MED_SYNC_PATH, delay=0, wait_for_termination=False)
-    
-    print("All processes launched successfully.")
+    # Start the appropriate service(s) based on arguments
+    if args.db_only:
+        start_db_service(args.db_host, args.db_port)
+    elif args.main_only:
+        start_main_service(args.main_host, args.main_port)
+    else:
+        # Start both with db first, then main
+        db_process = start_db_service(args.db_host, args.db_port)
+        print(f"Waiting for database to initialize...")
+        time.sleep(5)  # Give the DB time to start
+        start_main_service(args.main_host, args.main_port)
 
-if __name__ == '__main__':
+def start_db_service(host, port):
+    print(f"Starting MedSync Database Service on {host}:{port}...")
+    from db_app.db_app import app
+    import uvicorn
+    
+    # Start in subprocess to avoid blocking
+    return subprocess.Popen([
+        sys.executable,
+        "-c",
+        f"import uvicorn; uvicorn.run('db_app.db_app:app', host='{host}', port={port})"
+    ])
+
+def start_main_service(host, port):
+    print(f"Starting MedSync Main Service on {host}:{port}...")
+    from app.app import app  
+    import uvicorn
+    
+    # Run in the current process
+    uvicorn.run(app, host=host, port=port)
+
+if __name__ == "__main__":
     main()
