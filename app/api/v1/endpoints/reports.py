@@ -11,9 +11,6 @@ from app.schemas.report import ReportTemplateCreate, ReportTemplateRead, ReportT
 router = APIRouter()
 get_session = DatabaseManager().get_session
 
-
-# app/api/v1/endpoints/reports.py - Add these endpoints
-
 @router.get("/templates/{user_id}", response_model=List[ReportTemplateRead])
 def get_report_templates(user_id: int, db: Session = Depends(get_session)):
     """Get all report templates for a user"""
