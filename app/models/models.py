@@ -199,3 +199,18 @@ class CalibrationRecording(Base):
     user: Mapped["User"] = relationship("User", back_populates="calibration_recordings")
     phrase: Mapped["CalibrationPhrase"] = relationship("CalibrationPhrase", back_populates="recordings")
     speaker_profile: Mapped[Optional["SpeakerProfile"]] = relationship("SpeakerProfile", back_populates="calibration_recordings")
+
+class ReportTemplate(Base):
+    __tablename__ = "report_templates"
+    
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str] = mapped_column(String, nullable=True)
+    report_type: Mapped[str] = mapped_column(String, nullable=False)  # "doctor", "patient", "custom"
+    template_data: Mapped[dict] = mapped_column(JSONB, nullable=False)  # Stores section ordering, formatting rules
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    # Relationships
+    user: Mapped["User"] = relationship("User", back_populates="report_templates")
