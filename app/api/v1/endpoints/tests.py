@@ -3,13 +3,15 @@ from tempfile import NamedTemporaryFile
 import wave
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import logging
 import json
 import time
 import os
 import traceback
 import numpy as np
+from fastapi.responses import HTMLResponse
+import datetime
 
 from sqlalchemy.orm import Session
 from app.db.local_session import DatabaseManager
@@ -19,13 +21,15 @@ from app.utils.nlp.summarizer import generate_summary
 from app.utils.nlp.nlp_utils import merge_flat_keywords_into_template
 from app.db.data_loader import classify_text_category, find_content_dictionary
 
-from app.models.models import Note, Section
+from app.models.models import Note, Section, ReportTemplate, User
 from app.schemas.section import SectionCreate, SectionRead, TextCategoryEnum
 from app.schemas.note import NoteCreate
 from app.services.transcription_service import TranscriptionService
 from app.services.audio_service import AudioService
 from app.services.nlp.keyword_extract_service import KeywordExtractService
 from app.services.note_service import NoteService
+from app.services.report_service import ReportService
+
 # Configure logger
 logger = logging.getLogger(__name__)
 
@@ -63,6 +67,63 @@ class MetricsResponse(BaseModel):
     entities: List[Dict[str, Any]]
     metrics: Optional[Dict[str, float]] = None
     error: Optional[str] = None
+
+@router.post("/test-report")
+async def generate_report_for_note(
+    note_id: int,
+    user_id: int,
+    report_type: str = "doctor",
+    db: Session = Depends(get_session)
+):
+    """
+    Generate a report for an existing note
+    
+    Args:
+        note_id: ID of the note to generate report for
+        report_type: Type of report to generate ('doctor' or 'patient')
+        template_id: Optional template ID to use
+        db: Database session
+        
+    Returns:
+        HTML report as a string
+    """
+    try:
+        # Check if note exists
+        note = db.query(Note).filter(Note.id == note_id, Note.user_id == user_id).first()
+        if not note:
+            raise HTTPException(
+                status_code=404,
+                detail="Note not found"
+            )
+        
+        # Initialize report service
+        report_service = ReportService(db)
+        
+
+        if report_type == "patient":
+            # Generate default patient report
+            report_html = report_service.generate_patient_report(note_id)
+        else:
+            # Generate default doctor report
+            report_html = report_service.generate_doctor_report(note_id)
+        
+        if not report_html:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate report"
+            )
+            
+        # Return the report as HTML
+        return HTMLResponse(content=report_html, media_type="text/html")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating report: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generating report: {str(e)}"
+        )
 
 @router.get("/health")
 async def health_check():
@@ -732,3 +793,4 @@ async def process_text_chunk(
             status_code=500,
             detail=f"Error processing text chunk: {str(e)}"
         )
+        

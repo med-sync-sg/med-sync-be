@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.models.models import Note, Section, User, ReportTemplate
 from app.utils.nlp.nlp_utils import get_semantic_section_type
 from sqlalchemy import func
+from sqlalchemy.orm import joinedload
 
 doctor_report_data = {
     "name": "My Custom Doctor Report",
@@ -113,6 +114,94 @@ class ReportService:
         
         logger.info(f"ReportService initialized with templates from {self.templates_path}")
     
+    def generate_doctor_report(self, note_id: int) -> Optional[str]:
+        """
+        Generate a doctor-focused report from a note
+        
+        Args:
+            note_id: ID of the note to generate report from
+            
+        Returns:
+            HTML report as a string, or None if generation failed
+        """
+        try:
+            # Get note with sections
+            note = self.db.query(Note).options(joinedload(Note.sections)).filter(Note.id == note_id).first()
+            if not note:
+                return None
+                
+            # Get patient info
+            patient_info = {
+                "id": note.patient_id,
+                "name": "Hello TEst",
+                "age": 5,
+                "gender": "MALE"
+            }            
+            report_sections = self._format_sections_with_template(note.sections, template=doctor_report_data)
+            
+            
+            # Prepare report data
+            report_data = {
+                "report_date": datetime.now().strftime("%Y-%m-%d"),
+                "patient_info": patient_info,
+                "sections": report_sections
+            }
+            
+            # Render template
+            template = self.env.get_template("default_doctor_report.html")
+            rendered_report = template.render(report_data)
+            print(rendered_report)
+            logger.info(f"Generated doctor report for note {note_id}")
+            return rendered_report
+            
+        except Exception as e:
+            logger.error(f"Error generating doctor report for note {note_id}: {str(e)}")
+            return None
+    
+    def generate_patient_report(self, note_id: int) -> Optional[str]:
+        """
+        Generate a patient-friendly report from a note
+        
+        Args:
+            note_id: ID of the note to generate report from
+            
+        Returns:
+            HTML report as a string, or None if generation failed
+        """
+        try:
+            # Get note with sections
+            note = self.db.query(Note).options(joinedload(Note.sections)).filter(Note.id == note_id).first()
+            if not note:
+                return None
+                
+            # Get patient info
+            patient_info = {
+                "id": note.patient_id,
+                "name": "Hello TEst",
+                "age": 5,
+                "gender": "MALE"
+            }
+            # Format sections for patient report (simplified language)
+            report_sections = self._format_sections_with_template(note.sections, patient_report_data)
+            
+            # Prepare report data
+            report_data = {
+                "report_date": datetime.now().strftime("%Y-%m-%d"),
+                "patient_info": patient_info,
+                "sections": report_sections
+            }
+            
+            # Render template
+            template = self.env.get_template("default_patient_report.html")
+            rendered_report = template.render(report_data)
+            
+            logger.info(f"Generated patient report for note {note_id}")
+            return rendered_report
+            
+        except Exception as e:
+            logger.error(f"Error generating patient report for note {note_id}: {str(e)}")
+            return None
+
     def _format_sections_with_template(self, sections: List[Section], template: ReportTemplate) -> List[Dict[str, Any]]:
         """
         Format sections according to a template
@@ -250,7 +339,7 @@ class ReportService:
             logger.error(f"Error saving report to {file_path}: {str(e)}")
             return False
     
-    def _format_sections_with_template(self, sections: List[Section], template: ReportTemplate) -> List[Dict[str, Any]]:
+    def _format_sections_with_template(self, sections: List[Section], template: Dict) -> List[Dict[str, Any]]:
         """
         Format sections according to a template with semantic matching for flexible section handling
         
@@ -262,8 +351,8 @@ class ReportService:
             List of formatted section dictionaries
         """
         formatted_sections = []
-        section_configs = template.template_data.get('sections', {})
-        report_type = template.report_type
+        section_configs = template['template_data'].get('sections', {})
+        report_type = template['report_type']
         
         # Process each section individually
         for section in sections:

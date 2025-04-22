@@ -25,7 +25,7 @@ import requests
 import numpy as np
 import websockets
 import wave
-
+import datetime
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -89,14 +89,35 @@ class TestClient:
             # Test WebSocket (needs to run in an async context)
             # asyncio.run(self.test_websocket())
             
+            self.generate_test_report_doctor(user_id=2, note_id=12, template_type="doctor")
             
-            self.test_text_processing()
+            # self.test_text_processing()
             logger.info("All tests completed successfully!")
             return True
             
         except Exception as e:
             logger.error(f"Test failed: {str(e)}")
             return False
+
+    def generate_test_report_doctor(self, note_id: int, user_id: int, template_type: str) -> Optional[int]:
+        """Create a test report template"""
+        try:
+            response = requests.post(f"{self.app_url}/tests/test-report", params={
+                "note_id": note_id,
+                "user_id": user_id,
+                "report_type": template_type
+            })
+            if response.status_code == 200:
+                print(response.content)
+                template_data = response.content
+                print(f"Created {template_type} template")
+                return template_data
+            else:
+                print(f"Failed to create template: {response.text}")
+                return None
+        except Exception as e:
+            print(f"Error creating template: {str(e)}")
+            return None
     
     def test_db_connection(self):
         """Test connection to the database service"""
