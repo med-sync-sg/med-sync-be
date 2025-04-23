@@ -262,7 +262,7 @@ class TranscriptionService:
             # Transcribe segment with or without adaptation
             if use_adaptation:
                 transcription = self.speech_processor.transcribe_with_adaptation(
-                    segment_audio, doctor_id, self.db
+                    segment_audio, doctor_id
                 )
             else:
                 transcription = self.speech_processor.transcribe(segment_audio)

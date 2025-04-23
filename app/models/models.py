@@ -28,7 +28,7 @@ class User(Base):
     note_templates: Mapped[list["NoteTemplate"]] = relationship("NoteTemplate", back_populates="user", cascade="all, delete-orphan")
     speaker_profiles: Mapped[list["SpeakerProfile"]] = relationship("SpeakerProfile", back_populates="user", cascade="all, delete-orphan")
     calibration_recordings: Mapped[list["CalibrationRecording"]]= relationship("CalibrationRecording", back_populates="user", cascade="all, delete-orphan")
-
+    report_templates: Mapped[list["ReportTemplate"]] = relationship("ReportTemplate", back_populates="user")
 class Note(Base):
     __tablename__ = "notes"
 

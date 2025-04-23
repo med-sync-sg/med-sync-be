@@ -5,10 +5,13 @@ import librosa
 import logging
 from typing import List, Dict, Any
 from sqlalchemy.orm import Session
+import torch
 
 from app.db.local_session import DatabaseManager
 from app.services.voice_calibration_service import VoiceCalibrationService
 from app.services.audio_service import AudioService
+
+from speechbrain.inference.speaker import EncoderClassifier
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +27,39 @@ class DiarizationService:
         self.audio_service = AudioService()
         self.calibration_service = VoiceCalibrationService(self.db)
         self.vad = webrtcvad.Vad()  # Voice Activity Detector
+        self.x_vector_model = self._load_x_vector_model()
         
+    def _load_x_vector_model(self):
+        return EncoderClassifier.from_hparams(
+            source="speechbrain/spkrec-ecapa-voxceleb", 
+            run_opts={"device": "cpu"}
+        )
+    
+    def extract_xvector(self, audio_segment, sample_rate=16000):
+        """
+        Extract x-vector from audio segment
+        
+        Args:
+            audio_segment: Audio samples as numpy array
+            sample_rate: Sample rate of the audio
+            
+        Returns:
+            X-vector as numpy array or None if extraction failed
+        """
+        try:
+            # Convert to appropriate format for the model
+            waveform = torch.tensor(audio_segment).unsqueeze(0)
+            
+            # Extract x-vector
+            with torch.no_grad():
+                embeddings = self.x_vector_model.encode_batch(waveform)
+                xvector = embeddings.squeeze().cpu().numpy()
+            
+            return xvector
+        except Exception as e:
+            print(f"Error extracting x-vector: {str(e)}")
+            return None
+    
     def process_audio(self, audio_data: np.ndarray, sample_rate: int = 16000,
                       doctor_id: int = None) -> Dict[str, Any]:
         """
@@ -68,19 +103,19 @@ class DiarizationService:
         """
         if not doctor_id:
             # Without doctor profile, use clustering to find the two main speakers
-            return self._cluster_binary(segment_embeddings)
+            return self._cluster_hierarchical(segment_embeddings)
         
         # Get doctor's profile from calibration data
         doctor_profile = self.calibration_service.get_speaker_profile(doctor_id, self.db)
         if not doctor_profile:
             logger.warning(f"No calibration profile found for doctor (User ID: {doctor_id})")
-            return self._cluster_binary(segment_embeddings)
+            return self._cluster_hierarchical(segment_embeddings)
         
         # Extract doctor's mean vector
         doctor_mean = doctor_profile.get("mean_vector")
         if doctor_mean is None:
             logger.warning("Invalid doctor profile (missing mean vector)")
-            return self._cluster_binary(segment_embeddings)
+            return self._cluster_hierarchical(segment_embeddings)
         
         # Calculate similarity scores
         segment_to_speaker = {}
@@ -116,6 +151,28 @@ class DiarizationService:
                 segment_to_speaker[i] = "doctor"
             else:
                 segment_to_speaker[i] = "patient"
+        
+        return segment_to_speaker
+
+    def _cluster_hierarchical(self, segment_embeddings):
+        """Use hierarchical clustering for speaker segmentation"""
+        from sklearn.cluster import AgglomerativeClustering
+
+        # Extract embeddings matrix
+        embeddings_matrix = np.array([emb for _, emb in segment_embeddings])
+        
+        # Apply hierarchical clustering
+        clustering = AgglomerativeClustering(
+            n_clusters=2,
+            metric="cosine",
+            linkage='complete'
+        )
+        labels = clustering.fit_predict(embeddings_matrix)
+        
+        # Map to segment indices
+        segment_to_speaker = {}
+        for i, label in enumerate(labels):
+            segment_to_speaker[i] = "patient" if label == 0 else "doctor"
         
         return segment_to_speaker
 
@@ -330,58 +387,22 @@ class DiarizationService:
         return speaker_segments
         
     def _extract_embeddings(self, audio_data, segments, sample_rate):
-        """
-        Extract speaker embeddings using the same features as calibration
-        
-        Args:
-            audio_data: Full audio samples
-            segments: List of (start, end) segment tuples in seconds
-            sample_rate: Audio sample rate
-            
-        Returns:
-            List of (segment, embedding) tuples
-        """
+        """Extract x-vector embeddings for each segment"""
         segment_embeddings = []
         
         for start_sec, end_sec in segments:
-            # Convert seconds to samples
+            # Extract segment audio
             start_sample = int(start_sec * sample_rate)
             end_sample = int(end_sec * sample_rate)
-            
-            # Extract segment audio
             segment_audio = audio_data[start_sample:end_sample]
             
-            # Use the same MFCC extraction as in calibration
-            features = None
-            try:
-                # Convert to appropriate format for librosa (if needed)
-                if len(segment_audio) > 0:
-                    # Extract MFCCs using same method as calibration
-                    mfccs = librosa.feature.mfcc(
-                        y=segment_audio, 
-                        sr=sample_rate, 
-                        n_mfcc=13,
-                        hop_length=int(sample_rate * 0.01),
-                        n_fft=int(sample_rate * 0.025)
-                    )
-                    
-                    # Add delta features as in calibration
-                    delta_mfccs = librosa.feature.delta(mfccs)
-                    delta2_mfccs = librosa.feature.delta(mfccs, order=2)
-                    
-                    # Combine features
-                    features = np.vstack([mfccs, delta_mfccs, delta2_mfccs])
-                    
-                    # Get mean vector as embedding
-                    embedding = np.mean(features, axis=1)
-                    
-                    segment_embeddings.append(((start_sec, end_sec), embedding))
-            except Exception as e:
-                logger.error(f"Error extracting features: {str(e)}")
-                continue
+            # Extract x-vector (instead of MFCC)
+            xvector = self.extract_xvector(segment_audio, sample_rate)
+            
+            if xvector is not None:
+                segment_embeddings.append(((start_sec, end_sec), xvector))
         
         return segment_embeddings
-        
     def _match_known_speakers(self, segment_embeddings, known_speaker_ids):
         """
         Match segments to known speakers using calibration data
@@ -427,7 +448,3 @@ class DiarizationService:
                 segment_to_speaker[i] = f"unknown_{i}"
         
         return segment_to_speaker
-        
-    def _cluster_speakers(self, segment_embeddings):
-        """Cluster segments to discover speakers"""
-        # Implementation here

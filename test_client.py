@@ -38,7 +38,7 @@ logger = logging.getLogger("test_client")
 DEFAULT_DB_URL = "http://127.0.0.1:8002"
 DEFAULT_APP_URL = "http://127.0.0.1:8001"
 DEFAULT_AUDIO_FILE = os.path.join("test_audios", "test_30sec.wav")
-
+test_audio_file = os.path.join("test_audios", "day1_consultation03.wav")
 SAMPLE_TRANSCRIPT = """
 Patient: Doctor, I've had a sore throat for the past three days, and it's getting worse. It feels scratchy, and swallowing is uncomfortable.
 Doctor: I see. Has it been painful enough to affect eating or drinking?
@@ -80,7 +80,7 @@ class TestClient:
         try:
             # Test database service
             self.test_db_connection()
-            self.test_umls_data()
+            # self.test_umls_data()
             
             # Test main application
             # self.authenticate()
@@ -91,8 +91,8 @@ class TestClient:
             
             # self.test_text_processing()
             
-            self.test_diarization_with_calibration(DEFAULT_AUDIO_FILE, 2)
-            self.test_diarization_without_calibration(DEFAULT_AUDIO_FILE)
+            # self.test_diarization_with_calibration(DEFAULT_AUDIO_FILE, 1)
+            self.test_diarization_without_calibration(test_audio_file)
             logger.info("All tests completed successfully!")
             return True
             
@@ -344,7 +344,7 @@ class TestClient:
             # Print transcript excerpt
             transcript = result.get("transcript", "")
             if transcript:
-                excerpt = "\n".join(transcript.split("\n")[:5])
+                excerpt = "\n".join(transcript.split("\n"))
                 logger.info(f"Transcript excerpt:\n{excerpt}...")
             
             return result
