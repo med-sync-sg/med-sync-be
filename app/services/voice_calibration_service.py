@@ -12,9 +12,7 @@ from sqlalchemy.orm import Session
 # Configure logger
 logger = logging.getLogger(__name__)
 
-# Router for voice calibration endpoints
 get_session = DatabaseManager().get_session
-
 
 class VoiceCalibrationService:
     """Service for managing voice calibration and speaker profiles using database storage"""
