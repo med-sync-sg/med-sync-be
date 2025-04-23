@@ -14,12 +14,12 @@ Base = declarative_base()
 
 class SOAPCategory(str, Enum):
     """Enum representing SOAP categories"""
+    OTHER = "OTHER"  # For administrative or other non-SOAP sections
     SUBJECTIVE = "SUBJECTIVE"
     OBJECTIVE = "OBJECTIVE"
     ASSESSMENT = "ASSESSMENT"
     PLAN = "PLAN"
     MIXED = "MIXED"  # For sections that span multiple categories
-    OTHER = "OTHER"  # For administrative or other non-SOAP sections
     
 class SectionType(Base):
     """Model for defining types of sections in medical documentation"""

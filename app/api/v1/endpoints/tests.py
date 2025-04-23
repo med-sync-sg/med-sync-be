@@ -19,24 +19,22 @@ from app.db.local_session import DatabaseManager
 from app.utils.nlp.spacy_utils import process_text, find_medical_modifiers
 from app.utils.nlp.summarizer import generate_summary
 from app.utils.nlp.nlp_utils import merge_flat_keywords_into_template
-from app.db.data_loader import classify_text_category, find_content_dictionary
 
 from app.models.models import Note, Section, ReportTemplate, User
-from app.schemas.section import SectionCreate, SectionRead, TextCategoryEnum
+from app.schemas.section import SectionCreate, SectionRead
 from app.schemas.note import NoteCreate
 from app.services.transcription_service import TranscriptionService
 from app.services.audio_service import AudioService
 from app.services.nlp.keyword_extract_service import KeywordExtractService
 from app.services.note_service import NoteService
 from app.services.report_generation.report_service import ReportService
-
+from app.services.report_generation.section_management_service import SectionManagementService
 # Configure logger
 logger = logging.getLogger(__name__)
 
 
 router = APIRouter()
 get_session = DatabaseManager().get_session
-keyword_extract_service = KeywordExtractService(DatabaseManager())
 
 # Sample transcripts for testing
 demo_transcript = """
@@ -208,248 +206,8 @@ async def basic_test(request: BasicTestRequest):
             "error": str(e)
         }
 
-@router.post("/process-audio")
-async def process_audio(
-    audio_file: UploadFile = File(...),
-    user_id: Optional[int] = Form(None),
-    note_id: Optional[int] = Form(None),
-    db: Session = Depends(get_session)
-):
-    """
-    Process an uploaded audio file using the TranscriptionService
-    
-    Args:
-        audio_file: The audio file to process
-        user_id: Optional user ID for associating with a user
-        note_id: Optional note ID for associating with a note
-        db: Database session
-        
-    Returns:
-        Processing results with transcription and sections in SectionRead format
-    """
-    try:
-        logger.info(f"Received audio file: {audio_file.filename}, user_id: {user_id}, note_id: {note_id}")
-        
-        # Create a temporary file to store the uploaded file
-        with NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
-            # Write the uploaded file content to the temporary file
-            content = await audio_file.read()
-            temp_file.write(content)
-            temp_path = temp_file.name
-        
-        logger.info(f"Saved audio to temporary file: {temp_path}")
-        
-        try:
-            
-            # Initialize necessary services
-            transcription_service = TranscriptionService()
-            keyword_service = KeywordExtractService()
-            
-            # Initialize NoteService if both user_id and note_id are provided
-            note_service = None
-            if user_id is not None and note_id is not None:
-                note_service = NoteService(db)
-            
-            # Process the audio file
-            with wave.open(temp_path, 'rb') as wav_file:
-                # Get audio parameters
-                channels = wav_file.getnchannels()
-                sample_width = wav_file.getsampwidth()
-                frame_rate = wav_file.getframerate()
-                n_frames = wav_file.getnframes()
-                
-                # Read all frames at once
-                frames = wav_file.readframes(n_frames)
-                
-                # Add the audio to the service
-                audio_service = transcription_service.audio_service
-                audio_service.add_chunk(frames)
-                
-                logger.info(f"Audio info: {channels} channels, {sample_width} bytes/sample, {frame_rate} Hz, {n_frames} frames")
-            
-            # Process with transcription service
-            if user_id is not None:
-                # Use the full service pipeline if user_id is provided
-                did_transcribe = transcription_service.process_audio_segment(user_id, note_id or 0)
-                
-                if did_transcribe:
-                    # Get current transcript
-                    transcript_info = transcription_service.get_current_transcript()
-                    transcription = transcript_info.get('text', '')
-                    
-                    # Extract keywords
-                    keywords = transcription_service.extract_keywords()
-                    
-                    # Process keywords
-                    keyword_service.process_and_buffer_keywords(keywords)
-                    keyword_service.merge_keywords()
-                    
-                    # Create sections
-                    section_models = []
-                    sections_response = []
-                    
-                    if note_id is not None:
-                        # Create sections to return and optionally save to database
-                        section_create_models = keyword_service.create_sections(user_id, note_id)
-                        
-                        # Save sections to database if note_service is available
-                        if note_service:
-                            for section_create in section_create_models:
-                                db_section = note_service.add_section_to_note(note_id, section_create)
-                                if db_section:
-                                    # Create a SectionRead model from the database section
-                                    section_read = SectionRead(
-                                        id=db_section.id,
-                                        note_id=db_section.note_id,
-                                        user_id=db_section.user_id,
-                                        title=db_section.title,
-                                        content=db_section.content,
-                                        section_type=db_section.section_type,
-                                        section_description=db_section.section_description
-                                    )
-                                    section_models.append(section_read)
-                                    sections_response.append(section_read.model_dump())
-                        else:
-                            # Just create section models without saving to database
-                            for i, section_create in enumerate(section_create_models):
-                                # Create a SectionRead model with a dummy ID
-                                section_read = SectionRead(
-                                    id=i,  # Dummy ID since not saved to database
-                                    note_id=note_id,
-                                    user_id=user_id,
-                                    title=section_create.title,
-                                    content=section_create.content,
-                                    section_type=section_create.section_type,
-                                    section_description=section_create.section_description
-                                )
-                                section_models.append(section_read)
-                                sections_response.append(section_read.model_dump())
-                    
-                    # Prepare response
-                    response = {
-                        "success": True,
-                        "transcription": transcription,
-                        "sections": sections_response
-                    }
-                    
-                    # Add entities from the transcription document
-                    doc = process_text(transcription)
-                    entities = []
-                    for ent in doc.ents:
-                        is_medical = ent._.get("is_medical_term")
-                        entities.append({
-                            "text": ent.text,
-                            "label": ent.label_,
-                            "start": ent.start_char,
-                            "end": ent.end_char,
-                            "is_medical": is_medical
-                        })
-                    
-                    response["entities"] = entities
-                    response["entity_count"] = len(entities)
-                    
-                    return response
-                else:
-                    return {
-                        "success": False,
-                        "error": "Failed to transcribe audio",
-                        "message": "The audio could not be transcribed. It may be too short or contain no speech."
-                    }
-            else:
-                # Simplified processing for testing without user context
-                # Get the audio data as numpy array for direct transcription
-                audio_data = audio_service.get_wave_data()
-                
-                # Use the speech processor directly
-                transcription = transcription_service.speech_processor.transcribe(audio_data)
-                
-                # Process transcription through NLP pipeline
-                doc = process_text(transcription)
-                
-                # Extract entities and keywords
-                entities = []
-                for ent in doc.ents:
-                    is_medical = ent._.get("is_medical_term")
-                    entities.append({
-                        "text": ent.text,
-                        "label": ent.label_,
-                        "start": ent.start_char,
-                        "end": ent.end_char,
-                        "is_medical": is_medical
-                    })
-                
-                # Extract keywords and create sections manually for testing
-                try:
-                    extracted_keywords = find_medical_modifiers(doc=doc)
-                    if isinstance(extracted_keywords, list) and extracted_keywords:
-                        # Remove duplicates
-                        unique_keywords = []
-                        for keyword in extracted_keywords:
-                            if not isinstance(keyword, dict):
-                                continue
-                                
-                            found = False
-                            for existing in unique_keywords:
-                                if keyword.get("term", "") == existing.get("term", ""):
-                                    found = True
-                                    break
-                            if not found:
-                                unique_keywords.append(keyword)
-                        
-                        # Create sections from keywords
-                        sections_response = []
-                        for i, keyword in enumerate(unique_keywords):
-                            try:
-                                category = classify_text_category(keyword.get("term", ""))
-                                template = find_content_dictionary(keyword, category)
-                                merged_content = merge_flat_keywords_into_template(keyword, template, threshold=0.5)
-                                
-                                if merged_content.get("Main Symptom") is not None and merged_content["Main Symptom"].get("name"):
-                                    # Create a section from the template
-                                    section_read = SectionRead(
-                                        id=i,  # Dummy ID
-                                        note_id=0,  # Dummy note ID
-                                        user_id=0,  # Dummy user ID
-                                        title=keyword.get("term", "Section"),
-                                        content=merged_content,
-                                        section_type=category,
-                                        section_description=TextCategoryEnum[category].value
-                                    )
-                                    sections_response.append(section_read.model_dump())
-                            except Exception as section_error:
-                                logger.error(f"Error creating section for keyword {keyword}: {str(section_error)}")
-                                continue
-                    else:
-                        sections_response = []
-                except Exception as e:
-                    logger.error(f"Error extracting keywords: {str(e)}")
-                    sections_response = []
-                
-                return {
-                    "success": True,
-                    "transcription": transcription,
-                    "entity_count": len(entities),
-                    "entities": entities,
-                    "sections": sections_response
-                }
-            
-        finally:
-            # Clean up - delete the temporary file
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-                logger.info(f"Deleted temporary file: {temp_path}")
-                
-    except Exception as e:
-        logger.error(f"Error processing audio file: {str(e)}")
-        logger.error(traceback.format_exc())
-        return {
-            "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
-        }
-
 @router.post("/text-transcript")
-async def process_text_transcript(fragment: TranscriptFragment):
+async def process_text_transcript(fragment: TranscriptFragment, db: Session = Depends(get_session)):
     """
     Process a text transcript and extract medical entities and sections
     
@@ -461,7 +219,8 @@ async def process_text_transcript(fragment: TranscriptFragment):
     """
     try:
         text = fragment.transcript
-        
+        keyword_extract_service = KeywordExtractService(db)
+        section_management_service = SectionManagementService(db)
         # Input validation
         if not text or len(text.strip()) == 0:
             raise HTTPException(status_code=400, detail="Empty transcript provided")
@@ -523,8 +282,9 @@ async def process_text_transcript(fragment: TranscriptFragment):
         section_objects = []
         for i, result_keyword_dict in enumerate(keyword_extract_service.final_keywords):
             try:
-                category = classify_text_category(result_keyword_dict.get("term", ""))
-                template = find_content_dictionary(result_keyword_dict, category)
+                
+                section_type_id, section_type_code = section_management_service.get_semantic_section_type(result_keyword_dict.get("term", ""))
+                template = section_management_service.find_content_dictionary(result_keyword_dict, section_type_code)
                 merged_content = merge_flat_keywords_into_template(result_keyword_dict, template, threshold=0.5)
                 
                 if merged_content.get("Main Symptom") is not None:
@@ -536,8 +296,8 @@ async def process_text_transcript(fragment: TranscriptFragment):
                             user_id=0,  # Dummy user ID
                             title=result_keyword_dict.get("term", "Section"),
                             content=merged_content,
-                            section_type=category,
-                            section_description=TextCategoryEnum[category].value
+                            section_type_id=section_type_id,
+                            section_type_code=section_type_code
                         )
                         section_objects.append(section_read.model_dump())
                     else:
@@ -744,10 +504,6 @@ async def process_text_chunk(
             logger.warning(f"Text chunk truncated from {len(chunk)} to {max_length} characters")
             chunk = chunk[:max_length]
         
-        # Use existing services
-        from app.services.transcription_service import TranscriptionService
-        from app.services.nlp.keyword_extract_service import KeywordExtractService
-        from app.services.note_service import NoteService
         
         # Initialize services
         transcription_service = TranscriptionService()

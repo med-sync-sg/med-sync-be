@@ -1,9 +1,12 @@
 import logging
 import copy
 from typing import List, Dict, Any, Optional
+from sqlalchemy.orm import Session
+
 from app.utils.nlp.spacy_utils import find_medical_modifiers
-from app.schemas.section import SectionCreate, TextCategoryEnum
-from app.db.local_session import DatabaseManager
+from app.utils.nlp.nlp_utils import merge_flat_keywords_into_template
+from app.schemas.section import SectionCreate
+from app.services.report_generation.section_management_service import SectionManagementService
 # Configure logger
 logger = logging.getLogger(__name__)
 
@@ -13,16 +16,19 @@ class KeywordExtractService:
     Manages keyword extraction, classification, and template mapping.
     """
     
-    def __init__(self, data_store: Optional[DatabaseManager] = None):
+    def __init__(self, db: Session):
         """
         Initialize keyword service
         
         Args:
             data_store: IrisDataStore instance or None to use singleton
         """
-        self.data_store = data_store or DatabaseManager()
+        self.db = db
         self.buffer_keywords = []
         self.final_keywords = []
+        
+        # Initialize SectionTypeService
+        self.section_type_service = SectionManagementService(self.db)
         
         logger.info("KeywordService initialized")
     
@@ -116,6 +122,8 @@ class KeywordExtractService:
         sections = []
         
         try:
+
+            
             # Get content dictionaries for each keyword
             content_dicts = self.fill_content_dictionaries()
             
@@ -128,8 +136,8 @@ class KeywordExtractService:
                 keyword = self.final_keywords[index]
                 term = keyword.get("term", "")
                 
-                # Classify text to determine category
-                category = self.data_store.classify_text_category(term)
+                # Classify text to determine category - returns section type code
+                section_type_id, section_type_code = self.section_type_service.get_semantic_section_type(term)
                 
                 # Create section
                 section = SectionCreate(
@@ -137,8 +145,8 @@ class KeywordExtractService:
                     note_id=note_id,
                     title=keyword.get("label", term or "Section"),
                     content=content,
-                    section_type=category,
-                    section_description=TextCategoryEnum[category].value
+                    section_type_id=section_type_id,
+                    section_type_code=section_type_code,
                 )
                 
                 sections.append(section)
@@ -164,13 +172,13 @@ class KeywordExtractService:
                 term = keyword_dict.get("term", "")
                 
                 # Classify text to determine category
-                category = self.data_store.classify_text_category(term)
+                category = self.section_type_service.get_semantic_section_type(term)
                 
                 # Find matching template
-                template = self.data_store.find_content_dictionary(keyword_dict, category)
+                template = self.section_type_service.find_content_dictionary(keyword_dict, category)
                 
                 # Fill template with keyword data
-                content = self.data_store.recursive_fill_content_dictionary(
+                content = merge_flat_keywords_into_template(
                     keyword_dict, template
                 )
                 

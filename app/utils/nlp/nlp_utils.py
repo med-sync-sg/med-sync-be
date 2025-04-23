@@ -1,8 +1,13 @@
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
+from sqlalchemy.orm import Session
 import numpy as np
 from sentence_transformers import SentenceTransformer
 import copy
 import json
+
+from app.models.models import SectionType
+
+
 DEFAULT_MODEL = SentenceTransformer("all-minilm-l6-v2")
 # Similarity functions
 def cosine_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
@@ -160,103 +165,3 @@ def merge_flat_keywords_into_template(feature_dict: Dict[str, Any],
             
     print("Final Working Template: ", working_template)
     return working_template
-
-def get_semantic_section_type(section_title: str, section_content: Dict[str, Any]) -> str:
-    """
-    Determine section type based on semantic similarity
-    
-    Args:
-        section_title: Title of the section
-        section_content: Content of the section
-        
-    Returns:
-        Predicted section type
-    """
-    # Reference texts for different section types
-    section_types = {
-        "CHIEF_COMPLAINT": [
-            "primary symptom", "main concern", "reason for visit", 
-            "presenting complaint", "chief complaint"
-        ],
-        "PATIENT_MEDICAL_HISTORY": [
-            "medical history", "past medical history", "prior conditions", 
-            "previous surgeries", "family history", "medications"
-        ],
-        "PATIENT_INFORMATION": [
-            "patient demographics", "contact information", "personal details", 
-            "insurance information", "patient data"
-        ],
-        "ASSESSMENT": [
-            "assessment", "diagnosis", "impression", "clinical impression", 
-            "differential diagnosis"
-        ],
-        "PLAN": [
-            "plan", "treatment plan", "recommendations", "follow-up plan", 
-            "next steps", "prescribed medications"
-        ],
-        "PHYSICAL_EXAM": [
-            "physical examination", "exam findings", "clinical examination", 
-            "vital signs", "physical assessment"
-        ]
-    }
-    
-    # Create reference text from section content
-    content_text = section_title.lower()
-    
-    # Add key content terms if available
-    if isinstance(section_content, dict):
-        # Add main keys as content
-        content_text += " " + " ".join(section_content.keys()).lower()
-        
-        # Look for specific structures like "Main Symptom"
-        if "Main Symptom" in section_content and isinstance(section_content["Main Symptom"], dict):
-            symptom = section_content["Main Symptom"]
-            if "name" in symptom:
-                content_text += f" symptom {symptom['name']}"
-    
-    # Get embedding for content
-    content_embedding = embed_text(content_text)
-    
-    # Calculate similarities with each section type
-    best_type = "OTHERS"
-    best_score = 0.0
-    
-    for section_type, reference_texts in section_types.items():
-        # Embed each reference text and calculate average similarity
-        similarities = []
-        
-        for ref_text in reference_texts:
-            ref_embedding = embed_text(ref_text)
-            similarity = cosine_similarity(content_embedding, ref_embedding)
-            similarities.append(similarity)
-        
-        # Get average similarity for this section type
-        avg_similarity = sum(similarities) / len(similarities)
-        
-        # Update best match if better
-        if avg_similarity > best_score:
-            best_score = avg_similarity
-            best_type = section_type
-    
-    # Only return detected type if similarity is above threshold
-    return best_type if best_score > 0.5 else "OTHERS"
-
-def extract_relevant_content(section_content: Dict[str, Any], section_type: str) -> Dict[str, Any]:
-    """
-    Extract relevant content based on section type
-    
-    Args:
-        section_content: Raw section content
-        section_type: Type of section
-        
-    Returns:
-        Extracted content relevant to the section type
-    """
-    # Structure known patterns to extract
-    if section_type == "CHIEF_COMPLAINT":
-        # Check for Main Symptom
-        if "Main Symptom" in section_content:
-            return {"Main Symptom": section_content["Main Symptom"]}
-    
-    # For other sections, return original content
-    return section_content
