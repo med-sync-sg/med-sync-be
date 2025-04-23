@@ -431,6 +431,12 @@ async def process_audio_with_diarization(
                     "is_doctor": (role == "doctor" or role == "speaker1")
                 }
                 
+                await websocket.send_text(json.dumps({
+                    'text': segment_text,
+                    'using_adaptation': use_adaptation,
+                }))
+                
+                
                 if segment_data["is_doctor"]:
                     doctor_segments.append(segment_data)
                 else:
