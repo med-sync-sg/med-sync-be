@@ -7,7 +7,7 @@ from jinja2 import Environment, FileSystemLoader
 from sqlalchemy.orm import Session
 
 from app.models.models import Note, Section, User, ReportTemplate
-from app.utils.nlp.nlp_utils import get_semantic_section_type
+from app.services.report_generation.section_management_service import SectionManagementService
 from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 
@@ -104,6 +104,7 @@ class ReportService:
             db_session: SQLAlchemy session for database operations
         """
         self.db = db_session
+        self.section_management_service = SectionManagementService(self.db)
         self.templates_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "utils", "nlp", "report_templates"
@@ -367,7 +368,7 @@ class ReportService:
                 # Determine section type semantically if needed
                 section_type = section.section_type
                 if section_type == "OTHERS" or not section_type:
-                    section_type = get_semantic_section_type(section.title, content)
+                    section_type = self.section_management_service.get_semantic_section_type(section.title, content)
                 
                 # Check if this section type is configured in the template
                 if section_type in section_configs:

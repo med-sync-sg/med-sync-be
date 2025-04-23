@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, LargeBinary, DateTime, ForeignKey, Boolean, Float
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from sqlalchemy.orm import relationship, declarative_base, Mapped, mapped_column, Session
-from app.schemas.section import TextCategoryEnum, SectionCreate
+from app.schemas.section import SectionCreate
 from typing import Optional, List
 import datetime
 from sqlalchemy.sql import func
@@ -31,7 +31,7 @@ class SectionType(Base):
     description = Column(String, nullable=True)  # Detailed description
     
     # SOAP categorization
-    soap_category = Column(Enum(SOAPCategory), nullable=False, default=SOAPCategory.OTHER)
+    soap_category = Column(String, nullable=False, default=SOAPCategory.OTHER)
     
     # Hierarchical structure
     parent_id = Column(Integer, ForeignKey("section_types.id"), nullable=True)

@@ -8,7 +8,6 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.orm import sessionmaker
-from app.schemas.section import TextCategoryEnum
 from Levenshtein import ratio
 from app.utils.nlp.nlp_utils import embed_text, DEFAULT_MODEL
 
@@ -39,70 +38,3 @@ umls_df_dict: dict = {
 concepts_with_sty_def = BytesIO(requests.get(f"{DATA_LOADER_URL}/umls-data/symptoms-and-diseases").content)
 umls_df_dict["concepts_with_sty_def_df"] = read_feather(concepts_with_sty_def)
 concepts_with_sty_def.close()
-
-
-def classify_text_category(input_text: str, threshold: float = 0.5) -> str:
-    """
-    Classify the input text using PostgreSQL session-based query with pgvector.
-    """
-    # Get the embedding as a NumPy array
-    input_embedding = embed_text(input_text)
-    
-    # Convert NumPy array to a Python list, then to a string representation
-    input_embedding_list = input_embedding.tolist()
-    input_embedding_str = str(input_embedding_list)
-    
-    # For pgvector, use the '<->' operator for L2 distance or '<=>''for cosine distance
-    sql = f"""
-        SELECT category, term, term_embeddings <=> vector(:input_embedding) AS score
-        FROM {schema_name}.TextCategoryEmbeddings
-        ORDER BY score ASC
-        LIMIT 1
-    """
-    
-    with SessionMaker() as session:
-        result = session.execute(text(sql), {"input_embedding": input_embedding_str}).fetchone()
-        
-    if result:
-        category, db_term, score = result
-        print(f"Vector result - Category: {category}, Term: {db_term}, Score: {score}")
-        
-        # Calculate string similarity
-        string_sim = ratio(input_text.lower(), db_term.lower())
-        print(f"String similarity: {string_sim:.4f}")
-        
-        if string_sim > 0.85 or float(score) <= threshold:
-            return TextCategoryEnum[category].name
-        else:
-            return TextCategoryEnum.OTHERS.name
-    else:
-        return TextCategoryEnum.OTHERS.name
-    
-    
-def find_content_dictionary(keyword_dict: dict, category: str) -> dict:
-    """
-    Query the PostgreSQL database using pgvector to find the closest matching
-    content dictionary entry for a given keyword dictionary and category.
-    """
-    table_name = "ContentDictionaryJson"
-    # Step 1: Convert the keyword_dict to an embedding.
-    input_embedding = DEFAULT_MODEL.encode(json.dumps(keyword_dict), normalize_embeddings=True)
-    input_embedding_list = input_embedding.tolist()
-    input_embedding_str = str(input_embedding_list)
-    # Use PostgreSQL syntax with pgvector operator (<=>) to measure distance.
-    sql = f"""
-        SELECT content_dictionary
-        FROM {schema_name}.{table_name}
-        WHERE category = :category
-        ORDER BY description_embeddings <=> :input_embedding
-        LIMIT 1
-    """
-    with SessionMaker() as session:
-        result = session.execute(text(sql), {"category": category.upper(), "input_embedding": input_embedding_str}).fetchone()
-    if result is not None:
-        result_content = result[0]
-        print(result_content)
-        return json.loads(result_content)
-    else:
-        print("No matching content dictionary found.")
-        return {}
