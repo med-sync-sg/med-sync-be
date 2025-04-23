@@ -4,7 +4,7 @@ from typing import Dict, List
 from sqlalchemy.orm import Session
 from fastapi.responses import HTMLResponse
 
-from app.services.report_service import ReportService
+from app.services.report_generation.report_service import ReportService
 from app.db.local_session import DatabaseManager
 from app.schemas.report import ReportTemplateCreate, ReportTemplateRead, ReportTemplateUpdate
 

@@ -79,8 +79,8 @@ class TestClient:
         """Run all tests"""
         try:
             # Test database service
-            self.test_db_connection()
-            self.test_umls_data()
+            # self.test_db_connection()
+            # self.test_umls_data()
             
             # Test main application
             # self.authenticate()

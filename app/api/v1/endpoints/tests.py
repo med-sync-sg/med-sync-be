@@ -28,7 +28,7 @@ from app.services.transcription_service import TranscriptionService
 from app.services.audio_service import AudioService
 from app.services.nlp.keyword_extract_service import KeywordExtractService
 from app.services.note_service import NoteService
-from app.services.report_service import ReportService
+from app.services.report_generation.report_service import ReportService
 
 # Configure logger
 logger = logging.getLogger(__name__)

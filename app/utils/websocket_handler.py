@@ -14,7 +14,7 @@ from app.services.audio_service import AudioService
 from app.services.transcription_service import TranscriptionService
 from app.services.nlp.keyword_extract_service import KeywordExtractService
 from app.services.note_service import NoteService
-from app.services.report_service import ReportService
+from app.services.report_generation.report_service import ReportService
 from app.models.models import ReportTemplate
 from app.utils.speech_processor import SpeechProcessor
 from app.api.v1.endpoints.calibration import calibration_service

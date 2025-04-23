@@ -1,5 +1,3 @@
-# app/services/report_service.py
-
 import logging
 import os
 import json

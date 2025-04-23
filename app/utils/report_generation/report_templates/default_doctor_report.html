@@ -14,14 +14,10 @@
     <p>Gender: {{ patient_info.gender }}</p>
 
     {% for section in sections %}
-    <h3>{{ section.title }}</h3>
-    <p><strong>Summary:</strong> Testing Summary </p>
-    <!-- <p><strong>Evidence:</strong></p>
-    <ul>
-      {% for evidence in section.evidence %}
-      <li>{{ evidence }}</li>
-      {% endfor %}
-    </ul> -->
+    <main>
+      <h3>{{ section.title }}</h3>
+      <p><strong>Summary:</strong> Testing Summary </p>
+    </main>
     {% endfor %}
   </body>
 </html>

@@ -1,6 +1,6 @@
 from app.schemas.base import BaseAuthModel
 from pydantic import BaseModel, Field
-from typing import Dict, Any, Union
+from typing import Dict, Any, Union, Optional
 from enum import Enum
 
 class TextCategoryEnum(str, Enum):
@@ -14,22 +14,29 @@ class TextCategoryEnum(str, Enum):
     OTHERS ="This text refers to all other contents not classified as the CHIEF_COMPLAINT, PATIENT_INFORMATION, PATIENT_MEDICAL_HISTORY categories."
 
 class SectionCreate(BaseAuthModel):
-    title: str
-    content: Dict[str, Any] = {}
-    section_type: str = Field(default=TextCategoryEnum.OTHERS.value)
-    section_description: str = Field(default=TextCategoryEnum.OTHERS.value)
-
-    class Config:
-        orm_mode = True
-
-class SectionRead(BaseAuthModel):
-    id: int
+    """schema for creating a section"""
     note_id: int
     title: str
-    content: Union[Dict[str, Any], None]
-    section_type: str = Field(default=TextCategoryEnum.OTHERS.value)
-    section_description: str = Field(default=TextCategoryEnum.OTHERS.value)
+    content: Dict[str, Any] = {}
+    section_type_id: int
+    parent_id: Optional[int] = None
+    display_order: Optional[int] = None
+    is_visible_to_patient: Optional[bool] = True
 
+class SectionRead(BaseModel):
+    """schema for reading a section"""
+    id: int
+    note_id: int
+    user_id: int
+    title: str
+    content: Dict[str, Any]
+    section_type_id: int
+    section_type_code: str
+    soap_category: str
+    parent_id: Optional[int]
+    display_order: int
+    is_visible_to_patient: bool
+    
     class Config:
         orm_mode = True
 
