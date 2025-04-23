@@ -27,10 +27,7 @@ class DiarizationService:
         self.audio_service = AudioService()
         self.calibration_service = VoiceCalibrationService(self.db)
         self.vad = webrtcvad.Vad()  # Voice Activity Detector
-        self.x_vector_model = self._load_x_vector_model()
-        
-    def _load_x_vector_model(self):
-        return EncoderClassifier.from_hparams(
+        self.x_vector_model = EncoderClassifier.from_hparams(
             source="speechbrain/spkrec-ecapa-voxceleb", 
             run_opts={"device": "cpu"}
         )
@@ -54,7 +51,6 @@ class DiarizationService:
             with torch.no_grad():
                 embeddings = self.x_vector_model.encode_batch(waveform)
                 xvector = embeddings.squeeze().cpu().numpy()
-            
             return xvector
         except Exception as e:
             print(f"Error extracting x-vector: {str(e)}")
@@ -75,16 +71,16 @@ class DiarizationService:
         """
         # Step 1: Voice Activity Detection
         speech_segments = self._detect_speech(audio_data, sample_rate)
-        
+
         # Step 2: Speaker Segmentation (find potential change points)
         speaker_segments = self._segment_speakers(audio_data, speech_segments, sample_rate)
-        
+
         # Step 3: Extract embeddings for each segment
         segment_embeddings = self._extract_embeddings(audio_data, speaker_segments, sample_rate)
-        
+
         # Step 4: Binary classification - doctor or patient
         speaker_mapping = self._classify_doctor_patient(segment_embeddings, doctor_id)
-        
+
         return {
             "segments": speaker_segments,
             "speaker_mapping": speaker_mapping
@@ -117,6 +113,28 @@ class DiarizationService:
             logger.warning("Invalid doctor profile (missing mean vector)")
             return self._cluster_hierarchical(segment_embeddings)
         
+        # Check for dimension mismatch
+        sample_embedding_dim = segment_embeddings[0][1].shape[0] if segment_embeddings else 0
+        doctor_mean_dim = doctor_mean.shape[0]
+        
+        if sample_embedding_dim != doctor_mean_dim:
+            logger.info(f"Dimension mismatch: x-vectors ({sample_embedding_dim}) vs profile ({doctor_mean_dim})")
+            
+            # Handle dimension mismatch using simple dimension matching
+            try:
+                # Use a direct dimension matching approach instead of PCA
+                if sample_embedding_dim > doctor_mean_dim:
+                    # Truncate x-vectors to match doctor mean dimension
+                    segment_embeddings = [(seg, emb[:doctor_mean_dim]) for seg, emb in segment_embeddings]
+                    logger.info(f"Truncated x-vectors to match doctor profile dimension: {doctor_mean_dim}")
+                else:
+                    # Truncate doctor mean to match x-vector dimension
+                    doctor_mean = doctor_mean[:sample_embedding_dim]
+                    logger.info(f"Truncated doctor profile to match x-vector dimension: {sample_embedding_dim}")
+            except Exception as e:
+                logger.error(f"Error handling dimension mismatch: {str(e)}")
+                return self._cluster_hierarchical(segment_embeddings)
+
         # Calculate similarity scores
         segment_to_speaker = {}
         similarity_scores = []
@@ -398,11 +416,11 @@ class DiarizationService:
             
             # Extract x-vector (instead of MFCC)
             xvector = self.extract_xvector(segment_audio, sample_rate)
-            
             if xvector is not None:
                 segment_embeddings.append(((start_sec, end_sec), xvector))
         
         return segment_embeddings
+
     def _match_known_speakers(self, segment_embeddings, known_speaker_ids):
         """
         Match segments to known speakers using calibration data

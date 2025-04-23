@@ -87,12 +87,16 @@ class TestClient:
             # self.create_test_note()
             
             # Test WebSocket (needs to run in an async context)
-            # asyncio.run(self.test_websocket())
+            self.user_id = 1
+            self.note_id = 1
+            self.token = "dev_mode_dummy_token"
+            self.audio_file = test_audio_file
+            asyncio.run(self.test_websocket())
             
             # self.test_text_processing()
             
             # self.test_diarization_with_calibration(DEFAULT_AUDIO_FILE, 1)
-            self.test_diarization_without_calibration(test_audio_file)
+            # self.test_diarization_without_calibration(test_audio_file)
             logger.info("All tests completed successfully!")
             return True
             
