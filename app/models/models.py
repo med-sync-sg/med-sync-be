@@ -25,37 +25,37 @@ class SectionType(Base):
     """Model for defining types of sections in medical documentation"""
     __tablename__ = "section_types"
     
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    code = Column(String, unique=True, nullable=False, index=True)  # Unique code for this section type
-    name = Column(String, nullable=False)  # Display name
-    description = Column(String, nullable=True)  # Detailed description
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)  # Unique code for this section type
+    name: Mapped[str] = mapped_column(String, nullable=False)  # Display name
+    description: Mapped[str] = mapped_column(String, nullable=True)  # Detailed description
     
     # SOAP categorization
-    soap_category = Column(String, nullable=False, default=SOAPCategory.OTHER)
+    soap_category: Mapped[str] = mapped_column(String, nullable=False, default=SOAPCategory.OTHER)
     
     # Hierarchical structure
-    parent_id = Column(Integer, ForeignKey("section_types.id"), nullable=True)
-    parent = relationship("SectionType", remote_side=[id], backref="children")
+    parent_id: Mapped[int] = mapped_column(Integer, ForeignKey("section_types.id"), nullable=True)
+    parent: Mapped["SectionType"] = relationship("SectionType", remote_side=[id], backref="children")
     
     # Content schema - defines expected structure for this section type
     content_schema = Column(JSONB, nullable=True)  # JSON Schema for content validation
     
     # Display and behavior properties
-    is_required = Column(Boolean, default=False)  # Whether this section is required in notes
-    default_title = Column(String, nullable=True)  # Default title when creating new section
-    default_order = Column(Integer, default=100)  # Default ordering within parent
-    is_visible_to_patient = Column(Boolean, default=True)  # Whether visible in patient-facing reports
+    is_required: Mapped[bool] = mapped_column(Boolean, default=False)  # Whether this section is required in notes
+    default_title: Mapped[str] = mapped_column(String, nullable=True)  # Default title when creating new section
+    default_order: Mapped[int] = mapped_column(Integer, default=100)  # Default ordering within parent
+    is_visible_to_patient: Mapped[bool] = mapped_column(Boolean, default=True)  # Whether visible in patient-facing reports
     
     # Template reference - default template for this section type
-    default_template_id = Column(Integer, ForeignKey("section_templates.id"), nullable=True)
+    default_template_id: Mapped[int] = mapped_column(Integer, ForeignKey("section_templates.id"), nullable=True)
     default_template = relationship("SectionTemplate")
     
     # Sections of this type
     sections = relationship("Section", back_populates="section_type")
     
     # Timestamps
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     
     @property
     def full_path(self):
@@ -81,7 +81,6 @@ class User(Base):
     hashed_password: Mapped[str] = mapped_column(String, nullable=False)
     # Use back_populates for bidirectional relationships.
     notes: Mapped[list["Note"]] = relationship("Note", back_populates="user", cascade="all, delete-orphan")
-    note_templates: Mapped[list["NoteTemplate"]] = relationship("NoteTemplate", back_populates="user", cascade="all, delete-orphan")
     speaker_profiles: Mapped[list["SpeakerProfile"]] = relationship("SpeakerProfile", back_populates="user", cascade="all, delete-orphan")
     calibration_recordings: Mapped[list["CalibrationRecording"]]= relationship("CalibrationRecording", back_populates="user", cascade="all, delete-orphan")
     report_templates: Mapped[list["ReportTemplate"]] = relationship("ReportTemplate", back_populates="user", cascade="all, delete-orphan")
@@ -100,12 +99,12 @@ class Note(Base):
 class Section(Base):
     __tablename__ = "sections"
     
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    note_id = Column(Integer, ForeignKey("notes.id"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    note_id: Mapped[int] = mapped_column(Integer, ForeignKey("notes.id"), nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     
     # Basic section attributes
-    title = Column(String, default="")
+    title: Mapped[str] = mapped_column(String, default="")
     content = Column(JSONB)  # Structured content
     
     # Section type reference
@@ -123,12 +122,12 @@ class Section(Base):
     last_modified_by = relationship("User", foreign_keys=[last_modified_by_id])
     
     # Relationships
-    note = relationship("Note", back_populates="sections")
-    user = relationship("User", foreign_keys=[user_id])
+    note: Mapped["Note"] = relationship("Note", back_populates="sections")
+    user: Mapped["User"] = relationship("User", foreign_keys=[user_id])
     
     # Section relationships (self-referential for hierarchical sections)
-    parent_id = Column(Integer, ForeignKey("sections.id"), nullable=True)
-    parent = relationship("Section", remote_side=[id], backref="subsections")
+    parent_id: Mapped[int] = mapped_column(Integer, ForeignKey("sections.id"), nullable=True)
+    parent: Mapped["Section"] = relationship("Section", remote_side=[id], backref="subsections")
     
     # Related sections (for cross-references)
     related_sections = relationship(
@@ -160,55 +159,45 @@ class SectionRelationship(Base):
     """Model for tracking relationships between sections"""
     __tablename__ = "section_relationships"
     
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    source_section_id = Column(Integer, ForeignKey("sections.id"), nullable=False)
-    target_section_id = Column(Integer, ForeignKey("sections.id"), nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_section_id: Mapped[int] = mapped_column(Integer, ForeignKey("sections.id"), nullable=False)
+    target_section_id: Mapped[int] = mapped_column(Integer, ForeignKey("sections.id"), nullable=False)
     
     # Relationship type (reference, dependency, etc.)
-    relationship_type = Column(String, nullable=False)
-    description = Column(String, nullable=True)
+    relationship_type: Mapped[String] = mapped_column(String, nullable=False)
+    description: Mapped[String] = mapped_column(String, nullable=True)
     
     # Metadata
-    created_at = Column(DateTime, server_default=func.now())
-    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    created_by = relationship("User")
+    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
+    created_by_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+    created_by: Mapped["User"] = relationship("User")
     
     def __repr__(self):
         return f"<SectionRelationship {self.source_section_id} -> {self.target_section_id}: {self.relationship_type}>"
-
-class NoteTemplate(Base):
-    __tablename__ = "note_templates"
-    
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    title: Mapped[str] = mapped_column(String, nullable=False)
-    description: Mapped[str] = mapped_column(String, nullable=False)
-    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
-    user: Mapped["User"] = relationship("User", back_populates="note_templates")
-    section_templates: Mapped[list["SectionTemplate"]] = relationship("SectionTemplate", back_populates="note_template", cascade="all, delete-orphan")
 
 class SectionTemplate(Base):
     """Model for section templates that can be reused across notes"""
     __tablename__ = "section_templates"
     
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String, nullable=False)
-    description = Column(String, nullable=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str] = mapped_column(String, nullable=True)
     
     # Template content structure
     content_template = Column(JSONB, nullable=False)  # Template structure with placeholders
     
     # Template metadata
-    author_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    author = relationship("User")
-    is_system_template = Column(Boolean, default=False)  # System-provided vs user-created
-    specialty = Column(String, nullable=True)  # Medical specialty this template is for
+    author_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+    author: Mapped["User"] = relationship("User")
+    is_system_template: Mapped[bool] = mapped_column(Boolean, default=False)  # System-provided vs user-created
+    specialty: Mapped[str] = mapped_column(String, nullable=True)  # Medical specialty this template is for
     
     # Timestamps
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     
     # Section types using this as default
-    section_types = relationship("SectionType", back_populates="default_template")
+    section_types: Mapped[list["SectionType"]] = relationship("SectionType", back_populates="default_template")
     
     def __repr__(self):
         return f"<SectionTemplate {self.id}: {self.name}>"

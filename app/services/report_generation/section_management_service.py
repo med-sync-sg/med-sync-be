@@ -13,6 +13,9 @@ class SectionManagementService:
     
     def __init__(self, db_session: Session):
         self.db = db_session
+        self.seed_section_types()
+        
+        logger.info("Initialized Section Management Service.")
     
     def get_section_type(self, section_type_id: int) -> Optional[SectionType]:
         """Get section type by ID"""
