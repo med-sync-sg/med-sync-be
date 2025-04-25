@@ -66,6 +66,171 @@ class MetricsResponse(BaseModel):
     metrics: Optional[Dict[str, float]] = None
     error: Optional[str] = None
 
+@router.post("/test-adaptation")
+async def test_adaptation(
+    audio_file: UploadFile = File(...),
+    user_id: int = Form(...),
+    use_adaptation: bool = Form(True),
+    db: Session = Depends(get_session)
+):
+    """
+    Test the speaker adaptation feature with an uploaded audio file
+    
+    Args:
+        audio_file: The audio file to transcribe
+        user_id: User ID for speaker adaptation profile
+        use_adaptation: Whether to use speaker adaptation
+        db: Database session
+        
+    Returns:
+        Transcription results with and without adaptation for comparison
+    """
+    try:
+        logger.info(f"Testing adaptation for user {user_id}, use_adaptation={use_adaptation}")
+        
+        # Create a temporary file to store the uploaded audio
+        with NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
+            # Write the uploaded file content to the temporary file
+            content = await audio_file.read()
+            temp_file.write(content)
+            temp_path = temp_file.name
+        
+        logger.info(f"Saved audio to temporary file: {temp_path}")
+        
+        try:
+            # Initialize necessary services
+            transcription_service = TranscriptionService()
+            speech_processor = transcription_service.speech_processor
+            
+            # Load the audio data
+            with wave.open(temp_path, 'rb') as wav_file:
+                # Get audio parameters
+                channels = wav_file.getnchannels()
+                sample_width = wav_file.getsampwidth()
+                frame_rate = wav_file.getframerate()
+                n_frames = wav_file.getnframes()
+                
+                # Read all frames at once
+                frames = wav_file.readframes(n_frames)
+            
+            # Convert to numpy array for processing
+            audio_data = np.frombuffer(frames, dtype=np.int16).astype(np.float32)
+            audio_data = audio_data / 32768.0  # Normalize to [-1.0, 1.0]
+            
+            # Check if user has a speaker profile
+            profile = None
+            if use_adaptation:
+                try:
+                    profile = speech_processor._get_speaker_profile(user_id, db)
+                    if profile is None:
+                        logger.warning(f"No speaker profile found for user {user_id}")
+                except Exception as profile_error:
+                    logger.error(f"Error getting speaker profile: {str(profile_error)}")
+            
+            # Start timing
+            start_time_standard = time.time()
+            
+            # First transcribe without adaptation
+            standard_transcription = speech_processor.transcribe(audio_data, sample_rate=frame_rate)
+            
+            standard_time = time.time() - start_time_standard
+            
+            # Now transcribe with adaptation if requested
+            adapted_transcription = None
+            adaptation_time = None
+            adaptation_info = None
+            
+            if use_adaptation:
+                start_time_adapted = time.time()
+                
+                # Transcribe with adaptation
+                adapted_transcription = speech_processor.transcribe_with_adaptation(
+                    audio_data, user_id, db, sample_rate=frame_rate
+                )
+                
+                adaptation_time = time.time() - start_time_adapted
+                
+                # Get information about the adaptation
+                transformer = speech_processor.adaptation_cache.get(user_id)
+                if transformer:
+                    adaptation_info = {
+                        "vtln_warp_factor": getattr(transformer, "vtln_warp_factor", None),
+                        "feature_dimension": len(transformer.mean_vector) if hasattr(transformer, "mean_vector") else None,
+                        "transform_applied": transformer.transform_matrix is not None
+                    }
+            
+            # Prepare response
+            response = {
+                "standard_transcription": standard_transcription,
+                "standard_processing_time_ms": round(standard_time * 1000, 2),
+                "use_adaptation": use_adaptation,
+                "user_id": user_id,
+                "audio_info": {
+                    "channels": channels,
+                    "sample_width": sample_width,
+                    "frame_rate": frame_rate,
+                    "duration_seconds": n_frames / frame_rate,
+                    "samples": len(audio_data)
+                }
+            }
+            
+            if use_adaptation:
+                response.update({
+                    "adapted_transcription": adapted_transcription,
+                    "adaptation_processing_time_ms": round(adaptation_time * 1000, 2),
+                    "adaptation_info": adaptation_info,
+                    "has_speaker_profile": profile is not None,
+                    # "word_difference": count_word_differences(standard_transcription, adapted_transcription)
+                })
+            
+            return response
+            
+        finally:
+            # Clean up - delete the temporary file
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+                logger.info(f"Deleted temporary file: {temp_path}")
+                
+    except Exception as e:
+        logger.error(f"Error testing adaptation: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+def count_word_differences(text1: str, text2: str) -> Dict[str, Any]:
+    """
+    Count the differences between two transcription texts
+    
+    Args:
+        text1: First text
+        text2: Second text
+        
+    Returns:
+        Dictionary with difference metrics
+    """
+    words1 = text1.lower().split()
+    words2 = text2.lower().split()
+    
+    # Word error rate calculation
+    from difflib import SequenceMatcher
+    matcher = SequenceMatcher(None, words1, words2)
+    matches = sum(block.size for block in matcher.get_matching_blocks())
+    
+    total_words = max(len(words1), len(words2))
+    if total_words == 0:
+        return {"word_error_rate": 0, "word_match_rate": 1.0, "word_count_difference": 0}
+    
+    word_error_rate = 1.0 - (matches / total_words)
+    
+    return {
+        "word_error_rate": word_error_rate,
+        "word_match_rate": 1.0 - word_error_rate,
+        "word_count_difference": len(words2) - len(words1)
+    }
+
 @router.post("/test-report")
 async def generate_report_for_note(
     note_id: int,

@@ -316,6 +316,9 @@ class CalibrationRecording(Base):
     # Features extracted from recording - serialized as binary
     features: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     
+    # Raw audio data for future processing
+    audio_data: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
+
     # Optional metadata about the recording
     duration_ms: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     sample_rate: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
