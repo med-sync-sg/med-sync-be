@@ -1,12 +1,17 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse
 from db_app.session import DataStore, DRUGS_AND_MEDICINES_TUI, PATIENT_INFORMATION_TUI, SYMPTOMS_AND_DISEASES_TUI
+
 from pyarrow import feather
 import io
 import pandas as pd
 import logging
-
+from fastapi import FastAPI, Depends, Request
+from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
+from graphql import graphql_sync
+import json
 # Configure logger
 logger = logging.getLogger(__name__)
 
@@ -35,6 +40,14 @@ def create_app() -> FastAPI:
 
 # Create the app
 app = create_app()
+
+def get_db():
+    db = data_store.SessionMaker()
+    try:
+        yield db
+    finally:
+        if db:
+            db.close()
 
 # Initialize DataStore singleton - logs will indicate initialization progress
 try:

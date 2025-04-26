@@ -1,19 +1,97 @@
+version: "3.9"
+
 services:
+  # ────────────────────────────────────────────────────────────────
+  # 1) COPY raw RRF / CTL files → umls-data volume   (run once)
+  # ────────────────────────────────────────────────────────────────
+  umls-data-loader:
+    image: alpine:3.19
+    profiles: ["seed"]
+    volumes:
+      - ./umls/required:/src:ro        # your local folder with UMLS files
+      - umls-data:/dst
+    command: |
+      sh -c 'set -e
+        echo "→ Copying UMLS files into volume …"
+        cp -av /src/. /dst/
+        echo "✔  Done."
+        tail -f /dev/null'
+
+  # ────────────────────────────────────────────────────────────────
+  # 2) TRANSFORM raw RRF → CSV for Neo4j bulk import   (run once)
+  # ────────────────────────────────────────────────────────────────
+  umls-transform:
+    image: python:3.12-slim
+    profiles: ["transform"]
+    working_dir: /work
+    volumes:
+      - ./scripts/umls_to_neo4j.py:/work/umls_to_neo4j.py:ro
+      - umls-data:/import
+    command: >
+      python umls_to_neo4j.py
+        --input /import
+        --out   /import/csv
+        --db    umls
+
+  # ────────────────────────────────────────────────────────────────
+  # 3) IMPORT CSV → Neo4j store files on graph-store   (run once)
+  # ────────────────────────────────────────────────────────────────
+  umls-import:
+    image: neo4j:2025.03.0
+    profiles: ["import"]
+    user: neo4j
+    volumes:
+      - umls-data:/import:ro
+      - graph-store:/data
+    entrypoint: ["neo4j-admin"]
+    command: >
+      database import full umls
+        --id-type=STRING
+        --nodes=Concept=/import/csv/concepts.csv
+        --nodes=SemanticType=/import/csv/semantic_types.csv
+        --relationships=RELATED_TO=/import/csv/relationships.csv
+
+  # ────────────────────────────────────────────────────────────────
+  # 4) Postgres 17 + pgvector (runtime)
+  # ────────────────────────────────────────────────────────────────
   db:
     image: pgvector/pgvector:pg17
-    container_name: postgres_db # Optional name for the container
+    container_name: postgres_db
     restart: always
     environment:
       POSTGRES_USER: root
       POSTGRES_PASSWORD: medsync!
       POSTGRES_DB: medsync_db
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h db"]
-      interval: 1s
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
       timeout: 5s
       retries: 10
     ports:
       - "9000:5432"
-  
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # ────────────────────────────────────────────────────────────────
+  # 5) Neo4j 5 server (runtime)
+  # ────────────────────────────────────────────────────────────────
+  neo4j:
+    image: neo4j:2025.03.0
+    environment:
+      NEO4J_AUTH: "neo4j/medsync!"
+      NEO4J_server_memory_heap_max__size: 6G
+      NEO4J_dbms_memory_pagecache_size: 8G
+    ports:
+      - "7474:7474"   # Browser / HTTP
+      - "7687:7687"   # Bolt
+    volumes:
+      - umls-data:/import:ro      # still handy for LOAD CSV, diagnostics
+      - graph-store:/data
+
+# ──────────────────────────────────────────────────────────────────
+# Named volumes – live outside any container, survive rebuilds
+# ──────────────────────────────────────────────────────────────────
 volumes:
-  medsync_db:
+  umls-data:     # raw RRF + generated CSVs
+  graph-store:   # Neo4j database files
+  pgdata:        # Postgres data directory

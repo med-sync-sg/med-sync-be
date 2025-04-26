@@ -1,4 +1,5 @@
-from db_app.db_app import app
+from db_app.db_app import app, UMLSKnowledgeGraph, get_db
+
 import logging
 import sys
 import argparse
@@ -37,6 +38,7 @@ def configure_logging(log_level: str = "INFO", log_file: Optional[str] = None):
     # Set third-party loggers to be less verbose
     logging.getLogger('sqlalchemy.engine').setLevel(logging.WARNING)
     logging.getLogger('urllib3').setLevel(logging.WARNING)
+    logging.getLogger('graphql').setLevel(logging.WARNING)
     
     # Log the configuration
     logging.info(f"Logging configured with level: {log_level}")
@@ -50,7 +52,30 @@ def parse_arguments():
     parser.add_argument("--port", type=int, default=8002, help="Port number")
     parser.add_argument("--log-level", default="INFO", help="Logging level (DEBUG, INFO, WARNING, ERROR)")
     parser.add_argument("--log-file", help="Optional log file path")
+    parser.add_argument("--preload-graph", action="store_true", help="Preload UMLS knowledge graph at startup")
+    parser.add_argument("--graph-limit", type=int, default=10000, help="Limit for preloaded graph size")
     return parser.parse_args()
+
+def preload_umls_graph(limit: int = 10000):
+    """Preload the UMLS knowledge graph at startup for faster queries"""
+    try:
+        logging.info(f"Preloading UMLS knowledge graph with limit={limit}...")
+        
+        # Get database session
+        db = next(get_db())
+        
+        # Build and cache the graph
+        graph = UMLSKnowledgeGraph(db)
+        graph.build_from_db(limit=limit)
+        
+        # Store in a global variable or cache
+        app.cached_graph = graph
+        
+        stats = graph.get_stats()
+        logging.info(f"UMLS graph preloaded with {stats['nodes']} nodes and {stats['edges']} edges")
+        
+    except Exception as e:
+        logging.error(f"Error preloading UMLS graph: {str(e)}")
 
 if __name__ == "__main__":
     # Parse command line arguments
@@ -58,6 +83,10 @@ if __name__ == "__main__":
     
     # Setup logging
     configure_logging(log_level=args.log_level, log_file=args.log_file)
+    
+    # Preload graph if requested
+    if args.preload_graph:
+        preload_umls_graph(args.graph_limit)
     
     # Log startup configuration
     logging.info(f"Starting Data Service on {args.host}:{args.port}")
