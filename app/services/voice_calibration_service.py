@@ -7,7 +7,10 @@ from typing import List, Dict, Any, Optional, BinaryIO
 from app.db.local_session import DatabaseManager
 from app.models.models import User, SpeakerProfile, CalibrationPhrase, CalibrationRecording
 from app.schemas.calibration import CalibrationPhraseBase, CalibrationStatus
+from app.utils.voice_adaptation_utils import extract_mfcc_features, estimate_warping_factor
+from io import BytesIO
 from sqlalchemy.orm import Session
+import wave
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -182,20 +185,22 @@ class VoiceCalibrationService:
                 logger.error(f"Phrase {phrase_id} not found")
                 return False
             
+            # Read the audio data
+            audio_bytes = audio_data.read()
+            
+            # Create a BytesIO object to reuse the audio data
+            audio_io = BytesIO(audio_bytes)
+            
             # Extract features
-            features = self.extract_mfcc_features(audio_data)
+            features = self.extract_mfcc_features(audio_io)
             
-            # Get audio duration
-            temp_path = "temp_audio.wav"
-            with open(temp_path, "wb") as f:
-                audio_data.seek(0)  # Rewind the file
-                f.write(audio_data.read())
+            # Get audio duration and sample rate
+            audio_io.seek(0)  # Reset to beginning
+            with wave.open(audio_io, 'rb') as wav_file:
+                frames = wav_file.getnframes()
+                sample_rate = wav_file.getframerate()
+                duration_ms = (frames / sample_rate) * 1000
             
-            y, sr = librosa.load(temp_path, sr=None)
-            duration_ms = len(y) / sr * 1000
-            
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
             
             # Serialize features
             features_binary = pickle.dumps(features)
@@ -205,8 +210,9 @@ class VoiceCalibrationService:
                 user_id=user_id,
                 phrase_id=phrase_id,
                 features=features_binary,
+                audio_data=audio_bytes,
                 duration_ms=duration_ms,
-                sample_rate=sr,
+                sample_rate=sample_rate,
                 feature_type="mfcc"
             )
             
@@ -291,22 +297,30 @@ class VoiceCalibrationService:
                 return None
                 
             # Load all features
-            all_features = []
+            # Extract MFCCs from recordings
+            all_mfcc_features = []
             for recording in recordings:
-                features = pickle.loads(recording.features)
-                all_features.append(features)
+                # Standard MFCC extraction (no warping yet)
+                mfccs = extract_mfcc_features(recording.audio_data, recording.sample_rate)
+                all_mfcc_features.append(mfccs)
             
-            # Compute mean vector and covariance matrix
-            features_concat = np.concatenate(all_features, axis=1)
-            mean_vector = np.mean(features_concat, axis=1)
-            covariance_matrix = np.cov(features_concat)
+            if all_mfcc_features:
+                combined_mfccs = np.concatenate(all_mfcc_features, axis=1)
+            else:
+                return None
+            
+            warp_factor = estimate_warping_factor(combined_mfccs)
+            
+            mean_vector = np.mean(all_mfcc_features, axis=1)
+            covariance_matrix = np.cov(all_mfcc_features)
             
             # Create speaker profile dictionary
             speaker_profile_dict = {
                 "user_id": user_id,
+                "vtln_warp_factor": warp_factor,
                 "mean_vector": mean_vector,
                 "covariance_matrix": covariance_matrix,
-                "feature_dimension": mean_vector.shape[0],
+                "feature_dimension": combined_mfccs.shape[0],
                 "training_phrases": len(recordings),
                 "created_at": np.datetime64('now')
             }

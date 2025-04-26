@@ -53,6 +53,9 @@ python -m nuitka ^
     --include-package=Levenshtein ^
     --include-data-dir=app/utils/nlp/report_templates=report_templates ^
     --include-distribution-metadata=Levenshtein ^
+    --include-distribution-metadata=librosa ^
+    --include-distribution-metadata=spacy ^
+    --include-distribution-metadata=psycopg2 ^
     --include-module=socket ^
     --include-module=_socket ^
     --include-module=asyncio ^

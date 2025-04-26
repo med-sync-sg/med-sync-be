@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, LargeBinary, DateTime, ForeignKey, Boolean, Float
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from sqlalchemy.orm import relationship, declarative_base, Mapped, mapped_column, Session
-from app.schemas.section import TextCategoryEnum, SectionCreate
+from app.schemas.section import SectionCreate
 from typing import Optional, List
 import datetime
 from sqlalchemy.sql import func
@@ -9,7 +9,63 @@ import datetime
 import numpy as np
 import pickle
 import json
+from enum import Enum
 Base = declarative_base()
+
+class SOAPCategory(str, Enum):
+    """Enum representing SOAP categories"""
+    OTHER = "OTHER"  # For administrative or other non-SOAP sections
+    SUBJECTIVE = "SUBJECTIVE"
+    OBJECTIVE = "OBJECTIVE"
+    ASSESSMENT = "ASSESSMENT"
+    PLAN = "PLAN"
+    MIXED = "MIXED"  # For sections that span multiple categories
+    
+class SectionType(Base):
+    """Model for defining types of sections in medical documentation"""
+    __tablename__ = "section_types"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)  # Unique code for this section type
+    name: Mapped[str] = mapped_column(String, nullable=False)  # Display name
+    description: Mapped[str] = mapped_column(String, nullable=True)  # Detailed description
+    
+    # SOAP categorization
+    soap_category: Mapped[str] = mapped_column(String, nullable=False, default=SOAPCategory.OTHER)
+    
+    # Hierarchical structure
+    parent_id: Mapped[int] = mapped_column(Integer, ForeignKey("section_types.id"), nullable=True)
+    parent: Mapped["SectionType"] = relationship("SectionType", remote_side=[id], backref="children")
+    
+    # Content schema - defines expected structure for this section type
+    content_schema = Column(JSONB, nullable=True)  # JSON Schema for content validation
+    
+    # Display and behavior properties
+    is_required: Mapped[bool] = mapped_column(Boolean, default=False)  # Whether this section is required in notes
+    default_title: Mapped[str] = mapped_column(String, nullable=True)  # Default title when creating new section
+    default_order: Mapped[int] = mapped_column(Integer, default=100)  # Default ordering within parent
+    is_visible_to_patient: Mapped[bool] = mapped_column(Boolean, default=True)  # Whether visible in patient-facing reports
+    
+    # Template reference - default template for this section type
+    default_template_id: Mapped[int] = mapped_column(Integer, ForeignKey("section_templates.id"), nullable=True)
+    default_template = relationship("SectionTemplate")
+    
+    # Sections of this type
+    sections = relationship("Section", back_populates="section_type")
+    
+    # Timestamps
+    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    @property
+    def full_path(self):
+        """Get full hierarchical path of section type"""
+        if self.parent:
+            return f"{self.parent.full_path}/{self.code}"
+        return self.code
+    
+    def __repr__(self):
+        return f"<SectionType {self.code}: {self.name}>"
 
 class User(Base):
     __tablename__ = "users"
@@ -25,9 +81,9 @@ class User(Base):
     hashed_password: Mapped[str] = mapped_column(String, nullable=False)
     # Use back_populates for bidirectional relationships.
     notes: Mapped[list["Note"]] = relationship("Note", back_populates="user", cascade="all, delete-orphan")
-    note_templates: Mapped[list["NoteTemplate"]] = relationship("NoteTemplate", back_populates="user", cascade="all, delete-orphan")
     speaker_profiles: Mapped[list["SpeakerProfile"]] = relationship("SpeakerProfile", back_populates="user", cascade="all, delete-orphan")
     calibration_recordings: Mapped[list["CalibrationRecording"]]= relationship("CalibrationRecording", back_populates="user", cascade="all, delete-orphan")
+    report_templates: Mapped[list["ReportTemplate"]] = relationship("ReportTemplate", back_populates="user", cascade="all, delete-orphan")
 
 class Note(Base):
     __tablename__ = "notes"
@@ -43,38 +99,108 @@ class Note(Base):
 class Section(Base):
     __tablename__ = "sections"
     
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     note_id: Mapped[int] = mapped_column(Integer, ForeignKey("notes.id"), nullable=False)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
-    title: Mapped[str] = mapped_column(String, default="")
-    content = Column(JSONB)
-    section_type: Mapped[str] = mapped_column(String, default=TextCategoryEnum.OTHERS.name)
-    section_description: Mapped[str] = mapped_column(String, default=TextCategoryEnum.OTHERS.value)
-    note: Mapped["Note"] = relationship("Note", back_populates="sections")
-
-class NoteTemplate(Base):
-    __tablename__ = "note_templates"
     
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    title: Mapped[str] = mapped_column(String, nullable=False)
-    description: Mapped[str] = mapped_column(String, nullable=False)
-    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
-    user: Mapped["User"] = relationship("User", back_populates="note_templates")
-    section_templates: Mapped[list["SectionTemplate"]] = relationship("SectionTemplate", back_populates="note_template", cascade="all, delete-orphan")
+    # Basic section attributes
+    title: Mapped[str] = mapped_column(String, default="")
+    content = Column(JSONB)  # Structured content
+    
+    # Section type reference
+    section_type_id = Column(Integer, ForeignKey("section_types.id"), nullable=False)
+    section_type = relationship("SectionType", back_populates="sections")
+    
+    # Metadata
+    is_visible_to_patient = Column(Boolean, default=True)  # Override visibility setting
+    display_order = Column(Integer, default=100)  # Order within note
+    
+    # Timestamps and tracking
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    last_modified_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    last_modified_by = relationship("User", foreign_keys=[last_modified_by_id])
+    
+    # Relationships
+    note: Mapped["Note"] = relationship("Note", back_populates="sections")
+    user: Mapped["User"] = relationship("User", foreign_keys=[user_id])
+    
+    # Section relationships (self-referential for hierarchical sections)
+    parent_id: Mapped[int] = mapped_column(Integer, ForeignKey("sections.id"), nullable=True)
+    parent: Mapped["Section"] = relationship("Section", remote_side=[id], backref="subsections")
+    
+    # Related sections (for cross-references)
+    related_sections = relationship(
+        "Section",
+        secondary="section_relationships",
+        primaryjoin="Section.id==SectionRelationship.source_section_id",
+        secondaryjoin="Section.id==SectionRelationship.target_section_id",
+        backref="referenced_by"
+    )
+    
+    def __init__(self, **kwargs):
+        super(Section, self).__init__(**kwargs)
+        # Auto-populate legacy fields from section_type for backward compatibility
+        if hasattr(self, 'section_type') and self.section_type:
+            self.section_type_code = self.section_type.code
+            self.section_description = self.section_type.description
+    
+    @property
+    def soap_category(self):
+        """Get the SOAP category for this section"""
+        if self.section_type:
+            return self.section_type.soap_category
+        return SOAPCategory.OTHER
+    
+    def __repr__(self):
+        return f"<Section {self.id}: {self.title} ({self.section_type_code})>"
+
+class SectionRelationship(Base):
+    """Model for tracking relationships between sections"""
+    __tablename__ = "section_relationships"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_section_id: Mapped[int] = mapped_column(Integer, ForeignKey("sections.id"), nullable=False)
+    target_section_id: Mapped[int] = mapped_column(Integer, ForeignKey("sections.id"), nullable=False)
+    
+    # Relationship type (reference, dependency, etc.)
+    relationship_type: Mapped[String] = mapped_column(String, nullable=False)
+    description: Mapped[String] = mapped_column(String, nullable=True)
+    
+    # Metadata
+    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
+    created_by_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+    created_by: Mapped["User"] = relationship("User")
+    
+    def __repr__(self):
+        return f"<SectionRelationship {self.source_section_id} -> {self.target_section_id}: {self.relationship_type}>"
 
 class SectionTemplate(Base):
+    """Model for section templates that can be reused across notes"""
     __tablename__ = "section_templates"
     
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    title: Mapped[str] = mapped_column(String, nullable=False)
-    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
-    description: Mapped[str] = mapped_column(String, nullable=False)
-    note_template_id: Mapped[int] = mapped_column(Integer, ForeignKey("note_templates.id"), nullable=False)
-    section_type: Mapped[str] = mapped_column(String, default=TextCategoryEnum.OTHERS.name)
-    section_description: Mapped[str] = mapped_column(String, default=TextCategoryEnum.OTHERS.value)
-    metadata_keys: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
-    content_keys: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
-    note_template: Mapped["NoteTemplate"] = relationship("NoteTemplate", back_populates="section_templates")
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str] = mapped_column(String, nullable=True)
+    
+    # Template content structure
+    content_template = Column(JSONB, nullable=False)  # Template structure with placeholders
+    
+    # Template metadata
+    author_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+    author: Mapped["User"] = relationship("User")
+    is_system_template: Mapped[bool] = mapped_column(Boolean, default=False)  # System-provided vs user-created
+    specialty: Mapped[str] = mapped_column(String, nullable=True)  # Medical specialty this template is for
+    
+    # Timestamps
+    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    # Section types using this as default
+    section_types: Mapped[list["SectionType"]] = relationship("SectionType", back_populates="default_template")
+    
+    def __repr__(self):
+        return f"<SectionTemplate {self.id}: {self.name}>"
 
 def post_section(pydantic_section: SectionCreate, db: Session) -> Section:
     """
@@ -190,6 +316,9 @@ class CalibrationRecording(Base):
     # Features extracted from recording - serialized as binary
     features: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     
+    # Raw audio data for future processing
+    audio_data: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
+
     # Optional metadata about the recording
     duration_ms: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     sample_rate: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

@@ -4,9 +4,10 @@ from datetime import date
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.models.models import Note, Section, User
+from app.models.models import Note, Section, User, SectionType
 from app.schemas.note import NoteCreate, NoteRead, NoteUpdate
-from app.schemas.section import SectionCreate, TextCategoryEnum
+from app.schemas.section import SectionCreate
+from app.services.report_generation.section_management_service import SectionManagementService
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -58,12 +59,7 @@ class NoteService:
             if note_data.sections:
                 for section_data in note_data.sections:
                     db_section = Section(
-                        note_id=db_note.id,
-                        user_id=note_data.user_id,
-                        title=section_data.title,
-                        content=section_data.content,
-                        section_type=section_data.section_type,
-                        section_description=section_data.section_description
+                        **section_data
                     )
                     self.db.add(db_section)
             
@@ -225,13 +221,7 @@ class NoteService:
             else:
                 # Create new section
                 new_section = Section(
-                    note_id=note.id,
-                    user_id=note.user_id,
-                    title=section_data.title,
-                    content=section_data.content,
-                    section_type=section_data.section_type,
-                    section_description=getattr(section_data, 'section_description', 
-                                                TextCategoryEnum.OTHERS.value)
+                    **section_data
                 )
                 self.db.add(new_section)
     
@@ -286,14 +276,21 @@ class NoteService:
                 logger.warning(f"Note with ID {note_id} not found when adding section")
                 return None
             
+            # Verify section type exists
+            section_type = self.db.query(SectionType).filter(SectionType.id == section_data.section_type_id).first()
+            if not section_type:
+                section_type_service = SectionManagementService(self.db)
+                section_type = section_type_service.get_default_section_type()
+                section_data.section_type_id = section_type.id
+            
             # Create section
             section = Section(
                 note_id=note_id,
                 user_id=section_data.user_id,
                 title=section_data.title,
                 content=section_data.content,
-                section_type=section_data.section_type,
-                section_description=section_data.section_description
+                section_type_id=section_data.section_type_id,
+                section_type_code=section_type.code
             )
             
             self.db.add(section)
