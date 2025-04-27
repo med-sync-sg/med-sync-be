@@ -21,17 +21,15 @@ services:
   # 2) TRANSFORM raw RRF → CSV for Neo4j bulk import   (run once)
   # ────────────────────────────────────────────────────────────────
   umls-transform:
-    image: python:3.12-slim
+    image: python:3.10-slim
     profiles: ["transform"]
     working_dir: /work
     volumes:
-      - ./scripts/umls_to_neo4j.py:/work/umls_to_neo4j.py:ro
+      - ./umls/scripts:/work/scripts:ro  # Mount your scripts directory
       - umls-data:/import
     command: >
-      python umls_to_neo4j.py
-        --input /import
-        --out   /import/csv
-        --db    umls
+      bash -c "pip install pandas numpy && 
+      python /work/scripts/umls_to_neo4j.py"
 
   # ────────────────────────────────────────────────────────────────
   # 3) IMPORT CSV → Neo4j store files on graph-store   (run once)
@@ -47,9 +45,15 @@ services:
     command: >
       database import full umls
         --id-type=STRING
+        --array-delimiter=\|
+        --verbose
         --nodes=Concept=/import/csv/concepts.csv
         --nodes=SemanticType=/import/csv/semantic_types.csv
-        --relationships=RELATED_TO=/import/csv/relationships.csv
+        --nodes=Term=/import/csv/terms.csv
+        --relationships=IS_TERM_OF=/import/csv/term_concept_relationships.csv
+        --relationships=HAS_SEMANTIC_TYPE=/import/csv/has_semantic_type.csv, /import/csv/term_semantic_type_relationships.csv
+        --relationships=/import/csv/concept_relationships.*
+        --relationships=/import/csv/semantic_type_relationships.csv
 
   # ────────────────────────────────────────────────────────────────
   # 4) Postgres 17 + pgvector (runtime)

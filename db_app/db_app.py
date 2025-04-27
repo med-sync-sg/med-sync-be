@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse
 from db_app.session import DataStore, DRUGS_AND_MEDICINES_TUI, PATIENT_INFORMATION_TUI, SYMPTOMS_AND_DISEASES_TUI
+from db_app.neo4j.neo4j import Neo4jConnection
 
 from pyarrow import feather
 import io
@@ -12,6 +13,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from graphql import graphql_sync
 import json
+import os
 # Configure logger
 logger = logging.getLogger(__name__)
 
@@ -37,6 +39,18 @@ def create_app() -> FastAPI:
     )
     
     return app
+
+# Create the connection
+uri = os.environ.get("NEO4J_URI")
+user = os.environ.get("NEO4J_USER")
+password = os.environ.get("NEO4J_PASSWORD")
+neo4j_connection = Neo4jConnection(uri, user, password)
+
+try:
+    result = neo4j_connection.run_query("MATCH (n) RETURN count(n) as count")
+    print(f"Connected to Neo4j! Node count: {result[0]['count']}")
+except Exception as e:
+    print(f"Failed to connect to Neo4j: {str(e)}")
 
 # Create the app
 app = create_app()
