@@ -4,15 +4,12 @@ from typing import Dict, List
 from sqlalchemy.orm import Session
 from fastapi.responses import HTMLResponse
 
-from app.services.report_service import ReportService
+from app.services.report_generation.report_service import ReportService
 from app.db.local_session import DatabaseManager
 from app.schemas.report import ReportTemplateCreate, ReportTemplateRead, ReportTemplateUpdate
 
 router = APIRouter()
 get_session = DatabaseManager().get_session
-
-
-# app/api/v1/endpoints/reports.py - Add these endpoints
 
 @router.get("/templates/{user_id}", response_model=List[ReportTemplateRead])
 def get_report_templates(user_id: int, db: Session = Depends(get_session)):

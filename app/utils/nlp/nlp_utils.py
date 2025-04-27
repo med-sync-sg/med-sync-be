@@ -1,8 +1,13 @@
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
+from sqlalchemy.orm import Session
 import numpy as np
 from sentence_transformers import SentenceTransformer
 import copy
 import json
+
+from app.models.models import SectionType
+
+
 DEFAULT_MODEL = SentenceTransformer("all-minilm-l6-v2")
 # Similarity functions
 def cosine_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
