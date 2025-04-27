@@ -10,6 +10,7 @@ import time
 import os
 import traceback
 import numpy as np
+import librosa
 from fastapi.responses import HTMLResponse
 import datetime
 
@@ -27,6 +28,8 @@ from app.services.transcription_service import TranscriptionService
 from app.services.audio_service import AudioService
 from app.services.nlp.keyword_extract_service import KeywordExtractService
 from app.services.note_service import NoteService
+from app.services.voice_calibration_service import VoiceCalibrationService
+from app.services.diarization_service import DiarizationService
 from app.services.report_generation.report_service import ReportService
 from app.services.report_generation.section_management_service import SectionManagementService
 # Configure logger
@@ -715,3 +718,78 @@ async def process_text_chunk(
             detail=f"Error processing text chunk: {str(e)}"
         )
         
+@router.post("/doctor-patient-transcription")
+async def doctor_patient_transcription(
+    audio_file: UploadFile = File(...),
+    doctor_id: Optional[int] = Form(None),
+    db: Session = Depends(get_session)
+):
+    """
+    Process audio with doctor-patient diarization and transcription
+    
+    Args:
+        audio_file: Audio file upload
+        doctor_id: User ID of the doctor (must have calibration profile)
+        db: Database session
+    """
+    try:
+        # Load audio file
+        with NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
+            content = await audio_file.read()
+            temp_file.write(content)
+            temp_path = temp_file.name
+        
+        try:
+            # Load audio with librosa
+            audio_data, sample_rate = librosa.load(temp_path, sr=None)
+            
+            # Initialize services
+            diarization_service = DiarizationService(db)
+            transcription_service = TranscriptionService()
+            calibration_service = VoiceCalibrationService(db)
+            
+            # Check if doctor has a calibration profile
+            has_calibration = False
+            if doctor_id:
+                status = calibration_service.get_calibration_status(doctor_id, db)
+                has_calibration = status.calibration_complete
+                
+                if not has_calibration:
+                    logger.warning(f"Doctor (User ID: {doctor_id}) has no calibration profile")
+            
+            # Process with diarization
+            diarization_results = diarization_service.process_audio(
+                audio_data, sample_rate, doctor_id if has_calibration else None
+            )
+            
+            # Transcribe with diarization results
+            result = transcription_service.transcribe_doctor_patient(
+                audio_data, diarization_results, doctor_id if has_calibration else None
+            )
+            
+            # Format response
+            return {
+                "success": True,
+                "used_doctor_calibration": has_calibration,
+                "transcript": result["full_transcript"],
+                "doctor_segments": result["doctor_segments"],
+                "patient_segments": result["patient_segments"],
+                "metadata": {
+                    "doctor_speaking_time": sum(s["end"] - s["start"] for s in result["doctor_segments"]),
+                    "patient_speaking_time": sum(s["end"] - s["start"] for s in result["patient_segments"]),
+                    "total_segments": len(result["doctor_segments"]) + len(result["patient_segments"])
+                }
+            }
+            
+        finally:
+            # Clean up
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+                
+    except Exception as e:
+        logger.error(f"Error in doctor-patient transcription: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process audio: {str(e)}"
+        )
