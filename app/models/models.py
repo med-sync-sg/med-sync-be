@@ -2,7 +2,7 @@ from sqlalchemy import Column, Integer, String, LargeBinary, DateTime, ForeignKe
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from sqlalchemy.orm import relationship, declarative_base, Mapped, mapped_column, Session
 from app.schemas.section import SectionCreate
-from typing import Optional, List
+from typing import Optional, List, Any
 import datetime
 from sqlalchemy.sql import func
 import datetime
@@ -45,6 +45,9 @@ class SectionType(Base):
     default_title: Mapped[str] = mapped_column(String, nullable=True)  # Default title when creating new section
     default_order: Mapped[int] = mapped_column(Integer, default=100)  # Default ordering within parent
     is_visible_to_patient: Mapped[bool] = mapped_column(Boolean, default=True)  # Whether visible in patient-facing reports
+    
+    # Neo4j template reference
+    neo4j_template_id: Mapped[str] = mapped_column(String, nullable=True)  # Reference to Neo4j template ID
     
     # Template reference - default template for this section type
     default_template_id: Mapped[int] = mapped_column(Integer, ForeignKey("section_templates.id"), nullable=True)
@@ -110,6 +113,9 @@ class Section(Base):
     # Section type reference
     section_type_id = Column(Integer, ForeignKey("section_types.id"), nullable=False)
     section_type = relationship("SectionType", back_populates="sections")
+    
+    # Neo4j template reference
+    neo4j_template_id: Mapped[str] = mapped_column(String, nullable=True)  # Reference to Neo4j template ID
     
     # Metadata
     is_visible_to_patient = Column(Boolean, default=True)  # Override visibility setting
@@ -183,14 +189,13 @@ class SectionTemplate(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str] = mapped_column(String, nullable=True)
     
-    # Template content structure
-    content_template = Column(JSONB, nullable=False)  # Template structure with placeholders
+    # Reference to Neo4j template ID
+    neo4j_template_id: Mapped[str] = mapped_column(String, nullable=False)
     
-    # Template metadata
+    # Minimal metadata (most details now in Neo4j)
     author_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
     author: Mapped["User"] = relationship("User")
     is_system_template: Mapped[bool] = mapped_column(Boolean, default=False)  # System-provided vs user-created
-    specialty: Mapped[str] = mapped_column(String, nullable=True)  # Medical specialty this template is for
     
     # Timestamps
     created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
@@ -200,7 +205,67 @@ class SectionTemplate(Base):
     section_types: Mapped[list["SectionType"]] = relationship("SectionType", back_populates="default_template")
     
     def __repr__(self):
-        return f"<SectionTemplate {self.id}: {self.name}>"
+        return f"<SectionTemplate {self.id}: {self.name} (Neo4j: {self.neo4j_template_id})>"
+
+class TemplateFieldValue(Base):
+    """Model for storing values of fields from Neo4j templates"""
+    __tablename__ = "template_field_values"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    section_id: Mapped[int] = mapped_column(Integer, ForeignKey("sections.id"), nullable=False)
+    neo4j_template_id: Mapped[str] = mapped_column(String, nullable=False)  # Template ID in Neo4j
+    neo4j_field_id: Mapped[str] = mapped_column(String, nullable=False)  # Field ID in Neo4j
+    field_name: Mapped[str] = mapped_column(String, nullable=False)  # Field usage name
+    
+    # Value storage - can be any data type
+    value_text: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    value_number: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    value_boolean: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    value_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    
+    # Metadata and tracking
+    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    
+    # Relationships
+    section: Mapped["Section"] = relationship("Section")
+    user: Mapped["User"] = relationship("User")
+    
+    def __repr__(self):
+        return f"<TemplateFieldValue {self.id}: {self.field_name} for section {self.section_id}>"
+    
+    @property
+    def value(self) -> Any:
+        """Get the value in the appropriate type"""
+        if self.value_text is not None:
+            return self.value_text
+        elif self.value_number is not None:
+            return self.value_number
+        elif self.value_boolean is not None:
+            return self.value_boolean
+        elif self.value_json is not None:
+            return self.value_json
+        return None
+    
+    def set_value(self, value: Any) -> None:
+        """Set the value in the appropriate field based on type"""
+        self.value_text = None
+        self.value_number = None
+        self.value_boolean = None
+        self.value_json = None
+        
+        if value is None:
+            return
+        elif isinstance(value, str):
+            self.value_text = value
+        elif isinstance(value, (int, float)):
+            self.value_number = float(value)
+        elif isinstance(value, bool):
+            self.value_boolean = value
+        else:
+            # Try to serialize to JSON
+            self.value_json = value
 
 def post_section(pydantic_section: SectionCreate, db: Session) -> Section:
     """

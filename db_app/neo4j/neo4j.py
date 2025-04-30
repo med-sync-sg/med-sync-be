@@ -1,15 +1,395 @@
 from neo4j import GraphDatabase
 import logging
 import os
-class Neo4jConnection:
-    def __init__(self, uri, user, password):
-        self.driver = GraphDatabase.driver(uri, auth=(user, password))
-        self.logger = logging.getLogger(__name__)
+from db_app.neo4j.neo4j_connection_manager import Neo4jConnectionManager
+from db_app.neo4j.neo4j_manager import TemplateManager
+from sentence_transformers import SentenceTransformer
+import numpy as np
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, 
+                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+NEO4J_URI = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
+NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "password")
+
+logger = logging.getLogger(__name__)
+
+class Neo4jInitializer:
+    """
+    Class for initializing Neo4j database with template structure
+    """
+    
+    def __init__(self):
+        """
+        Initialize with a connection manager
+        """
+        self.neo4j_connection = Neo4jConnectionManager(uri=NEO4J_URI, user=NEO4J_USER, password=NEO4J_PASSWORD)
+        self.template_manager = TemplateManager(self.neo4j_connection)
+        self.model = SentenceTransformer("all-minilm-l6-v2")
+        self.embedding_dimension = 384  # all-minilm-l6-v2 outputs 384-dimensional embeddings
         
-    def close(self):
-        self.driver.close()
+    def initialize(self):
+        logger.info(f"Neo4j Connection Status: {self.neo4j_connection.get_connection_status()}")
+        self.setup_database()
+
+    def create_constraints_and_indexes(self):
+        """Create necessary constraints and vector indexes"""
+        constraints = [
+            "CREATE CONSTRAINT section_template_id IF NOT EXISTS FOR (t:SectionTemplate) REQUIRE t.id IS UNIQUE",
+            "CREATE CONSTRAINT template_field_id IF NOT EXISTS FOR (f:TemplateField) REQUIRE f.id IS UNIQUE"
+        ]
         
-    def run_query(self, query, parameters=None):
-        with self.driver.session() as session:
-            result = session.run(query, parameters or {})
-            return [record for record in result]
+        # Vector indexes for embeddings-based similarity search
+        vector_indexes = [
+            f"""
+            CREATE VECTOR INDEX section_template_embedding IF NOT EXISTS 
+            FOR (t:SectionTemplate) 
+            ON t.embedding
+            OPTIONS {{
+                indexConfig: {{
+                    `vector.dimensions`: {self.embedding_dimension},
+                    `vector.similarity_function`: "cosine"
+                }}
+            }}
+            """,
+            f"""
+            CREATE VECTOR INDEX template_field_embedding IF NOT EXISTS 
+            FOR (f:TemplateField) 
+            ON f.embedding
+            OPTIONS {{
+                indexConfig: {{
+                    `vector.dimensions`: {self.embedding_dimension},
+                    `vector.similarity_function`: "cosine"
+                }}
+            }}
+            """
+        ]
+        
+        # Create constraints
+        for constraint in constraints:
+            try:
+                self.neo4j_connection.run_query(constraint)
+                logger.info(f"Created constraint: {constraint}")
+            except Exception as e:
+                logger.error(f"Error creating constraint: {str(e)}")
+                
+        # Create vector indexes
+        for index in vector_indexes:
+            try:
+                self.neo4j_connection.run_query(index)
+                logger.info(f"Created vector index")
+            except Exception as e:
+                logger.error(f"Error creating vector index: {str(e)}")
+
+    def setup_templates(self):
+        """Set up basic SOAP templates with vector embeddings"""
+        templates = [
+            {
+                "id": "base-section",
+                "name": "Base Section",
+                "description": "Base template for all clinical note sections",
+                "created_by": "system",
+                "system_defined": True
+            },
+            {
+                "id": "subjective",
+                "name": "Subjective",
+                "description": "Patient-reported information and history",
+                "created_by": "system",
+                "system_defined": True,
+                "extends": "base-section"
+            },
+            {
+                "id": "objective",
+                "name": "Objective",
+                "description": "Observable findings and measurements",
+                "created_by": "system",
+                "system_defined": True,
+                "extends": "base-section"
+            },
+            {
+                "id": "assessment",
+                "name": "Assessment",
+                "description": "Clinician assessment and diagnosis",
+                "created_by": "system",
+                "system_defined": True,
+                "extends": "base-section"
+            },
+            {
+                "id": "plan",
+                "name": "Plan",
+                "description": "Treatment plan and next steps",
+                "created_by": "system",
+                "system_defined": True,
+                "extends": "base-section"
+            }
+        ]
+        
+        # Create template nodes with vector embeddings
+        create_template_query = """
+        MERGE (t:SectionTemplate {id: $id})
+        ON CREATE SET 
+            t.name = $name,
+            t.description = $description,
+            t.embedding = $embedding,
+            t.created_at = timestamp(),
+            t.created_by = $created_by,
+            t.system_defined = $system_defined,
+            t.version = '1.0'
+        """
+        
+        # Create extension relationships
+        extend_template_query = """
+        MATCH (child:SectionTemplate {id: $child_id})
+        MATCH (parent:SectionTemplate {id: $parent_id})
+        MERGE (child)-[:EXTENDS]->(parent)
+        """
+        
+        for template in templates:
+            # Copy the template dict to avoid modifying the original
+            template_params = dict(template)
+            extends_id = template_params.pop("extends", None)
+            
+            # Generate embedding from combined name and description for better semantic matching
+            embedding_text = f"{template_params['name']} {template_params['description']}"
+            embedding = self.model.encode(embedding_text).tolist()
+            template_params["embedding"] = embedding
+            
+            # Create the template node
+            self.neo4j_connection.run_query(create_template_query, template_params)
+            logger.info(f"Created template: {template_params['id']} with embedding")
+            
+            # Create extension relationship if needed
+            if extends_id:
+                self.neo4j_connection.run_query(extend_template_query, {
+                    "child_id": template_params["id"],
+                    "parent_id": extends_id
+                })
+                logger.info(f"Created EXTENDS relationship: {template_params['id']} -> {extends_id}")
+    
+    def setup_fields(self):
+        """Set up basic field types with vector embeddings"""
+        fields = [
+            {
+                "id": "base-field",
+                "name": "Base Field",
+                "description": "Root field type for all template fields",
+                "data_type": "string",
+                "required": False,
+                "system_defined": True
+            },
+            {
+                "id": "temporal-field",
+                "name": "Temporal Field",
+                "description": "Field for date and time values",
+                "data_type": "temporal",
+                "required": False,
+                "system_defined": True,
+                "extends": "base-field"
+            },
+            {
+                "id": "number-field",
+                "name": "Number Field",
+                "description": "Field for numeric values",
+                "data_type": "number",
+                "required": False,
+                "system_defined": True,
+                "extends": "base-field"
+            },
+            {
+                "id": "text-field",
+                "name": "Text Field",
+                "description": "Field for text content",
+                "data_type": "text",
+                "required": False,
+                "system_defined": True,
+                "extends": "base-field"
+            },
+            {
+                "id": "code-field",
+                "name": "Code Field",
+                "description": "Field for medical codes (ICD, CPT, etc.)",
+                "data_type": "code",
+                "required": False,
+                "system_defined": True,
+                "extends": "base-field"
+            }
+        ]
+        
+        # Create field nodes with vector embeddings
+        create_field_query = """
+        MERGE (f:TemplateField {id: $id})
+        ON CREATE SET 
+            f.name = $name,
+            f.description = $description,
+            f.data_type = $data_type,
+            f.required = $required,
+            f.system_defined = $system_defined,
+            f.embedding = $embedding,
+            f.created_at = timestamp()
+        """
+        
+        # Create extension relationships
+        extend_field_query = """
+        MATCH (child:TemplateField {id: $child_id})
+        MATCH (parent:TemplateField {id: $parent_id})
+        MERGE (child)-[:EXTENDS]->(parent)
+        """
+        
+        for field in fields:
+            # Copy the field dict to avoid modifying the original
+            field_params = dict(field)
+            extends_id = field_params.pop("extends", None)
+            
+            # Generate embedding from combined name and description
+            embedding_text = f"{field_params['name']} {field_params['description']} {field_params['data_type']}"
+            embedding = self.model.encode(embedding_text).tolist()
+            field_params["embedding"] = embedding
+            
+            # Create the field node
+            self.neo4j_connection.run_query(create_field_query, field_params)
+            logger.info(f"Created field: {field_params['id']} with embedding")
+            
+            # Create extension relationship if needed
+            if extends_id:
+                self.neo4j_connection.run_query(extend_field_query, {
+                    "child_id": field_params["id"],
+                    "parent_id": extends_id
+                })
+                logger.info(f"Created EXTENDS relationship: {field_params['id']} -> {extends_id}")
+    
+    def assign_fields_to_templates(self):
+        """Assign fields to templates"""
+        field_assignments = [
+            # Base section fields
+            {"template_id": "base-section", "field_id": "temporal-field", "field_name": "date", "required": True},
+            {"template_id": "base-section", "field_id": "text-field", "field_name": "title", "required": True},
+            
+            # Subjective section fields
+            {"template_id": "subjective", "field_id": "text-field", "field_name": "chief_complaint", "required": True},
+            {"template_id": "subjective", "field_id": "text-field", "field_name": "history", "required": False},
+            
+            # Objective section fields
+            {"template_id": "objective", "field_id": "text-field", "field_name": "physical_exam", "required": True},
+            {"template_id": "objective", "field_id": "number-field", "field_name": "vital_signs", "required": False},
+            
+            # Assessment section fields
+            {"template_id": "assessment", "field_id": "text-field", "field_name": "diagnosis", "required": True},
+            {"template_id": "assessment", "field_id": "code-field", "field_name": "diagnosis_code", "required": False},
+            
+            # Plan section fields
+            {"template_id": "plan", "field_id": "text-field", "field_name": "treatment", "required": True},
+            {"template_id": "plan", "field_id": "text-field", "field_name": "follow_up", "required": False}
+        ]
+        
+        assign_field_query = """
+        MATCH (t:SectionTemplate {id: $template_id})
+        MATCH (f:TemplateField {id: $field_id})
+        MERGE (t)-[r:HAS_FIELD {name: $field_name}]->(f)
+        SET r.required = $required,
+            r.description = $description,
+            r.order = $order
+        """
+        
+        for i, assignment in enumerate(field_assignments):
+            assignment_data = {
+                "template_id": assignment["template_id"],
+                "field_id": assignment["field_id"],
+                "field_name": assignment["field_name"],
+                "required": assignment["required"],
+                "description": assignment.get("description", f"Field {assignment['field_name']} for {assignment['template_id']}"),
+                "order": assignment.get("order", i)
+            }
+            
+            self.neo4j_connection.run_query(assign_field_query, assignment_data)
+            logger.info(f"Assigned {assignment['field_id']} as '{assignment['field_name']}' to {assignment['template_id']}")
+    
+    def setup_database(self):
+        """Run the complete database setup process"""
+        try:
+            logger.info("Starting Neo4j template setup with vector search support...")
+            
+            # Create constraints and vector indexes
+            self.create_constraints_and_indexes()
+            
+            # Set up templates with vector embeddings
+            self.setup_templates()
+            
+            # Set up field types with vector embeddings
+            self.setup_fields()
+            
+            # Assign fields to templates
+            self.assign_fields_to_templates()
+            
+            # Test vector search functionality
+            self.test_vector_search()
+            
+            logger.info("Neo4j template setup completed successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error setting up Neo4j templates: {str(e)}")
+            return False
+    
+    def test_vector_search(self):
+        """Test vector search functionality to ensure it's working properly"""
+        try:
+            # Test template vector search
+            logger.info("Testing vector search for section templates...")
+            
+            # Generate a test query embedding
+            test_query = "information about patient symptoms and complaints"
+            query_embedding = self.model.encode(test_query).tolist()
+            
+            # Run the vector search
+            template_query = """
+            MATCH (t:SectionTemplate)
+            WHERE t.embedding IS NOT NULL
+            WITH t, vector.similarity.cosine(t.embedding, $query_embedding) AS similarity
+            WHERE similarity > 0.5
+            RETURN t.id, t.name, t.description, similarity
+            ORDER BY similarity DESC
+            LIMIT 3
+            """
+            
+            results = self.neo4j_connection.run_query(template_query, {"query_embedding": query_embedding})
+            
+            if results:
+                logger.info(f"Vector search found {len(results)} matching templates:")
+                for record in results:
+                    logger.info(f"  - {record['t.id']} ({record['t.name']}): similarity = {record['similarity']:.4f}")
+            else:
+                logger.warning("Vector search didn't find any templates")
+                
+            # Test field vector search
+            logger.info("Testing vector search for template fields...")
+            
+            # Generate a test query embedding for fields
+            field_test_query = "date and time information"
+            field_query_embedding = self.model.encode(field_test_query).tolist()
+            
+            # Run the vector search for fields
+            field_query = """
+            MATCH (f:TemplateField)
+            WHERE f.embedding IS NOT NULL
+            WITH f, vector.similarity.cosine(f.embedding, $query_embedding) AS similarity
+            WHERE similarity > 0.5
+            RETURN f.id, f.name, f.description, f.data_type, similarity
+            ORDER BY similarity DESC
+            LIMIT 3
+            """
+            
+            field_results = self.neo4j_connection.run_query(field_query, {"query_embedding": field_query_embedding})
+            
+            if field_results:
+                logger.info(f"Vector search found {len(field_results)} matching fields:")
+                for record in field_results:
+                    logger.info(f"  - {record['f.id']} ({record['f.name']}): similarity = {record['similarity']:.4f}")
+            else:
+                logger.warning("Vector search didn't find any fields")
+                
+        except Exception as e:
+            logger.error(f"Error testing vector search: {str(e)}")

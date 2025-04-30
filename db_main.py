@@ -1,4 +1,4 @@
-from db_app.db_app import app, UMLSKnowledgeGraph, get_db
+from db_app.db_app import app, get_db
 
 import logging
 import sys
@@ -56,37 +56,12 @@ def parse_arguments():
     parser.add_argument("--graph-limit", type=int, default=10000, help="Limit for preloaded graph size")
     return parser.parse_args()
 
-def preload_umls_graph(limit: int = 10000):
-    """Preload the UMLS knowledge graph at startup for faster queries"""
-    try:
-        logging.info(f"Preloading UMLS knowledge graph with limit={limit}...")
-        
-        # Get database session
-        db = next(get_db())
-        
-        # Build and cache the graph
-        graph = UMLSKnowledgeGraph(db)
-        graph.build_from_db(limit=limit)
-        
-        # Store in a global variable or cache
-        app.cached_graph = graph
-        
-        stats = graph.get_stats()
-        logging.info(f"UMLS graph preloaded with {stats['nodes']} nodes and {stats['edges']} edges")
-        
-    except Exception as e:
-        logging.error(f"Error preloading UMLS graph: {str(e)}")
-
 if __name__ == "__main__":
     # Parse command line arguments
     args = parse_arguments()
     
     # Setup logging
     configure_logging(log_level=args.log_level, log_file=args.log_file)
-    
-    # Preload graph if requested
-    if args.preload_graph:
-        preload_umls_graph(args.graph_limit)
     
     # Log startup configuration
     logging.info(f"Starting Data Service on {args.host}:{args.port}")

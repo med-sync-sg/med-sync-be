@@ -43,7 +43,7 @@ services:
       - graph-store:/data
     entrypoint: ["neo4j-admin"]
     command: >
-      database import full umls
+      database import full neo4j
         --id-type=STRING
         --delimiter=\|
         --verbose
@@ -53,7 +53,6 @@ services:
         --relationships=IS_TERM_OF=/import/csv/term_concept_relationships.csv
         --relationships=HAS_SEMANTIC_TYPE=/import/csv/has_semantic_type.csv, /import/csv/term_semantic_type_relationships.csv
         --relationships=/import/csv/concept_relationships.*
-        umls
 
   #         --relationships=/import/csv/semantic_type_relationships.csv
 
@@ -83,6 +82,8 @@ services:
   # ────────────────────────────────────────────────────────────────
   neo4j:
     image: neo4j:2025.03.0
+    container_name: neo4j_db
+    restart: always
     environment:
       NEO4J_AUTH: "neo4j/medsync!"
       NEO4J_server_memory_heap_max__size: 6G
@@ -91,8 +92,7 @@ services:
       - "7474:7474"   # Browser / HTTP
       - "7687:7687"   # Bolt
     volumes:
-      - umls-data:/import:ro      # still handy for LOAD CSV, diagnostics
-      - graph-store:/data
+      - graph-store:/var/lib/neo4j/data
 
 # ──────────────────────────────────────────────────────────────────
 # Named volumes – live outside any container, survive rebuilds

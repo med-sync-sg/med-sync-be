@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse
 from db_app.session import DataStore, DRUGS_AND_MEDICINES_TUI, PATIENT_INFORMATION_TUI, SYMPTOMS_AND_DISEASES_TUI
-from db_app.neo4j.neo4j import Neo4jConnection
+from db_app.neo4j.neo4j import Neo4jInitializer
 
 from pyarrow import feather
 import io
@@ -44,8 +44,10 @@ def create_app() -> FastAPI:
 uri = os.environ.get("NEO4J_URI")
 user = os.environ.get("NEO4J_USER")
 password = os.environ.get("NEO4J_PASSWORD")
-neo4j_connection = Neo4jConnection(uri, user, password)
-
+neo4j = Neo4jInitializer()
+neo4j.initialize()
+neo4j.test_vector_search()
+neo4j_connection = neo4j.neo4j_connection
 try:
     result = neo4j_connection.run_query("MATCH (n) RETURN count(n) as count")
     print(f"Connected to Neo4j! Node count: {result[0]['count']}")
