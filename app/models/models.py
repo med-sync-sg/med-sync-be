@@ -2,7 +2,7 @@ from sqlalchemy import Column, Integer, String, LargeBinary, DateTime, ForeignKe
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from sqlalchemy.orm import relationship, declarative_base, Mapped, mapped_column, Session
 from app.schemas.section import SectionCreate
-from typing import Optional, List, Any
+from typing import Optional, List, Dict, Any
 import datetime
 from sqlalchemy.sql import func
 import datetime
@@ -10,6 +10,7 @@ import numpy as np
 import pickle
 import json
 from enum import Enum
+
 Base = declarative_base()
 
 class SOAPCategory(str, Enum):
@@ -20,55 +21,6 @@ class SOAPCategory(str, Enum):
     ASSESSMENT = "ASSESSMENT"
     PLAN = "PLAN"
     MIXED = "MIXED"  # For sections that span multiple categories
-    
-class SectionType(Base):
-    """Model for defining types of sections in medical documentation"""
-    __tablename__ = "section_types"
-    
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    code: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)  # Unique code for this section type
-    name: Mapped[str] = mapped_column(String, nullable=False)  # Display name
-    description: Mapped[str] = mapped_column(String, nullable=True)  # Detailed description
-    
-    # SOAP categorization
-    soap_category: Mapped[str] = mapped_column(String, nullable=False, default=SOAPCategory.OTHER)
-    
-    # Hierarchical structure
-    parent_id: Mapped[int] = mapped_column(Integer, ForeignKey("section_types.id"), nullable=True)
-    parent: Mapped["SectionType"] = relationship("SectionType", remote_side=[id], backref="children")
-    
-    # Content schema - defines expected structure for this section type
-    content_schema = Column(JSONB, nullable=True)  # JSON Schema for content validation
-    
-    # Display and behavior properties
-    is_required: Mapped[bool] = mapped_column(Boolean, default=False)  # Whether this section is required in notes
-    default_title: Mapped[str] = mapped_column(String, nullable=True)  # Default title when creating new section
-    default_order: Mapped[int] = mapped_column(Integer, default=100)  # Default ordering within parent
-    is_visible_to_patient: Mapped[bool] = mapped_column(Boolean, default=True)  # Whether visible in patient-facing reports
-    
-    # Neo4j template reference
-    neo4j_template_id: Mapped[str] = mapped_column(String, nullable=True)  # Reference to Neo4j template ID
-    
-    # Template reference - default template for this section type
-    default_template_id: Mapped[int] = mapped_column(Integer, ForeignKey("section_templates.id"), nullable=True)
-    default_template = relationship("SectionTemplate")
-    
-    # Sections of this type
-    sections = relationship("Section", back_populates="section_type")
-    
-    # Timestamps
-    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    
-    @property
-    def full_path(self):
-        """Get full hierarchical path of section type"""
-        if self.parent:
-            return f"{self.parent.full_path}/{self.code}"
-        return self.code
-    
-    def __repr__(self):
-        return f"<SectionType {self.code}: {self.name}>"
 
 class User(Base):
     __tablename__ = "users"
@@ -108,18 +60,22 @@ class Section(Base):
     
     # Basic section attributes
     title: Mapped[str] = mapped_column(String, default="")
-    content = Column(JSONB)  # Structured content
-    
-    # Section type reference
-    section_type_id = Column(Integer, ForeignKey("section_types.id"), nullable=False)
-    section_type = relationship("SectionType", back_populates="sections")
     
     # Neo4j template reference
-    neo4j_template_id: Mapped[str] = mapped_column(String, nullable=True)  # Reference to Neo4j template ID
+    template_id: Mapped[str] = mapped_column(String, nullable=True)
+    
+    # SOAP categorization (maintained for backward compatibility)
+    soap_category: Mapped[str] = mapped_column(String, default=SOAPCategory.OTHER)
+    
+    # Field values 
+    field_values = Column(JSONB, nullable=False, default=dict)
+    
+    # Raw content (stored for reference and backward compatibility)
+    content = Column(JSONB, nullable=True)
     
     # Metadata
-    is_visible_to_patient = Column(Boolean, default=True)  # Override visibility setting
-    display_order = Column(Integer, default=100)  # Order within note
+    is_visible_to_patient = Column(Boolean, default=True)
+    display_order = Column(Integer, default=100)
     
     # Timestamps and tracking
     created_at = Column(DateTime, server_default=func.now())
@@ -132,140 +88,77 @@ class Section(Base):
     user: Mapped["User"] = relationship("User", foreign_keys=[user_id])
     
     # Section relationships (self-referential for hierarchical sections)
-    parent_id: Mapped[int] = mapped_column(Integer, ForeignKey("sections.id"), nullable=True)
-    parent: Mapped["Section"] = relationship("Section", remote_side=[id], backref="subsections")
-    
-    # Related sections (for cross-references)
-    related_sections = relationship(
-        "Section",
-        secondary="section_relationships",
-        primaryjoin="Section.id==SectionRelationship.source_section_id",
-        secondaryjoin="Section.id==SectionRelationship.target_section_id",
-        backref="referenced_by"
-    )
+    parent_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("sections.id"), nullable=True)
+    parent: Mapped[Optional["Section"]] = relationship("Section", remote_side=[id], backref="subsections")
     
     def __init__(self, **kwargs):
         super(Section, self).__init__(**kwargs)
-        # Auto-populate legacy fields from section_type for backward compatibility
-        if hasattr(self, 'section_type') and self.section_type:
-            self.section_type_code = self.section_type.code
-            self.section_description = self.section_type.description
+        # Initialize empty field values if not provided
+        if 'field_values' not in kwargs:
+            self.field_values = {}
     
-    @property
-    def soap_category(self):
-        """Get the SOAP category for this section"""
-        if self.section_type:
-            return self.section_type.soap_category
-        return SOAPCategory.OTHER
-    
-    def __repr__(self):
-        return f"<Section {self.id}: {self.title} ({self.section_type_code})>"
-
-class SectionRelationship(Base):
-    """Model for tracking relationships between sections"""
-    __tablename__ = "section_relationships"
-    
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    source_section_id: Mapped[int] = mapped_column(Integer, ForeignKey("sections.id"), nullable=False)
-    target_section_id: Mapped[int] = mapped_column(Integer, ForeignKey("sections.id"), nullable=False)
-    
-    # Relationship type (reference, dependency, etc.)
-    relationship_type: Mapped[String] = mapped_column(String, nullable=False)
-    description: Mapped[String] = mapped_column(String, nullable=True)
-    
-    # Metadata
-    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
-    created_by_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
-    created_by: Mapped["User"] = relationship("User")
-    
-    def __repr__(self):
-        return f"<SectionRelationship {self.source_section_id} -> {self.target_section_id}: {self.relationship_type}>"
-
-class SectionTemplate(Base):
-    """Model for section templates that can be reused across notes"""
-    __tablename__ = "section_templates"
-    
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String, nullable=False)
-    description: Mapped[str] = mapped_column(String, nullable=True)
-    
-    # Reference to Neo4j template ID
-    neo4j_template_id: Mapped[str] = mapped_column(String, nullable=False)
-    
-    # Minimal metadata (most details now in Neo4j)
-    author_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
-    author: Mapped["User"] = relationship("User")
-    is_system_template: Mapped[bool] = mapped_column(Boolean, default=False)  # System-provided vs user-created
-    
-    # Timestamps
-    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    
-    # Section types using this as default
-    section_types: Mapped[list["SectionType"]] = relationship("SectionType", back_populates="default_template")
-    
-    def __repr__(self):
-        return f"<SectionTemplate {self.id}: {self.name} (Neo4j: {self.neo4j_template_id})>"
-
-class TemplateFieldValue(Base):
-    """Model for storing values of fields from Neo4j templates"""
-    __tablename__ = "template_field_values"
-    
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    section_id: Mapped[int] = mapped_column(Integer, ForeignKey("sections.id"), nullable=False)
-    neo4j_template_id: Mapped[str] = mapped_column(String, nullable=False)  # Template ID in Neo4j
-    neo4j_field_id: Mapped[str] = mapped_column(String, nullable=False)  # Field ID in Neo4j
-    field_name: Mapped[str] = mapped_column(String, nullable=False)  # Field usage name
-    
-    # Value storage - can be any data type
-    value_text: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    value_number: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    value_boolean: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
-    value_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
-    
-    # Metadata and tracking
-    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
-    
-    # Relationships
-    section: Mapped["Section"] = relationship("Section")
-    user: Mapped["User"] = relationship("User")
-    
-    def __repr__(self):
-        return f"<TemplateFieldValue {self.id}: {self.field_name} for section {self.section_id}>"
-    
-    @property
-    def value(self) -> Any:
-        """Get the value in the appropriate type"""
-        if self.value_text is not None:
-            return self.value_text
-        elif self.value_number is not None:
-            return self.value_number
-        elif self.value_boolean is not None:
-            return self.value_boolean
-        elif self.value_json is not None:
-            return self.value_json
-        return None
-    
-    def set_value(self, value: Any) -> None:
-        """Set the value in the appropriate field based on type"""
-        self.value_text = None
-        self.value_number = None
-        self.value_boolean = None
-        self.value_json = None
+    def add_field_value(self, field_id: str, field_name: str, value: Any) -> None:
+        """
+        Add or update a field value
         
-        if value is None:
-            return
-        elif isinstance(value, str):
-            self.value_text = value
-        elif isinstance(value, (int, float)):
-            self.value_number = float(value)
-        elif isinstance(value, bool):
-            self.value_boolean = value
-        else:
-            # Try to serialize to JSON
-            self.value_json = value
+        Args:
+            field_id: Neo4j field ID
+            field_name: Field name (for display)
+            value: Field value
+        """
+        if not self.field_values:
+            self.field_values = {}
+            
+        self.field_values[field_id] = {
+            "name": field_name,
+            "value": value,
+            "updated_at": datetime.datetime.now().isoformat()
+        }
+    
+    def get_field_value(self, field_id: str) -> Any:
+        """
+        Get a field value
+        
+        Args:
+            field_id: Neo4j field ID
+            
+        Returns:
+            Field value or None if not found
+        """
+        if not self.field_values or field_id not in self.field_values:
+            return None
+            
+        return self.field_values[field_id].get("value")
+    
+    def get_all_field_values(self) -> Dict[str, Any]:
+        """
+        Get all field values
+        
+        Returns:
+            Dictionary of field values
+        """
+        return self.field_values or {}
+    
+    def update_from_content(self, content: Dict[str, Any]) -> None:
+        """
+        Update field values from content dictionary
+        
+        Args:
+            content: Content dictionary
+        """
+        self.content = content
+        
+        # Extract values from content if possible
+        if isinstance(content, dict):
+            # Handle nested structure like "Main Symptom": {"name": "value"}
+            for key, value in content.items():
+                if isinstance(value, dict):
+                    for field_key, field_value in value.items():
+                        if field_value:  # Only add non-empty values
+                            field_id = f"{key.lower().replace(' ', '-')}-{field_key}"
+                            self.add_field_value(field_id, f"{key} {field_key}", field_value)
+                elif value:  # Add top-level values if not empty
+                    self.add_field_value(key.lower().replace(' ', '-'), key, value)
 
 def post_section(pydantic_section: SectionCreate, db: Session) -> Section:
     """

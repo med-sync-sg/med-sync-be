@@ -1,332 +1,304 @@
 import logging
-from typing import List, Dict, Any, Optional, Tuple
-from datetime import date
-from sqlalchemy.orm import Session, joinedload
+from typing import List, Dict, Any, Optional
+from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
+from datetime import datetime
 
-from app.models.models import Note, Section, User, SectionType
-from app.schemas.note import NoteCreate, NoteRead, NoteUpdate
-from app.schemas.section import SectionCreate
-from app.services.report_generation.section_management_service import SectionManagementService
+from app.models.models import Note, Section, User
+from app.schemas.note import NoteCreate, NoteUpdate
+from app.schemas.section import SectionCreate, SectionUpdate, FieldValueUpdate
 
-# Configure logger
 logger = logging.getLogger(__name__)
 
 class NoteService:
     """
-    Service for managing medical notes and their sections.
-    Handles CRUD operations and business logic for notes.
+    Service for note and section management
     """
     
     def __init__(self, db_session: Session):
         """
-        Initialize the note service with a database session
+        Initialize with a database session
         
         Args:
-            db_session: SQLAlchemy session for database operations
+            db_session: SQLAlchemy session
         """
         self.db = db_session
-        
-    def create_note(self, note_data: NoteCreate) -> Optional[Note]:
-        """
-        Create a new note with sections
-        
-        Args:
-            note_data: Data for creating the note
-            
-        Returns:
-            Created Note object or None if creation failed
-        """
-        try:
-            # Validate user exists
-            user = self.db.query(User).filter(User.id == note_data.user_id).first()
-            if not user:
-                logger.error(f"User {note_data.user_id} not found when creating note")
-                return None
-            
-            # Create note
-            db_note = Note(
-                title=note_data.title,
-                patient_id=note_data.patient_id,
-                user_id=note_data.user_id,
-                encounter_date=note_data.encounter_date
-            )
-            
-            self.db.add(db_note)
-            self.db.flush()  # Get ID without committing
-            
-            # Create sections
-            if note_data.sections:
-                for section_data in note_data.sections:
-                    db_section = Section(
-                        **section_data
-                    )
-                    self.db.add(db_section)
-            
-            # Commit transaction
-            self.db.commit()
-            self.db.refresh(db_note)
-            
-            logger.info(f"Note created with ID {db_note.id} for user {note_data.user_id}")
-            return db_note
-            
-        except SQLAlchemyError as e:
-            self.db.rollback()
-            logger.error(f"Database error creating note: {str(e)}")
-            return None
-        except Exception as e:
-            self.db.rollback()
-            logger.error(f"Error creating note: {str(e)}")
-            return None
-    
-    def get_note_by_id(self, note_id: int) -> Optional[Note]:
-        """
-        Get a note by ID with its sections
-        
-        Args:
-            note_id: ID of the note to retrieve
-            
-        Returns:
-            Note object with sections or None if not found
-        """
-        try:
-            note = self.db.query(Note).options(
-                joinedload(Note.sections)
-            ).filter(Note.id == note_id).first()
-            
-            if not note:
-                logger.warning(f"Note with ID {note_id} not found")
-                
-            return note
-            
-        except Exception as e:
-            logger.error(f"Error retrieving note {note_id}: {str(e)}")
-            return None
     
     def get_notes_by_user(self, user_id: int) -> List[Note]:
         """
         Get all notes for a user
         
         Args:
-            user_id: ID of the user
+            user_id: User ID
             
         Returns:
-            List of Note objects
+            List of notes
         """
         try:
-            notes = self.db.query(Note).filter(
-                Note.user_id == user_id
-            ).order_by(Note.encounter_date.desc()).all()
-            
-            logger.info(f"Retrieved {len(notes)} notes for user {user_id}")
+            notes = self.db.query(Note).filter(Note.user_id == user_id).all()
             return notes
-            
-        except Exception as e:
-            logger.error(f"Error retrieving notes for user {user_id}: {str(e)}")
+        except SQLAlchemyError as e:
+            logger.error(f"Error getting notes for user {user_id}: {str(e)}")
             return []
     
-    def get_notes_by_patient(self, patient_id: int) -> List[Note]:
+    def get_note_by_id(self, note_id: int) -> Optional[Note]:
         """
-        Get all notes for a patient
+        Get a note by ID
         
         Args:
-            patient_id: ID of the patient
+            note_id: Note ID
             
         Returns:
-            List of Note objects
+            Note or None if not found
         """
         try:
-            notes = self.db.query(Note).filter(
-                Note.patient_id == patient_id
-            ).order_by(Note.encounter_date.desc()).all()
+            note = self.db.query(Note).filter(Note.id == note_id).first()
+            return note
+        except SQLAlchemyError as e:
+            logger.error(f"Error getting note {note_id}: {str(e)}")
+            return None
+    
+    def create_note(self, note_data: NoteCreate) -> Optional[Note]:
+        """
+        Create a new note
+        
+        Args:
+            note_data: Note data
             
-            logger.info(f"Retrieved {len(notes)} notes for patient {patient_id}")
-            return notes
+        Returns:
+            Created note or None if failed
+        """
+        try:
+            # Create note
+            note = Note(
+                user_id=note_data.user_id,
+                patient_id=note_data.patient_id,
+                title=note_data.title,
+                encounter_date=note_data.encounter_date
+            )
             
-        except Exception as e:
-            logger.error(f"Error retrieving notes for patient {patient_id}: {str(e)}")
-            return []
+            self.db.add(note)
+            self.db.flush()  # Get ID without committing
+            
+            # Create sections if any
+            if note_data.sections:
+                for section_data in note_data.sections:
+                    self.add_section_to_note(note.id, section_data)
+            
+            self.db.commit()
+            self.db.refresh(note)
+            return note
+            
+        except SQLAlchemyError as e:
+            self.db.rollback()
+            logger.error(f"Error creating note: {str(e)}")
+            return None
     
     def update_note(self, note_id: int, note_data: NoteUpdate) -> Optional[Note]:
         """
-        Update an existing note
+        Update a note
         
         Args:
-            note_id: ID of the note to update
-            note_data: Updated data for the note
+            note_id: Note ID
+            note_data: Note update data
             
         Returns:
-            Updated Note object or None if update failed
+            Updated note or None if failed
         """
         try:
-            # Get existing note
             note = self.db.query(Note).filter(Note.id == note_id).first()
             if not note:
-                logger.warning(f"Note with ID {note_id} not found for update")
+                logger.warning(f"Note {note_id} not found for update")
                 return None
             
-            # Update note fields if provided
+            # Update fields if provided
             if note_data.title is not None:
                 note.title = note_data.title
             if note_data.patient_id is not None:
                 note.patient_id = note_data.patient_id
             if note_data.encounter_date is not None:
                 note.encounter_date = note_data.encounter_date
-                
-            # Update sections if provided
-            if note_data.sections:
-                # Handle section updates
-                self._update_note_sections(note, note_data.sections)
             
             self.db.commit()
             self.db.refresh(note)
-            
-            logger.info(f"Note {note_id} updated successfully")
             return note
             
         except SQLAlchemyError as e:
             self.db.rollback()
-            logger.error(f"Database error updating note {note_id}: {str(e)}")
-            return None
-        except Exception as e:
-            self.db.rollback()
             logger.error(f"Error updating note {note_id}: {str(e)}")
             return None
     
-    def _update_note_sections(self, note: Note, sections_data: List[Any]) -> None:
-        """
-        Update sections for a note (helper method)
-        
-        Args:
-            note: Note object to update
-            sections_data: List of section update data
-        """
-        # Implementation depends on how you want to handle section updates
-        # This is a simplified approach that just adds new sections
-        for section_data in sections_data:
-            # Check if it's an update to existing section or a new one
-            if hasattr(section_data, 'id') and section_data.id:
-                # Update existing section
-                existing_section = next(
-                    (s for s in note.sections if s.id == section_data.id), 
-                    None
-                )
-                if existing_section:
-                    if section_data.title:
-                        existing_section.title = section_data.title
-                    if section_data.content:
-                        existing_section.content = section_data.content
-                    if section_data.section_type:
-                        existing_section.section_type = section_data.section_type
-            else:
-                # Create new section
-                new_section = Section(
-                    **section_data
-                )
-                self.db.add(new_section)
-    
     def delete_note(self, note_id: int) -> bool:
         """
-        Delete a note and its sections
+        Delete a note
         
         Args:
-            note_id: ID of the note to delete
+            note_id: Note ID
             
         Returns:
-            True if deletion was successful, False otherwise
+            True if successful, False otherwise
         """
         try:
-            # Get note
             note = self.db.query(Note).filter(Note.id == note_id).first()
             if not note:
-                logger.warning(f"Note with ID {note_id} not found for deletion")
+                logger.warning(f"Note {note_id} not found for deletion")
                 return False
             
-            # Delete note (sections will be deleted by cascade)
             self.db.delete(note)
             self.db.commit()
-            
-            logger.info(f"Note {note_id} deleted successfully")
             return True
             
         except SQLAlchemyError as e:
-            self.db.rollback()
-            logger.error(f"Database error deleting note {note_id}: {str(e)}")
-            return False
-        except Exception as e:
             self.db.rollback()
             logger.error(f"Error deleting note {note_id}: {str(e)}")
             return False
     
     def add_section_to_note(self, note_id: int, section_data: SectionCreate) -> Optional[Section]:
         """
-        Add a new section to an existing note
+        Add a section to a note
         
         Args:
-            note_id: ID of the note
-            section_data: Data for the new section
+            note_id: Note ID
+            section_data: Section data
             
         Returns:
-            Created Section object or None if creation failed
+            Created section or None if failed
         """
         try:
-            # Verify note exists
+            # First check if note exists
             note = self.db.query(Note).filter(Note.id == note_id).first()
             if not note:
-                logger.warning(f"Note with ID {note_id} not found when adding section")
+                logger.warning(f"Note {note_id} not found for adding section")
                 return None
             
-            # Verify section type exists
-            section_type = self.db.query(SectionType).filter(SectionType.id == section_data.section_type_id).first()
-            if not section_type:
-                section_type_service = SectionManagementService(self.db)
-                section_type = section_type_service.get_default_section_type()
-                section_data.section_type_id = section_type.id
+            # Prepare section data
+            section_dict = section_data.model_dump(exclude={"id"})
+            section_dict["note_id"] = note_id
             
             # Create section
-            section = Section(
-                note_id=note_id,
-                user_id=section_data.user_id,
-                title=section_data.title,
-                content=section_data.content,
-                section_type_id=section_data.section_type_id,
-                section_type_code=section_type.code
-            )
+            section = Section(**section_dict)
+            
+            # If content is provided but field_values isn't, try to extract field values from content
+            if section.content and not section.field_values:
+                section.update_from_content(section.content)
             
             self.db.add(section)
             self.db.commit()
             self.db.refresh(section)
-            
-            logger.info(f"Section added to note {note_id} with ID {section.id}")
             return section
             
         except SQLAlchemyError as e:
             self.db.rollback()
-            logger.error(f"Database error adding section to note {note_id}: {str(e)}")
-            return None
-        except Exception as e:
-            self.db.rollback()
             logger.error(f"Error adding section to note {note_id}: {str(e)}")
             return None
     
-    def get_sections_by_note(self, note_id: int) -> List[Section]:
+    def update_section(self, section_id: int, section_data: SectionUpdate) -> Optional[Section]:
         """
-        Get all sections for a note
+        Update a section
         
         Args:
-            note_id: ID of the note
+            section_id: Section ID
+            section_data: Section update data
             
         Returns:
-            List of Section objects
+            Updated section or None if failed
         """
         try:
-            sections = self.db.query(Section).filter(
-                Section.note_id == note_id
-            ).all()
+            section = self.db.query(Section).filter(Section.id == section_id).first()
+            if not section:
+                logger.warning(f"Section {section_id} not found for update")
+                return None
             
-            logger.info(f"Retrieved {len(sections)} sections for note {note_id}")
-            return sections
+            # Update fields if provided
+            if section_data.title is not None:
+                section.title = section_data.title
+            if section_data.template_id is not None:
+                section.template_id = section_data.template_id
+            if section_data.soap_category is not None:
+                section.soap_category = section_data.soap_category
+            if section_data.content is not None:
+                section.content = section_data.content
+                # If content is updated, also update field values
+                section.update_from_content(section.content)
+            if section_data.field_values is not None:
+                section.field_values = section_data.field_values
+            if section_data.is_visible_to_patient is not None:
+                section.is_visible_to_patient = section_data.is_visible_to_patient
+            if section_data.display_order is not None:
+                section.display_order = section_data.display_order
             
-        except Exception as e:
-            logger.error(f"Error retrieving sections for note {note_id}: {str(e)}")
-            return []
+            section.updated_at = datetime.now()
+            
+            self.db.commit()
+            self.db.refresh(section)
+            return section
+            
+        except SQLAlchemyError as e:
+            self.db.rollback()
+            logger.error(f"Error updating section {section_id}: {str(e)}")
+            return None
+    
+    def delete_section(self, section_id: int) -> bool:
+        """
+        Delete a section
+        
+        Args:
+            section_id: Section ID
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            section = self.db.query(Section).filter(Section.id == section_id).first()
+            if not section:
+                logger.warning(f"Section {section_id} not found for deletion")
+                return False
+            
+            self.db.delete(section)
+            self.db.commit()
+            return True
+            
+        except SQLAlchemyError as e:
+            self.db.rollback()
+            logger.error(f"Error deleting section {section_id}: {str(e)}")
+            return False
+    
+    def update_section_field_values(self, section_id: int, field_updates: List[FieldValueUpdate]) -> Optional[Section]:
+        """
+        Update field values for a section
+        
+        Args:
+            section_id: Section ID
+            field_updates: List of field value updates
+            
+        Returns:
+            Updated section or None if failed
+        """
+        try:
+            section = self.db.query(Section).filter(Section.id == section_id).first()
+            if not section:
+                logger.warning(f"Section {section_id} not found for field value update")
+                return None
+            
+            # Initialize field values if not present
+            if not section.field_values:
+                section.field_values = {}
+            
+            # Update each field
+            for field_update in field_updates:
+                section.add_field_value(
+                    field_id=field_update.field_id,
+                    field_name=field_update.field_name,
+                    value=field_update.value
+                )
+            
+            section.updated_at = datetime.now()
+            
+            self.db.commit()
+            self.db.refresh(section)
+            return section
+            
+        except SQLAlchemyError as e:
+            self.db.rollback()
+            logger.error(f"Error updating field values for section {section_id}: {str(e)}")
+            return None
