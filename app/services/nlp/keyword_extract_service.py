@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.utils.nlp.spacy_utils import find_medical_modifiers
 from app.utils.nlp.nlp_utils import merge_flat_keywords_into_template
 from app.schemas.section import SectionCreate
-from app.services.report_generation.section_management_service import SectionManagementService
+
 # Configure logger
 logger = logging.getLogger(__name__)
 
@@ -26,9 +26,6 @@ class KeywordExtractService:
         self.db = db
         self.buffer_keywords = []
         self.final_keywords = []
-        
-        # Initialize SectionTypeService
-        self.section_type_service = SectionManagementService(self.db)
         
         logger.info("KeywordService initialized")
     

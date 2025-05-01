@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Body, HTTPException, Request, File, UploadFile, Form
+from fastapi import APIRouter, Depends, Body, HTTPException, Request, File, UploadFile, Form, Query
 from tempfile import NamedTemporaryFile
 import wave
 from fastapi.responses import JSONResponse
@@ -15,20 +15,20 @@ import datetime
 
 from sqlalchemy.orm import Session
 from app.db.local_session import DatabaseManager
-
+from app.db.neo4j_session import get_neo4j_session, Neo4jSession
 from app.utils.nlp.spacy_utils import process_text, find_medical_modifiers
 from app.utils.nlp.summarizer import generate_summary
-from app.utils.nlp.nlp_utils import merge_flat_keywords_into_template
+from app.utils.nlp.nlp_utils import merge_flat_keywords_into_template, embed_text
 
 from app.models.models import Note, Section, ReportTemplate, User
 from app.schemas.section import SectionCreate, SectionRead
 from app.schemas.note import NoteCreate
+from app.services.template_service import TemplateService
 from app.services.transcription_service import TranscriptionService
 from app.services.audio_service import AudioService
 from app.services.nlp.keyword_extract_service import KeywordExtractService
 from app.services.note_service import NoteService
 from app.services.report_generation.report_service import ReportService
-from app.services.report_generation.section_management_service import SectionManagementService
 # Configure logger
 logger = logging.getLogger(__name__)
 
@@ -370,22 +370,26 @@ async def basic_test(request: BasicTestRequest):
             "entities": [],
             "error": str(e)
         }
-
 @router.post("/text-transcript")
-async def process_text_transcript(fragment: TranscriptFragment, db: Session = Depends(get_session)):
+async def process_text_transcript(
+    fragment: TranscriptFragment, 
+    db: Session = Depends(get_session),
+    neo4j: Neo4jSession = Depends(get_neo4j_session)
+):
     """
-    Process a text transcript and extract medical entities and sections
+    Process a text transcript and extract medical entities, creating content 
+    that can be used with templates
     
     Args:
         fragment: TranscriptFragment with the transcript text
         
     Returns:
-        Dictionary with transcription, entities, and sections in the same format as process-audio
+        Dictionary with transcription, entities, and processed content
     """
     try:
         text = fragment.transcript
-        keyword_extract_service = KeywordExtractService(db)
-        section_management_service = SectionManagementService(db)
+        template_service = TemplateService(neo4j)
+        
         # Input validation
         if not text or len(text.strip()) == 0:
             raise HTTPException(status_code=400, detail="Empty transcript provided")
@@ -413,22 +417,22 @@ async def process_text_transcript(fragment: TranscriptFragment, db: Session = De
             })
         
         # Extract keywords safely
+        extracted_keywords = []
         try:
-            extracted_keywords = find_medical_modifiers(doc=transcription_doc)
-            keyword_extract_service.buffer_keywords = extracted_keywords if isinstance(extracted_keywords, list) else []
-            logger.info(f"Extracted keywords: {len(keyword_extract_service.buffer_keywords)}")
+            keywords = find_medical_modifiers(doc=transcription_doc)
+            extracted_keywords = keywords if isinstance(keywords, list) else []
+            logger.info(f"Extracted keywords: {len(extracted_keywords)}")
         except Exception as e:
             logger.error(f"Error extracting keywords: {str(e)}")
             logger.error(traceback.format_exc())
-            keyword_extract_service.buffer_keywords = []
         
-        # Ensure buffer_keyword_dicts is a list of dictionaries
-        if not isinstance(keyword_extract_service.buffer_keywords, list):
-            keyword_extract_service.buffer_keywords = []
+        # Ensure keywords are a list of dictionaries
+        if not isinstance(extracted_keywords, list):
+            extracted_keywords = []
         
         # Remove duplicates
         result_dicts = []
-        for keyword_dict in keyword_extract_service.buffer_keywords:
+        for keyword_dict in extracted_keywords:
             if not isinstance(keyword_dict, dict):
                 logger.warning(f"Skipping non-dictionary keyword: {keyword_dict}")
                 continue
@@ -441,50 +445,192 @@ async def process_text_transcript(fragment: TranscriptFragment, db: Session = De
             if not found:
                 result_dicts.append(keyword_dict)
         
-        keyword_extract_service.final_keywords = result_dicts
+        # Find relevant templates based on extracted keywords and terms
+        template_suggestions = []
+        for idx, keyword in enumerate(result_dicts[:3]):  # Limit to first 3 keywords
+            term = keyword.get("term", "")
+            if term:
+                try:
+                    # Find templates with similar content
+                    similar_templates = template_service.find_templates_by_text(
+                        term, 
+                        similarity_threshold=0.6, 
+                        limit=3
+                    )
+                    
+                    if similar_templates:
+                        for template in similar_templates:
+                            template_suggestions.append({
+                                "term": term,
+                                "template_id": template.get("id"),
+                                "template_name": template.get("name"),
+                                "similarity_score": template.get("similarity_score", 0),
+                                "description": template.get("description")
+                            })
+                except Exception as e:
+                    logger.error(f"Error finding templates for term '{term}': {str(e)}")
         
-        # Create sections based on final_keyword_dicts
-        section_objects = []
-        for i, result_keyword_dict in enumerate(keyword_extract_service.final_keywords):
+        # Create content structures based on the keywords
+        processed_content = []
+        for i, keyword_dict in enumerate(result_dicts):
             try:
+                # Find a default template structure for this keyword
+                default_template = {}
+                template_id = None
                 
-                section_type_id, section_type_code = section_management_service.get_semantic_section_type(result_keyword_dict.get("term", ""))
-                template = section_management_service.find_content_dictionary(result_keyword_dict, section_type_code)
-                merged_content = merge_flat_keywords_into_template(result_keyword_dict, template, threshold=0.5)
+                # Look for a matching template suggestion
+                for suggestion in template_suggestions:
+                    if suggestion["term"] == keyword_dict.get("term", ""):
+                        template_id = suggestion["template_id"]
+                        break
                 
-                if merged_content.get("Main Symptom") is not None:
-                    if "name" in merged_content["Main Symptom"] and merged_content["Main Symptom"]["name"]:
-                        # Create a SectionRead object
-                        section_read = SectionRead(
-                            id=i,  # Dummy ID
-                            note_id=0,  # Dummy note ID
-                            user_id=0,  # Dummy user ID
-                            title=result_keyword_dict.get("term", "Section"),
-                            content=merged_content,
-                            section_type_id=section_type_id,
-                            section_type_code=section_type_code
+                # If we have a template ID, get the template structure
+                if template_id:
+                    try:
+                        template_details = template_service.get_template_with_fields(template_id)
+                        if template_details:
+                            # Create a dictionary to represent the template structure
+                            field_dict = {}
+                            for field in template_details.get("fields", []):
+                                field_name = field.get("field_name", "")
+                                field_dict[field_name] = ""
+                            
+                            default_template = {
+                                "template_id": template_id,
+                                "template_name": template_details.get("name", ""),
+                                "fields": field_dict
+                            }
+                    except Exception as e:
+                        logger.error(f"Error getting template details: {str(e)}")
+                
+                # If no template structure, use a generic one
+                if not default_template:
+                    default_template = {
+                        "Main Symptom": {
+                            "name": keyword_dict.get("term", ""),
+                            "description": "",
+                            "duration": "",
+                            "severity": ""
+                        },
+                        "modifiers": keyword_dict.get("modifiers", []),
+                        "quantities": keyword_dict.get("quantities", [])
+                    }
+                
+                # Try to merge the keyword data into the template
+                if default_template:
+                    # If using the generic template
+                    if "Main Symptom" in default_template:
+                        merged_content = merge_flat_keywords_into_template(
+                            keyword_dict, 
+                            default_template, 
+                            threshold=0.5
                         )
-                        section_objects.append(section_read.model_dump())
-                    else:
-                        logger.info(f"Content not added as it has no name: {result_keyword_dict.get('term', '')}")
+                        if merged_content.get("Main Symptom", {}).get("name"):
+                            processed_content.append(merged_content)
+                    # If using a template structure from Neo4j
+                    elif "template_id" in default_template:
+                        # Create field values from keyword data
+                        field_values = {}
+                        # Try to match keyword modifiers to fields
+                        for field_name, field_value in default_template.get("fields", {}).items():
+                            # For simple matching - just put the term in the main field
+                            if "name" in field_name.lower() or "term" in field_name.lower():
+                                field_values[field_name] = keyword_dict.get("term", "")
+                            # Match modifiers to other fields
+                            elif keyword_dict.get("modifiers") and len(keyword_dict["modifiers"]) > 0:
+                                field_values[field_name] = keyword_dict["modifiers"][0]
+                            # Match quantities to duration/severity fields
+                            elif keyword_dict.get("quantities") and len(keyword_dict["quantities"]) > 0:
+                                if any(x in field_name.lower() for x in ["duration", "time", "period"]):
+                                    field_values[field_name] = keyword_dict["quantities"][0]
+                        
+                        # Add to processed content with template info
+                        processed_content.append({
+                            "template_id": default_template["template_id"],
+                            "template_name": default_template["template_name"],
+                            "field_values": field_values,
+                            "term": keyword_dict.get("term", ""),
+                            "raw_keyword_data": keyword_dict
+                        })
             except Exception as section_error:
-                # Log the error but continue processing other sections
-                logger.error(f"Error processing section for term '{result_keyword_dict.get('term', '')}': {str(section_error)}")
+                # Log the error but continue processing other items
+                logger.error(f"Error processing content for term '{keyword_dict.get('term', '')}': {str(section_error)}")
                 continue
         
-        # Prepare the response in the same format as process-audio
+        # Prepare the response
         response = {
             "success": True,
             "transcription": text,
             "entity_count": len(entities),
             "entities": entities,
-            "sections": section_objects
+            "keywords": result_dicts,
+            "template_suggestions": template_suggestions,
+            "processed_content": processed_content
         }
         
         return response
     
     except Exception as e:
         logger.error(f"Error processing transcript: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+@router.get("/find-template")
+async def find_template(
+    query: str = Query(..., description="Text to search for similar templates"),
+    threshold: float = Query(0.65, description="Similarity threshold (0-1)"),
+    limit: int = Query(5, description="Maximum number of results"),
+    neo4j: Neo4jSession = Depends(get_neo4j_session)
+):
+    """
+    Find section templates similar to the provided text
+    
+    Args:
+        query: Text to find similar templates for
+        threshold: Similarity threshold (0-1)
+        limit: Maximum number of results
+        
+    Returns:
+        List of similar templates with similarity scores
+    """
+    try:
+        start_time = time.time()
+        
+        # Create template service
+        template_service = TemplateService(neo4j)
+        
+        # Get embedding for query
+        query_embedding = neo4j.get_embedding(query)
+        
+        # Search for templates
+        templates = template_service.find_templates_by_text(
+            query, 
+            similarity_threshold=threshold,
+            limit=limit
+        )
+        
+        # Search for fields
+        fields = template_service.find_fields_by_text(
+            query,
+            similarity_threshold=threshold,
+            limit=limit
+        )
+        
+        processing_time = time.time() - start_time
+        
+        return {
+            "success": True,
+            "query": query,
+            "templates": templates,
+            "fields": fields,
+            "processing_time_ms": round(processing_time * 1000, 2)
+        }
+    except Exception as e:
+        logger.error(f"Error finding templates: {str(e)}")
         logger.error(traceback.format_exc())
         return {
             "success": False,

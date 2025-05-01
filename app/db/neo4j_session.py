@@ -35,7 +35,7 @@ class Neo4jSession:
             
             # Initialize embedding model
             try:
-                self.model = SentenceTransformer("all-minilm-l6-v2")
+                self.model = SentenceTransformer("BAAI/bge-small-en-v1.5")
                 self.embedding_dimension = 384  # all-minilm-l6-v2 outputs 384-dimensional embeddings
                 logger.info("Loaded SentenceTransformer model for embeddings")
             except Exception as e:

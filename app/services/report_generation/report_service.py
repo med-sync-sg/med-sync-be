@@ -7,7 +7,6 @@ from jinja2 import Environment, FileSystemLoader
 from sqlalchemy.orm import Session
 
 from app.models.models import Note, Section, User, ReportTemplate
-from app.services.report_generation.section_management_service import SectionManagementService
 from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 
@@ -104,7 +103,6 @@ class ReportService:
             db_session: SQLAlchemy session for database operations
         """
         self.db = db_session
-        self.section_management_service = SectionManagementService(self.db)
         self.templates_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "utils", "nlp", "report_templates"

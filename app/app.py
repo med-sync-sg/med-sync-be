@@ -8,7 +8,7 @@ import logging
 import json
 
 from app.db.local_session import DatabaseManager
-from app.models.models import SOAPCategory, SectionType
+from app.models.models import SOAPCategory
 from app.api.v1.endpoints import auth, notes, users, reports, tests, calibration
 from app.utils.websocket_handler import websocket_endpoint
 
