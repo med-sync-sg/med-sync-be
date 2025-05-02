@@ -365,8 +365,7 @@ class ReportService:
                 
                 # Determine section type semantically if needed
                 section_type = section.section_type
-                if section_type == "OTHERS" or not section_type:
-                    section_type = self.section_management_service.get_semantic_section_type(section.title, content)
+                # if section_type == "OTHERS" or not section_type:
                 
                 # Check if this section type is configured in the template
                 if section_type in section_configs:

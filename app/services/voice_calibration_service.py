@@ -11,7 +11,7 @@ from app.utils.voice_adaptation_utils import extract_mfcc_features, estimate_war
 from io import BytesIO
 from sqlalchemy.orm import Session
 import wave
-
+import datetime
 # Configure logger
 logger = logging.getLogger(__name__)
 
@@ -322,7 +322,7 @@ class VoiceCalibrationService:
                 "covariance_matrix": covariance_matrix,
                 "feature_dimension": combined_mfccs.shape[0],
                 "training_phrases": len(recordings),
-                "created_at": np.datetime64('now')
+                "created_at": datetime.datetime.now()
             }
             
             # Create database record

@@ -9,12 +9,9 @@ import json
 
 from app.db.local_session import DatabaseManager
 from app.models.models import SOAPCategory
-from app.api.v1.endpoints import auth, notes, users, reports, tests, calibration
+from app.api.v1.endpoints import auth, notes, users, reports, tests, calibration, templates, umls
 from app.utils.websocket_handler import websocket_endpoint
-
-# Add new imports for Neo4j integration
-from app.api.v1.endpoints import templates, umls
-from app.db.neo4j_session import Neo4jSession, neo4j_session
+from app.db.neo4j_session import neo4j_session
 from contextlib import asynccontextmanager
 
 # Configure logger

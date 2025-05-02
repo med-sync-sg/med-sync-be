@@ -7,7 +7,6 @@ from app.db.neo4j_session import get_neo4j_session, Neo4jSession
 from app.models.models import User, Section
 from app.schemas.section import SectionCreate, SectionRead, SectionUpdate, SectionFieldUpdate, FieldValueUpdate
 from app.services.note_service import NoteService
-from app.services.section_template_integration import TemplateSectionIntegration
 from app.api.v1.endpoints.auth import get_current_user
 
 router = APIRouter()

@@ -5,10 +5,8 @@ from app.schemas.section import SectionCreate
 from typing import Optional, List, Dict, Any
 import datetime
 from sqlalchemy.sql import func
-import datetime
 import numpy as np
 import pickle
-import json
 from enum import Enum
 
 Base = declarative_base()
@@ -46,7 +44,8 @@ class Note(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     patient_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     title: Mapped[str] = mapped_column(String, nullable=False)
-    encounter_date: Mapped[str] = mapped_column(String)  # Can also be Date if preferred
+    # Changed from String to DateTime
+    encounter_date: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     user: Mapped["User"] = relationship("User", back_populates="notes")
     sections: Mapped[list["Section"]] = relationship("Section", back_populates="note", cascade="all, delete-orphan")
@@ -78,8 +77,8 @@ class Section(Base):
     display_order = Column(Integer, default=100)
     
     # Timestamps and tracking
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     last_modified_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     last_modified_by = relationship("User", foreign_keys=[last_modified_by_id])
     

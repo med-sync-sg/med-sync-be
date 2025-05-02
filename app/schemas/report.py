@@ -1,7 +1,6 @@
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
 from app.schemas.base import BaseAuthModel
-from datetime import datetime
 
 class ReportSectionConfig(BaseModel):
     """Configuration for a section in a report template"""
@@ -29,8 +28,8 @@ class ReportTemplateRead(ReportTemplateBase):
     user_id: int
     html_template: Optional[str] = None
     template_data: Dict[str, Any]
-    created_at: datetime
-    updated_at: datetime
+    created_at: str
+    updated_at: str
     
     class Config:
         orm_mode = True

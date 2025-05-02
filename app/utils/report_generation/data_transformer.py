@@ -83,7 +83,7 @@ class DocumentTransformer:
                 "provider": provider_info,
                 "encounter_date": note.encounter_date,
                 "friendly_date": self._format_friendly_date(note.encounter_date),
-                "generation_date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "generation_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
             },
             "soap": {
                 "subjective": {

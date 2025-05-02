@@ -1,6 +1,5 @@
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
-from datetime import datetime
 from app.schemas.base import BaseAuthModel
 
 class CalibrationPhraseBase(BaseModel):
@@ -49,7 +48,7 @@ class CalibrationRecordingCreate(CalibrationRecordingBase):
 class CalibrationRecordingRead(CalibrationRecordingBase):
     """Schema for reading a calibration recording"""
     id: int
-    created_at: datetime
+    created_at: str
     speaker_profile_id: Optional[int] = None
 
     class Config:
