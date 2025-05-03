@@ -1,6 +1,7 @@
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict
 from app.schemas.base import BaseAuthModel
+from datetime import datetime
 
 class CalibrationPhraseBase(BaseModel):
     """Base schema for calibration phrases"""
@@ -10,8 +11,9 @@ class CalibrationPhraseBase(BaseModel):
     description: Optional[str] = ""
     medical_terms: List[str] = []
     
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(
+        from_attributes=True
+    )
 
 class SpeakerProfileBase(BaseModel):
     """Base schema for speaker profiles"""
@@ -21,8 +23,9 @@ class SpeakerProfileBase(BaseModel):
     is_active: bool = True
     description: Optional[str] = None
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(
+        from_attributes=True
+    )
 
 class CalibrationStatus(BaseModel):
     """Schema for calibration status"""
@@ -31,7 +34,14 @@ class CalibrationStatus(BaseModel):
     phrases_recorded: int
     phrases_total: int
     profile_id: Optional[int] = None
-    last_updated: Optional[str] = None
+    last_updated: Optional[datetime] = None
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_encoders={
+            datetime: lambda dt: dt.isoformat()
+        }
+    )
 
 class CalibrationRecordingBase(BaseModel):
     """Base schema for calibration recordings"""
@@ -48,11 +58,15 @@ class CalibrationRecordingCreate(CalibrationRecordingBase):
 class CalibrationRecordingRead(CalibrationRecordingBase):
     """Schema for reading a calibration recording"""
     id: int
-    created_at: str
+    created_at: datetime
     speaker_profile_id: Optional[int] = None
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_encoders={
+            datetime: lambda dt: dt.isoformat()
+        }
+    )
 
 class CalibrationRequest(BaseAuthModel):
     """Schema for calibration requests"""

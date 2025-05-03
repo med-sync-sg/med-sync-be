@@ -1,7 +1,7 @@
 from app.schemas.base import BaseAuthModel
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict
 from typing import Dict, Any, Union, Optional, List
-
+from datetime import datetime
 class FieldValue(BaseModel):
     """Schema representing a template field value"""
     field_id: str
@@ -26,14 +26,18 @@ class SectionRead(BaseAuthModel):
     template_id: Optional[str] = None
     soap_category: str
     content: Optional[Dict[str, Any]] = None
-    field_values: Dict[str, Any] = {}
+    field_values: Optional[Dict[str, Any]] = None
     is_visible_to_patient: bool = True
     display_order: int = 100
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_encoders={
+            datetime: lambda dt: dt.isoformat()
+        }
+    )
 
 class SectionUpdate(BaseAuthModel):
     id: int
@@ -46,8 +50,12 @@ class SectionUpdate(BaseAuthModel):
     is_visible_to_patient: Optional[bool] = None
     display_order: Optional[int] = None
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_encoders={
+            datetime: lambda dt: dt.isoformat()
+        }
+    )
 
 class FieldValueUpdate(BaseModel):
     field_id: str

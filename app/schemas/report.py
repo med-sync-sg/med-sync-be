@@ -1,6 +1,7 @@
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from app.schemas.base import BaseAuthModel
+from datetime import datetime
 
 class ReportSectionConfig(BaseModel):
     """Configuration for a section in a report template"""
@@ -28,12 +29,16 @@ class ReportTemplateRead(ReportTemplateBase):
     user_id: int
     html_template: Optional[str] = None
     template_data: Dict[str, Any]
-    created_at: str
-    updated_at: str
+    created_at: datetime
+    updated_at: datetime
     
-    class Config:
-        orm_mode = True
-        
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_encoders={
+            datetime: lambda dt: dt.isoformat()
+        }
+    )
+    
 class ReportTemplateUpdate(BaseAuthModel):
     """Schema for updating a report template"""
     name: Optional[str] = None
@@ -43,5 +48,6 @@ class ReportTemplateUpdate(BaseAuthModel):
     html_template: Optional[str] = None
     template_data: Optional[Dict[str, Any]] = None
     
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(
+        from_attributes=True
+    )

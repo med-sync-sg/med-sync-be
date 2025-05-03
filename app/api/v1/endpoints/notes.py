@@ -21,8 +21,17 @@ async def get_all_notes(
     Get all notes for the authenticated user.
     """
     note_service = NoteService(db)
-    notes = note_service.get_notes_by_user(current_user.id)
-    return notes
+    note_models = note_service.get_notes_by_user(current_user.id)
+    
+    # Convert each Note model to a NoteRead schema
+    note_read_objects = []
+    for note in note_models:
+        # Use Pydantic's from_orm to convert the model to a schema
+        # This handles the datetime conversion automatically
+        note_read = NoteRead.model_validate(note)
+        note_read_objects.append(note_read)
+    
+    return note_read_objects
 
 @router.get("/{note_id}", response_model=NoteRead)
 async def get_note(
