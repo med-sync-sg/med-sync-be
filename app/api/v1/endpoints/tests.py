@@ -18,7 +18,6 @@ from app.db.local_session import DatabaseManager
 from app.db.neo4j_session import get_neo4j_session, Neo4jSession
 from app.utils.nlp.spacy_utils import process_text, find_medical_modifiers
 from app.utils.nlp.summarizer import generate_summary
-from app.utils.nlp.nlp_utils import merge_flat_keywords_into_template, embed_text
 
 from app.models.models import Note, Section, ReportTemplate, User
 from app.schemas.section import SectionCreate, SectionRead

@@ -84,7 +84,7 @@ class Neo4jInitializer:
             except Exception as e:
                 logger.error(f"Error creating vector index: {str(e)}")
 
-    def setup_templates(self):
+    def setup_section_templates(self):
         """Set up basic SOAP templates with vector embeddings"""
         templates = [
             {
@@ -178,20 +178,107 @@ class Neo4jInitializer:
                 "id": "base-field",
                 "name": "Base Field",
                 "description": "Root field type for all template fields",
-                "data_type": "string",
+                "data_type": "any",
                 "required": False,
                 "system_defined": True
             },
-            ### CODES
+            # STRING type
             {
-                "id": "code-field",
+                "id": "base-string-field",
+                "name": "String Field",
+                "description": "Short text field for single-line inputs",
+                "data_type": "string",
+                "required": False,
+                "system_defined": True,
+                "extends": "base-field"
+            },
+            # NUMBER type
+            {
+                "id": "base-number-field",
+                "name": "Number Field",
+                "description": "Generic number field (integer or decimal)",
+                "data_type": "number",
+                "required": False,
+                "system_defined": True,
+                "extends": "base-field"
+            },
+            
+            # INTEGER type
+            {
+                "id": "base-integer-field",
+                "name": "Integer Field",
+                "description": "Whole number field without decimals",
+                "data_type": "integer",
+                "required": False,
+                "system_defined": True,
+                "extends": "base-field"
+            },
+            
+            # FLOAT type
+            {
+                "id": "base-float-field",
+                "name": "Float Field",
+                "description": "Decimal number field",
+                "data_type": "float",
+                "required": False,
+                "system_defined": True,
+                "extends": "base-field"
+            },
+            
+            # BOOLEAN type
+            {
+                "id": "base-boolean-field",
+                "name": "Boolean Field",
+                "description": "True/False toggle field",
+                "data_type": "boolean",
+                "required": False,
+                "system_defined": True,
+                "extends": "base-field"
+            },
+            
+            # DATE type
+            {
+                "id": "base-date-field",
+                "name": "Date Field",
+                "description": "Date selector (without time)",
+                "data_type": "date",
+                "required": False,
+                "system_defined": True,
+                "extends": "base-field"
+            },
+            
+            # TIME type
+            {
+                "id": "base-time-field",
+                "name": "Time Field",
+                "description": "Time selector (without date)",
+                "data_type": "time",
+                "required": False,
+                "system_defined": True,
+                "extends": "base-field"
+            },
+            
+            # DATETIME type
+            {
+                "id": "base-datetime-field",
+                "name": "DateTime Field",
+                "description": "Combined date and time selector",
+                "data_type": "datetime",
+                "required": False,
+                "system_defined": True,
+                "extends": "base-field"
+            },
+            # CODE type
+            {
+                "id": "base-code-field",
                 "name": "Code Field",
-                "description": "Field for medical codes (ICD, CPT, etc.)",
+                "description": "Field for medical or classification codes",
                 "data_type": "code",
                 "required": False,
                 "system_defined": True,
                 "extends": "base-field"
             },
+            ### CODES
             {
                 "id": "icd-10-code-field",
                 "name": "ICD-10 Code Field",
@@ -210,7 +297,7 @@ class Neo4jInitializer:
                 "data_type": "string",
                 "required": False,
                 "system_defined": True,
-                "extends": "base-field"
+                "extends": "base-string-field"
             },
             {
                 "id": "symptom-field",
@@ -219,7 +306,7 @@ class Neo4jInitializer:
                 "data_type": "string",
                 "required": False,
                 "system_defined": True,
-                "extends": "base-field"
+                "extends": "base-string-field"
             },
             {
                 "id": "patient-symptom-field",
@@ -242,10 +329,10 @@ class Neo4jInitializer:
             
             ### PLAN FIELDS
             {
-                "id": "plan-field",
-                "name": "Plan Field",
+                "id": "base-plan-field",
+                "name": "Base Plan Field",
                 "description": "Any future plans for either the patient or the medical provider",
-                "data_type": "string",
+                "data_type": "any",
                 "required": False,
                 "system_defined": True,
                 "extends": "base-field"
@@ -254,11 +341,11 @@ class Neo4jInitializer:
                 "id": "treatment-plan-field",
                 "name": "Treatment Plan Field",
                 "description": "Any treatment plan for the patient",
-                "data_type": "string",
+                "data_type": "any",
                 "required": False,
                 "system_defined": True,
-                "extends": "plan-field"
-            },
+                "extends": "base-plan-field"
+            }
         ]
         
         # Create field nodes with vector embeddings
@@ -310,7 +397,7 @@ class Neo4jInitializer:
             {"template_id": "subjective", "field_id": "patient-symptom-field", "field_name": "patient_reported_symptoms", "required": True},
             
             # Objective section fields
-            {"template_id": "objective", "field_id": "observed-symptom-field", "field_name": "observed_symptoms", "required": False},
+            {"template_id": "objective", "field_id": "observed-symptom-field", "field_name": "observed_symptoms", "required": True},
             
             # Assessment section fields
             {"template_id": "assessment", "field_id": "diagnosis-field", "field_name": "diagnosis", "required": True},
@@ -351,7 +438,7 @@ class Neo4jInitializer:
             self.create_constraints_and_indexes()
             
             # Set up templates with vector embeddings
-            self.setup_templates()
+            self.setup_section_templates()
             
             # Set up field types with vector embeddings
             self.setup_fields()

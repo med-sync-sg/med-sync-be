@@ -4,7 +4,7 @@ from typing import List, Dict, Any, Tuple
 from sqlalchemy.orm import Session
 
 from app.utils.nlp.spacy_utils import find_medical_modifiers
-from app.utils.nlp.nlp_utils import merge_flat_keywords_into_template
+from app.utils.nlp.nlp_utils import merge_keywords_into_template
 from app.schemas.section import SectionCreate
 from app.services.section_template_service import SectionTemplateService
 
@@ -69,45 +69,54 @@ class KeywordExtractService:
         Returns:
             SectionCreate object if a template is found, None otherwise
         """
-        try:
-            sections = []
-            templates = []
-            for keyword_dict in self.buffer_keywords:
-                # Extract the term from the keyword dictionary
-                term = keyword_dict.get("term", "")
-                if not term:
-                    logger.warning("Keyword dictionary missing 'term' field")
-                    return ([], [])
-                    
-                # Find relevant template for this term
-                templates = self.section_template_service.find_templates_by_text(term, similarity_threshold=0.0)
-                if not templates:
-                    logger.info(f"No template found for term: {term}")
-                    return ([], [])
-                    
-                    
-                def getMax(value):
-                    if "similarity_score" in value:
-                        return value["similarity_score"]
-                    else:
-                        return 0.0
-                    
-                # Use the first template found (could be enhanced to select best match)
-                template = max(templates, key=getMax)
+        sections = []
+        templates = []
+        for keyword_dict in self.buffer_keywords:
+            # Extract the term from the keyword dictionary
+            term = keyword_dict.get("term", "")
+            if not term:
+                logger.warning("Keyword dictionary missing 'term' field")
+                return ([], [])
                 
-                # Create a copy of the template to avoid modifying the original
-                section_data = copy.deepcopy(template)
+            # Find relevant template for this term
+            templates = self.section_template_service.find_templates_by_text(term, similarity_threshold=0.0)
+            if not templates:
+                logger.info(f"No template found for term: {term}")
+                return ([], [])
                 
-                # Merge the keyword and its modifiers into the template
-                content = merge_flat_keywords_into_template(
-                    template=template,
-                    keywords=keyword_dict
-                )
                 
+            def getMax(value):
+                if "similarity_score" in value:
+                    return value["similarity_score"]
+                else:
+                    return 0.0
+                
+            # Use the first template found (could be enhanced to select best match)
+            template = max(templates, key=getMax)
+            
+            # Create a copy of the template to avoid modifying the original
+            section_data = copy.deepcopy(template)
+            
+            template_fields = self.section_template_service.get_template_with_fields(template)
+            logger.info(template_fields)
+            if template_fields == None: 
+                template_fields = self.section_template_service.get_base_fields()
+            elif len(template_fields) < 1:
+                template_fields = self.section_template_service.get_base_fields()
+
+            # Merge the keyword and its modifiers into the template
+            content = merge_keywords_into_template(
+                keywords=keyword_dict,
+                template_fields=template_fields,
+                template_id=template.get("id"),
+            )
+            logger.info(f"Resulting content of section: {content}")
+            try:
                 # Create section with populated content
                 section = SectionCreate(
                     user_id=1,
                     title=section_data.get("name", ""),
+                    field_values=content,
                     content=content,
                     template_id=template.get("id", ""),
                     soap_category=template.get("id", "OTHER")
@@ -115,12 +124,12 @@ class KeywordExtractService:
                 
                 logger.info(f"Created section from keyword: {term}")
                 sections.append(section)
+            except Exception as e:
+                logger.error(f"Error creating section from keyword: {str(e)}")
+                continue
+
+        return (templates, sections)
             
-            return (templates, sections)
-            
-        except Exception as e:
-            logger.error(f"Error creating section from keyword: {str(e)}")
-            return (templates, [])
 
     def clear(self) -> None:
         """Clear all keywords"""

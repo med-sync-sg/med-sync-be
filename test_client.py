@@ -19,7 +19,7 @@ import os
 import sys
 import time
 from typing import Dict, Any, List, Optional
-
+from pprint import pprint
 import aiohttp
 import requests
 import numpy as np
@@ -473,8 +473,6 @@ def print_formatted_transcript_results(result: dict):
                 print(f"     {key}: {', '.join(value)}")
         else:
             print(f"  {i+1}. {kw}")
-    
-
     print("-" * 80)
     
     # Print template suggestions
@@ -488,29 +486,23 @@ def print_formatted_transcript_results(result: dict):
         print(f"     Template ID: {template.get('id', 'N/A')}")
         if i < len(templates) - 1:  # Add separator between templates
             print("  " + "-" * 30)
-    
-    if len(templates) > 3:
-        print(f"  ... and {len(templates) - 3} more templates")
     print("-" * 80)
     
     # Print processed content (sections)
     sections = result.get("processed_content", [])
+    print(sections[0])
     print(f"\n📊 PROCESSED SECTIONS: {len(sections)}")
     print("-" * 80)
     
     for i, section in enumerate(sections):  # Show first 3 sections
         # Handle different section formats
-        if isinstance(section, dict):
-            # Other section format
-            print(f"  {i+1}. Section: {next(iter(section.keys()))}")
-            for key, value in list(section.items()):
-                if isinstance(value, dict):
-                    print(f"     {key}: {next(iter(value.values()))}")
-                else:
-                    print(f"     {key}: {value}")
-        else:
-            print(f"  {i+1}. {section}")
-            
+        print(f"{i + 1}. Section {section['title']} using template \"{section['template_id']}\"")
+        print(f"   Section Content:")
+        pprint(section['content'])
+        print(f"   Field Values:")
+        pprint(section['field_values'])
+        print(f"   ALL KEYS: ")
+        pprint(section)    
         if i < len(sections) - 1:  # Add separator between sections
             print("  " + "-" * 30)
     

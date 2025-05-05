@@ -4,6 +4,8 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 import copy
 import json
+import copy
+from datetime import datetime
 
 DEFAULT_MODEL = SentenceTransformer("all-minilm-l6-v2")
 # Similarity functions
@@ -91,41 +93,70 @@ def append_value_at_path(template: Dict[str, Any], path: List[str], new_value: A
         current[path[-1]] = str(new_value)
     return template
 
-def merge_flat_keywords_into_template(keywords: Dict[str, Any],
-                                      template: Dict[str, Any],
-                                      threshold: float = 0.5) -> Dict[str, Any]:
+def merge_keywords_into_template(keywords: Dict[str, Any],
+                                template_fields: list,
+                                template_id: str,
+                                threshold: float = 0.5) -> Dict[str, Any]:
     """
-    Merge a keyword dictionary into a template structure.
-    Supports the updated keyword dictionary format with semantic_type, cui, and tui.
+    Merge medical keyword dictionary into field values based on template fields.
     
     Args:
-        keywords: Dictionary with medical term information
-        template: Template dictionary to populate
+        keywords: Dictionary with medical term information (term, modifiers, semantic types, etc.)
+        template_fields: List of TemplateFieldRead objects for the section template
+        template_id: ID of the SectionTemplate being used
         threshold: Minimum similarity threshold for field matching
         
     Returns:
-        Merged template with populated values
+        Dictionary with populated template values and field_values dictionary
     """
-    similarity_template = copy.deepcopy(template)
-    working_template = clear_template_values(copy.deepcopy(template))
-    extras = {}
-
-    # Build candidate keys (one level deep)
-    candidates = []
-    for t_key, t_val in similarity_template.items():
-        if isinstance(t_val, str):
-            candidates.append(([t_key], f"{t_key}: {t_val}"))
-        elif isinstance(t_val, dict):
-            for sub_key, sub_val in t_val.items():
-                if isinstance(sub_val, str):
-                    candidates.append(([t_key, sub_key], f"{sub_key}: {sub_val}"))
     
-    # Process special fields first - term, semantic_type, cui, tui
+    # Create working template
+    working_template = {
+        "template_id": template_id,
+        "field_values": {},  # Will store the field values
+        "additional_content": {}  # For unmatched attributes
+    }
+    
+    # Create field candidates for matching
+    field_candidates = []
+    for field in template_fields:
+        field_id = field["id"]
+        field_name = field["name"]
+        field_desc = field["description"] or ""
+        field_text = f"{field_name}: {field_desc}"
+        
+        field_candidates.append({
+            "id": field_id,
+            "name": field_name,
+            "text": field_text,
+            "data_type": field["data_type"] or "any",
+            "required": field["required"]
+        })
+    
+    # Process term (primary entity)
     if "term" in keywords and isinstance(keywords["term"], str):
         term = keywords["term"]
         working_template["term"] = term
+        
+        # Try to find a primary field that could hold the main term
+        # Look for fields with names like "diagnosis", "symptom", etc.
+        primary_field_names = ["diagnosis", "symptom", "condition", "finding", "chief complaint", "main symptom"]
+        primary_field = None
+        
+        for candidate in field_candidates:
+            if any(primary_name in candidate["name"].lower() for primary_name in primary_field_names):
+                primary_field = candidate
+                break
+                
+        # If found, assign the term to this field
+        if primary_field:
+            working_template["field_values"][primary_field["id"]] = {
+                "name": primary_field["name"],
+                "value": term,
+                "updated_at": datetime.now().isoformat()
+            }
     
-    # Store UMLS metadata
+    # Store UMLS metadata if available
     if "semantic_type" in keywords:
         working_template["semantic_type"] = keywords["semantic_type"]
     if "cui" in keywords:
@@ -133,59 +164,84 @@ def merge_flat_keywords_into_template(keywords: Dict[str, Any],
     if "tui" in keywords:
         working_template["tui"] = keywords["tui"]
     
-    # Process the other fields
-    for f_key, f_value in keywords.items():
-        # Skip already processed fields
-        if f_key in ["term", "semantic_type", "cui", "tui", "label"]:
+    # Process the keyword modifiers and attributes
+    extras = {}
+    
+    for attr_key, attr_values in keywords.items():
+        # Skip already processed fields and non-modifier attributes
+        if attr_key in ["term", "semantic_type", "cui", "tui", "label"]:
             continue
-
-        if isinstance(f_value, list):
-            for element in f_value:
-                element_str = str(element)
-                feature_candidate = f"{f_key}: {element_str}"
-                best_sim = -1.0
-                best_path = []
+            
+        # Convert to list if not already
+        attr_list = attr_values if isinstance(attr_values, list) else [attr_values]
+        
+        for attr_value in attr_list:
+            if not attr_value:  # Skip empty values
+                continue
                 
-                # Find the best matching field in the template
-                for path, candidate in candidates:
-                    sim = cosine_similarity(embed_text(feature_candidate), embed_text(candidate))
-                    if sim > best_sim:
-                        best_sim = sim
-                        best_path = path
+            attr_str = str(attr_value)
+            attr_text = f"{attr_key}: {attr_str}"
+            
+            # Find best matching field
+            best_match = None
+            best_score = threshold  # Minimum threshold to consider a match
+            
+            for candidate in field_candidates:
+                # Compute similarity between attribute and field
+                sim_score = cosine_similarity(embed_text(attr_text), embed_text(candidate["text"]))
                 
-                # Add to the template if a good match is found
-                if best_path and best_sim >= threshold:
-                    current_value = get_value_at_path(working_template, best_path)
-                    if current_value:
-                        working_template = append_value_at_path(working_template, best_path, element_str)
+                if sim_score > best_score:
+                    best_score = sim_score
+                    best_match = candidate
+            
+            # If match found, set the value
+            if best_match:
+                field_id = best_match["id"]
+                
+                # Check if this field already has a value
+                if field_id in working_template["field_values"]:
+                    current_value = working_template["field_values"][field_id]["value"]
+                    
+                    # Convert to list if not already a list
+                    if isinstance(current_value, list):
+                        current_value.append(attr_str)
                     else:
-                        working_template = set_value_at_path(working_template, best_path, element_str)
+                        current_value = [current_value, attr_str]
+                    
+                    working_template["field_values"][field_id]["value"] = current_value
                 else:
-                    # Store in extras if no good match
-                    extras.setdefault(f_key, []).append(element_str)
-        else:
-            # Handle non-list values
-            f_val_str = str(f_value)
-            feature_candidate = f"{f_key}: {f_val_str}"
-            best_sim = -1.0
-            best_path = []
-            
-            for path, candidate in candidates:
-                sim = cosine_similarity(embed_text(feature_candidate), embed_text(candidate))
-                if sim > best_sim:
-                    best_sim = sim
-                    best_path = path
-            
-            if best_path and best_sim >= threshold:
-                working_template = set_value_at_path(working_template, best_path, f_val_str)
+                    # Create new field value entry
+                    working_template["field_values"][field_id] = {
+                        "name": best_match["name"],
+                        "value": attr_str,
+                        "updated_at": datetime.now().isoformat()
+                    }
             else:
-                extras[f_key] = f_value
-
-    # Add any extra fields that didn't match the template
+                # Store unmatched attributes in extras
+                if attr_key not in extras:
+                    extras[attr_key] = []
+                extras[attr_key].append(attr_str)
+    
+    # Add extras to additional_content
     if extras:
-        if "additional_content" in working_template and isinstance(working_template["additional_content"], dict):
-            working_template["additional_content"].update(extras)
-        else:
-            working_template["additional_content"] = extras
+        working_template["additional_content"] = extras
+    
+    # Ensure all required fields have at least an empty value
+    for field in field_candidates:
+        if field["required"] and field["id"] not in working_template["field_values"]:
+            working_template["field_values"][field["id"]] = {
+                "name": field["name"],
+                "value": "",
+                "updated_at": datetime.now().isoformat()
+            }
+    
+    # Generate content dictionary that reflects field_values for backward compatibility
+    content = {}
+    for field_id, field_value in working_template["field_values"].items():
+        field_name = field_value["name"]
+        content[field_name] = field_value["value"]
+    
+    # Add content to the template
+    working_template["content"] = content
     
     return working_template

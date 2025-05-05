@@ -55,6 +55,71 @@ class SectionTemplateService:
             
         return templates
     
+    def get_base_fields(self) -> List[Dict[str, Any]]:
+        """
+        Retrieve all base-level TemplateField nodes from Neo4j.
+        
+        This method fetches all template fields that extend the base field
+        (with ID 'base-field'). These fields serve as the foundation for 
+        all field types in the application.
+        
+        Returns:
+            List of field dictionaries with all properties
+        """
+        try:
+            # Query for fields that extend the base field
+            query = """
+            MATCH (field:TemplateField)-[:EXTENDS*]->(base:TemplateField {id: 'base-field'})
+            WHERE NOT (field)<-[:EXTENDS]-(:TemplateField)
+            RETURN field, 
+                labels(field) as labels,
+                [(field)-[:EXTENDS]->(parent:TemplateField) | parent.id] as direct_parents
+            ORDER BY field.id
+            """
+            
+            # Alternative query if you want ALL fields extending base-field at any level
+            all_fields_query = """
+            MATCH (field:TemplateField)-[:EXTENDS*]->(base:TemplateField {id: 'base-field'})
+            RETURN field, 
+                labels(field) as labels,
+                [(field)-[:EXTENDS]->(parent:TemplateField) | parent.id] as direct_parents
+            ORDER BY field.id
+            """
+            
+            # Execute the query
+            results = self.neo4j.run_query(query)
+            
+            if not results:
+                logger.warning("No base template fields found extending 'base-field'")
+                return []
+            
+            # Format the results
+            fields = []
+            for result in results:
+                field_node = result.get("field", {})
+                labels = result.get("labels", [])
+                direct_parents = result.get("direct_parents", [])
+                
+                # Copy properties from the node
+                field_data = dict(field_node)
+                
+                # Add labels and parent info
+                field_data["labels"] = labels
+                field_data["direct_parents"] = direct_parents
+                
+                # Check if the field has vector embedding
+                field_data["has_embedding"] = "embedding_1" in field_node
+                
+                # Add to result list
+                fields.append(field_data)
+            
+            logger.info(f"Retrieved {len(fields)} base template fields")
+            return fields
+            
+        except Exception as e:
+            logger.error(f"Error retrieving base template fields: {str(e)}")
+            return []
+
     def get_template_with_fields(self, template_id: str) -> Optional[Dict[str, Any]]:
         """
         Get a template with all its fields
@@ -90,10 +155,15 @@ class SectionTemplateService:
             "version": template_node.get("version", "1.0"),
             "fields": []
         }
-        
+
+        if rel_fields == None:
+            logger.info(f"No fields or relationships found for section template {template_id}.")
+            return template
+            
         if len(rel_fields) < 1:
             logger.info(f"No fields associated with the section template {template_id} has been found.")
             return template
+
         
         for data in rel_fields:
             if data == None:
