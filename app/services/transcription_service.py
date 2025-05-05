@@ -4,8 +4,9 @@ import numpy as np
 
 from app.services.audio_service import AudioService
 from app.utils.speech_processor import SpeechProcessor
-from app.utils.text_utils import clean_transcription, correct_spelling
+from app.utils.text_utils import normalize_text, clean_transcription, correct_spelling
 from app.utils.nlp.spacy_utils import process_text, find_medical_modifiers
+# from spellchecker import SpellChecker
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -107,18 +108,20 @@ class TranscriptionService:
         """
         try:
             # Clean and correct text
-            cleaned_text = clean_transcription(text)
+            normalised_text = normalize_text(text)
+            cleaned_text = clean_transcription(normalised_text)
             corrected_text = correct_spelling(cleaned_text)
+            cleaned_transcript = clean_transcription(corrected_text)
             
             if not cleaned_text:
                 logger.warning("Cleaning resulted in empty text")
                 return False
                 
-            logger.debug(f"Transcription: '{text}' -> '{corrected_text}'")
+            logger.debug(f"Transcription: '{text}' -> '{cleaned_transcript}'")
             
             # Update transcript state
-            self.full_transcript = (self.full_transcript + ". " + text).strip()
-            self.transcript_segments.append(text)
+            self.full_transcript = (self.full_transcript + ". " + cleaned_transcript).strip()
+            self.transcript_segments.append(cleaned_transcript)
             
             # Process with NLP pipeline for debugging
             doc = process_text(self.full_transcript)

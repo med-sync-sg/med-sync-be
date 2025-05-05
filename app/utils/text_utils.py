@@ -3,6 +3,7 @@ from typing import List, Dict
 from symspellpy import SymSpell, Verbosity
 import requests
 import os
+import language_tool_python
 
 dictionary_path = "frequency_dictionary_en_82_765.txt"
 if not os.path.exists(dictionary_path):
@@ -10,8 +11,8 @@ if not os.path.exists(dictionary_path):
     response = requests.get(url)
     with open(dictionary_path, "wb") as f:
         f.write(response.content)
-
-sym_spell = SymSpell(max_dictionary_edit_distance=2)
+ 
+sym_spell = SymSpell(max_dictionary_edit_distance=4) # originally 2
 sym_spell.load_dictionary(dictionary_path, term_index=0, count_index=1)
 
 def normalize_text(text: str) -> str:
@@ -19,7 +20,7 @@ def normalize_text(text: str) -> str:
     Normalize text by lowering the case and stripping extra whitespace.
     You can add more normalization (e.g., remove punctuation) if needed.
     """
-    return re.sub(r'[^\w\s]', '', text.lower().strip())
+    return re.sub(r'[^\w\s\']', '', text.lower().strip())
 
 def clean_transcription(text):
     """Enhanced cleaning: removes extra spaces, duplicate words, and noise."""
@@ -44,3 +45,18 @@ def correct_spelling(text):
             corrected_words.append(word)
 
     return ' '.join(corrected_words)
+
+
+# if local server   
+# tool = language_tool_python.LanguageTool('en-US', host='localhost', port=8081)
+
+# public server // requires internet. can change to local server
+tool = language_tool_python.LanguageTool('en-US')
+
+def clean_transcription(text):
+    """
+    Sentence-level grammar and spelling correction using LanguageTool.
+    """
+    matches = tool.check(text)
+    corrected_text = language_tool_python.utils.correct(text, matches)
+    return corrected_text

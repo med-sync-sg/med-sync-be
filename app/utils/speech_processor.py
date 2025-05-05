@@ -29,7 +29,7 @@ class SpeechProcessor:
     5. Profile caching for performance
     """
     
-    def __init__(self, model_id: str = "facebook/wav2vec2-base-960h", 
+    def __init__(self, model_id: str = "facebook/wav2vec2-large-960h-lv60", # "facebook/wav2vec2-base-960h"
                  use_gpu: bool = True,
                  language_model_path: Optional[str] = None):
         """
@@ -93,9 +93,10 @@ class SpeechProcessor:
                 logger.info(f"Initializing CTC decoder with language model: {language_model_path}")
                 self.decoder = build_ctcdecoder(
                     vocab, 
-                    kenlm_model_path=language_model_path,
-                    alpha=0.3,  # Language model weight
-                    beta=1.0    # Word insertion bonus
+                    kenlm_model_path=language_model_path, # currently there is no LM
+                    alpha=2.5,  # 0.3 Language model weight 1.5~2.5
+                    beta=0.0,    # 1.0 Word insertion bonus 0.0~1.0
+                    beam_width=100  # 기존 default 보다 크게
                 )
             else:
                 logger.warning("Initializing CTC decoder without language model")
