@@ -465,26 +465,16 @@ def print_formatted_transcript_results(result: dict):
     keywords = result.get("entities", [])
     print(f"\n🔑 EXTRACTED KEYWORDS: {len(keywords)}")
     print("-" * 80)
-    for i, kw in enumerate(keywords[:5]):  # Show first 5 keywords
+    for i, kw in enumerate(keywords):  # Show first 5 keywords
         if isinstance(kw, dict) and "term" in kw:
             print(f"  {i+1}. Term: {kw.get('term')}")
             
-            # Print modifiers if available
-            modifiers = kw.get("modifiers", [])
-            if modifiers:
-                print(f"     Modifiers: {', '.join(modifiers[:3])}" + 
-                      (f" (+ {len(modifiers) - 3} more)" if len(modifiers) > 3 else ""))
-                
-            # Print quantities if available
-            quantities = kw.get("quantities", [])
-            if quantities:
-                print(f"     Quantities: {', '.join(quantities[:3])}" + 
-                      (f" (+ {len(quantities) - 3} more)" if len(quantities) > 3 else ""))
+            for key, value in kw.items():
+                print(f"     {key}: {', '.join(value)}")
         else:
             print(f"  {i+1}. {kw}")
     
-    if len(keywords) > 5:
-        print(f"  ... and {len(keywords) - 5} more keywords")
+
     print("-" * 80)
     
     # Print template suggestions

@@ -92,10 +92,19 @@ def append_value_at_path(template: Dict[str, Any], path: List[str], new_value: A
     return template
 
 def merge_flat_keywords_into_template(keywords: Dict[str, Any],
-                                        template: Dict[str, Any],
-                                        threshold: float = 0.5) -> Dict[str, Any]:
+                                      template: Dict[str, Any],
+                                      threshold: float = 0.5) -> Dict[str, Any]:
     """
-    Merge a flat feature dictionary into a nested content template.
+    Merge a keyword dictionary into a template structure.
+    Supports the updated keyword dictionary format with semantic_type, cui, and tui.
+    
+    Args:
+        keywords: Dictionary with medical term information
+        template: Template dictionary to populate
+        threshold: Minimum similarity threshold for field matching
+        
+    Returns:
+        Merged template with populated values
     """
     similarity_template = copy.deepcopy(template)
     working_template = clear_template_values(copy.deepcopy(template))
@@ -111,8 +120,23 @@ def merge_flat_keywords_into_template(keywords: Dict[str, Any],
                 if isinstance(sub_val, str):
                     candidates.append(([t_key, sub_key], f"{sub_key}: {sub_val}"))
     
+    # Process special fields first - term, semantic_type, cui, tui
+    if "term" in keywords and isinstance(keywords["term"], str):
+        term = keywords["term"]
+        working_template["term"] = term
+    
+    # Store UMLS metadata
+    if "semantic_type" in keywords:
+        working_template["semantic_type"] = keywords["semantic_type"]
+    if "cui" in keywords:
+        working_template["cui"] = keywords["cui"]
+    if "tui" in keywords:
+        working_template["tui"] = keywords["tui"]
+    
+    # Process the other fields
     for f_key, f_value in keywords.items():
-        if f_key == "label":
+        # Skip already processed fields
+        if f_key in ["term", "semantic_type", "cui", "tui", "label"]:
             continue
 
         if isinstance(f_value, list):
@@ -121,44 +145,47 @@ def merge_flat_keywords_into_template(keywords: Dict[str, Any],
                 feature_candidate = f"{f_key}: {element_str}"
                 best_sim = -1.0
                 best_path = []
+                
+                # Find the best matching field in the template
                 for path, candidate in candidates:
                     sim = cosine_similarity(embed_text(feature_candidate), embed_text(candidate))
                     if sim > best_sim:
                         best_sim = sim
                         best_path = path
-                if best_path:
+                
+                # Add to the template if a good match is found
+                if best_path and best_sim >= threshold:
                     current_value = get_value_at_path(working_template, best_path)
                     if current_value:
                         working_template = append_value_at_path(working_template, best_path, element_str)
                     else:
                         working_template = set_value_at_path(working_template, best_path, element_str)
                 else:
+                    # Store in extras if no good match
                     extras.setdefault(f_key, []).append(element_str)
         else:
-            if f_key == "term" and isinstance(f_value, str):
-                if working_template.get("Main Symptom") is not None and f_value not in ["symptoms", "feverishness", "painful"]:
-                    best_path = ["Main Symptom", "name"]
-                    working_template = set_value_at_path(working_template, best_path, f_value)
+            # Handle non-list values
+            f_val_str = str(f_value)
+            feature_candidate = f"{f_key}: {f_val_str}"
+            best_sim = -1.0
+            best_path = []
+            
+            for path, candidate in candidates:
+                sim = cosine_similarity(embed_text(feature_candidate), embed_text(candidate))
+                if sim > best_sim:
+                    best_sim = sim
+                    best_path = path
+            
+            if best_path and best_sim >= threshold:
+                working_template = set_value_at_path(working_template, best_path, f_val_str)
             else:
-                f_val_str = str(f_value)
-                feature_candidate = f"{f_key}: {f_val_str}"
-                best_sim = -1.0
-                best_path = []
-                for path, candidate in candidates:
-                    sim = cosine_similarity(embed_text(feature_candidate), embed_text(candidate))
-                    if sim > best_sim:
-                        best_sim = sim
-                        best_path = path
-                if best_path and best_sim >= threshold:
-                    working_template = set_value_at_path(working_template, best_path, f_val_str)
-                else:
-                    extras[f_key] = f_value
+                extras[f_key] = f_value
 
+    # Add any extra fields that didn't match the template
     if extras:
         if "additional_content" in working_template and isinstance(working_template["additional_content"], dict):
             working_template["additional_content"].update(extras)
         else:
             working_template["additional_content"] = extras
-            
-    print("Final Working Template: ", working_template)
+    
     return working_template

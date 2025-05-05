@@ -1,34 +1,30 @@
-from typing import List, Tuple, Dict, Any
-from spacy.matcher import PhraseMatcher
-import pandas as pd
-import ahocorasick
+from typing import List, Dict, Any, Optional
+import spacy
 from spacy import Language
-from fastapi import APIRouter
-import spacy.tokenizer
-from spacy.tokens import Doc, Token
-import spacy.tokens
-from spacy.matcher import DependencyMatcher
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-import torch.nn.functional as F
-from os import environ
-from spacy.tokens import Span
-from Levenshtein import ratio as levenshtein_ratio
+from spacy.tokens import Doc, Token, Span
+import ahocorasick
 
-# Load a cross-encoder model (e.g., "cross-encoder/ms-marco-MiniLM-L-6-v2" or something domain-specific)
-re_ranker_name = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-re_ranker_tokenizer = AutoTokenizer.from_pretrained(re_ranker_name)
-re_ranker_model = AutoModelForSequenceClassification.from_pretrained(re_ranker_name)
-HF_TOKEN = environ.get("HF_ACCESS_TOKEN")
-
-router = APIRouter()
-
+# Initialize automaton for Aho-Corasick algorithm
 automaton = ahocorasick.Automaton()
+
+# Register custom extensions
+if not Span.has_extension("is_medical_term"):
+    Span.set_extension("is_medical_term", default=False)
+    
+if not Span.has_extension("cui"):
+    Span.set_extension("cui", default="N/A")
+
+if not Span.has_extension("tui"):
+    Span.set_extension("tui", default="N/A")
+    
+
+# Load model
+nlp_en = spacy.load("en_core_web_trf")
 
 @Language.component("ahocorasick")
 def AhoCorasickComponent(doc: Doc):
     """
     A custom spaCy component that uses the Aho-Corasick algorithm to find medical terms in text.
-    This fixed version handles overlapping entity spans.
     
     Args:
         doc: A spaCy Doc object
@@ -38,6 +34,7 @@ def AhoCorasickComponent(doc: Doc):
     """
     from app.db.data_loader import umls_df_dict
     df = umls_df_dict["concepts_with_sty_def_df"]
+    
     # Build the automaton if it's not already built
     if not automaton.get_stats()['total_size']:
         for index, row in df.iterrows():
@@ -59,8 +56,6 @@ def AhoCorasickComponent(doc: Doc):
         term = data['term']  # The stored term (lowercase)
         start_char = end_index - len(term) + 1
         end_char = end_index + 1
-        # Extract the substring from the document.
-        found_text = text_lower[start_char:end_char]
         
         span = doc.char_span(start_char, end_char, label=data['semantic_type'], alignment_mode="contract")
         if span is None:
@@ -68,33 +63,24 @@ def AhoCorasickComponent(doc: Doc):
             span = doc.char_span(start_char, end_char, label=data['semantic_type'], alignment_mode="expand")
             
         if span is not None:
-            if found_text.strip().lower() == term.strip().lower():            
-                span._.set("is_medical_term", True)
-                # Save all information we need for later
-                matches.append({
-                    'span': span,
-                    'score': 1.0,  # Perfect match
-                    'type': data['semantic_type'],
-                    'term': term
-                })
-            else:
-                # Compute the Levenshtein ratio between the found text and the stored term.
-                sim = levenshtein_ratio(found_text, term)
-                # Accept the match if similarity is above the threshold.
-                if sim >= 0.85:
-                    span._.is_medical_term = True
-                    matches.append({
-                        'span': span,
-                        'score': sim,  # Levenshtein similarity
-                        'type': data['semantic_type'],
-                        'term': term
-                    })
+            # Add UMLS metadata to the span
+            span._.set("is_medical_term", True)
+            span._.set("cui", data['cui'])
+            span._.set("tui", data['tui'])
+            
+            matches.append({
+                'span': span,
+                'score': 1.0,
+                'type': data['semantic_type'],
+                'cui': data['cui'],
+                'tui': data['tui'],
+                'term': term
+            })
 
     # Sort matches by score (higher is better)
     matches.sort(key=lambda x: x['score'], reverse=True)
     
     # Resolve overlapping spans by keeping only the highest-scored spans
-    # that don't overlap with already selected spans
     final_matches = []
     used_tokens = set()
     
@@ -110,8 +96,7 @@ def AhoCorasickComponent(doc: Doc):
     existing_ents = [ent for ent in doc.ents if not getattr(ent, '_.is_medical_term', False)]
     merged_ents = existing_ents + final_matches
     
-    # Filter out any remaining overlaps (should be none after our resolution)
-    # This is a safety check in case there are still conflicts
+    # Filter out any remaining overlaps
     token_ent_map = {}
     filtered_ents = []
     
@@ -131,412 +116,243 @@ def AhoCorasickComponent(doc: Doc):
     doc.ents = filtered_ents
     return doc
 
-def summarize_text():
-    pass
-
-
-nlp_en = spacy.load("en_core_web_trf")
-
-if not Span.has_extension("is_medical_term"):
-    Span.set_extension("is_medical_term", default=False)
-
-if "ahocorasick" not in nlp_en.pipe_names:
-    nlp_en.add_pipe("ahocorasick", after="ner")
-
 def process_text(text: str) -> Doc:
+    """
+    Process text with the NLP pipeline and medical entity recognition
+    
+    Args:
+        text: Input text to process
+    
+    Returns:
+        doc: Processed spaCy Doc with medical entities
+    """
+    # Make sure the medical entity recognition component is added
+    if "ahocorasick" not in nlp_en.pipe_names:
+        nlp_en.add_pipe("ahocorasick", after="ner")
+    
     # Process the text
     doc = nlp_en(text)
-    
-    medical_terms = {ent.text: ent.label_ for ent in doc.ents if ent._.is_medical_term}
-    print(medical_terms)
-    # svg = displacy.render(doc)
-    # output_path = Path("./images/dependency_plot.svg")
-    # output_path.open("w", encoding="utf-8").write(svg)
-    
-    # svg = displacy.render(doc, style="ent")
-    # output_path = Path("./images/ent_plot.svg")
-    # output_path.open("w", encoding="utf-8").write(svg)
-
     return doc
-
-def extract_basic_modifiers(target: Token):
-    modifiers = []
-    # Expand this list to capture more modifiers
-    target_dep_relations = ["amod", "attr", "advmod", "compound", "nmod", "npadvmod"]
-    
-    # Then use these in your extraction logic
-    for child in target.children:
-        if child.dep_ in target_dep_relations:
-            modifiers.append(child.text)
-            
-    return modifiers
-
-def extract_pp_object_span(token: Token) -> Span:
-    """
-    Given a target token, look for a child that is a preposition (ADP),
-    then find its prepositional object (child with dep "pobj") and return a
-    contiguous span covering the entire subtree of that object.
-    If the span begins with a determiner, remove it.
-    Returns the Span or None if no such object is found.
-    """
-    for child in token.children:
-        if child.pos_ == "ADP":
-            pobj = None
-            for sub in child.children:
-                if sub.dep_ == "pobj":
-                    pobj = sub
-                    break
-            if pobj is not None:
-                subtree_tokens = sorted(list(pobj.subtree), key=lambda t: t.i)
-                start = subtree_tokens[0].i
-                end = subtree_tokens[-1].i + 1
-                span = token.doc[start:end]
-                if span[0].pos_ == "DET":
-                    span = token.doc[start+1:end]
-                return span
-    return None
-
-def extract_contextual_modifiers(span, window_size=3):
-    """Extract modifiers based on a window around the span"""
-    modifiers = []
-    doc = span.doc
-    
-    # Get start and end indices with window
-    start_idx = max(0, span[0].i - window_size)
-    end_idx = min(len(doc), span[-1].i + window_size + 1)
-    
-    # Analyze the window
-    for token in doc[start_idx:end_idx]:
-        # Skip the actual term
-        if token.i >= span[0].i and token.i <= span[-1].i:
-            continue
-            
-        # Check if token is an adjective, adverb, or other relevant POS
-        if token.pos_ in ["ADJ", "ADV"]:
-            modifiers.append(token.text)
-            
-    return modifiers
-
-def detect_negation(span):
-    """Detect if a medical term is negated"""
-    doc = span.doc
-    
-    # Look for common negation words
-    negation_tokens = ["no", "not", "n't", "none", "never", "without"]
-    
-    # Check if any negation token is within a certain distance
-    start_idx = max(0, span[0].i - 3)  # Look 3 tokens before
-    
-    for i in range(start_idx, span[0].i):
-        token = doc[i]
-        if token.lower_ in negation_tokens or token.lemma_ == "deny":
-            return True
-            
-    return False
-
-def extract_temporal_info(span):
-    """Extract temporal information related to a medical term"""
-    doc = span.doc
-    temporal_info = []
-    
-    # Common time-related words
-    temporal_tokens = ["day", "week", "month", "year", "hour", "minute", "since", "for"]
-    
-    # Look for time-related information within a window
-    window_start = max(0, span[0].i - 5)
-    window_end = min(len(doc), span[-1].i + 5)
-    
-    # Extract phrases containing numbers and temporal tokens
-    for i in range(window_start, window_end):
-        token = doc[i]
-        if token.like_num or token.lower_ in temporal_tokens:
-            # Extract the phrase containing the temporal information
-            # This is simplified and would need refinement
-            if token.like_num and i+1 < len(doc) and doc[i+1].lower_ in temporal_tokens:
-                temporal_info.append(f"{token.text} {doc[i+1].text}")
-    
-    return temporal_info
-
-def find_modifiers_for_medical_span(span: Span) -> Dict[str, Any]:
-    """
-    Enhanced function to find modifiers for medical terms using both
-    dependency parsing and NER.
-    """
-    result_dict = {
-        "term": span.text,
-        "modifiers": [],
-        "quantities": [],
-        "temporal": []
-    }
-    
-    doc = span.doc
-    sent = span.sent
-    
-    # 1. Process dependency-based modifiers
-    target_tokens = [span[0]]  # Start with the first token of the span
-    
-    # If span has a head outside itself, include that too
-    if span.root.head.i < span.start or span.root.head.i >= span.end:
-        target_tokens.append(span.root.head)
-    
-    # Go through each relevant token and its children
-    for token in target_tokens:
-        # Check for adjective modifiers
-        for child in token.children:
-            # Adjectives, adverbs, and compounds as modifiers
-            if child.pos_ in ["ADJ", "ADV"] or child.dep_ in ["amod", "advmod", "compound", "nmod"]:
-                result_dict["modifiers"].append(child.text)
-            
-            # Find numerical modifiers and classifiers
-            if child.dep_ in ["nummod", "quantmod"] or child.pos_ == "NUM":
-                # Check for compound quantities like "three days"
-                quantity_phrase = []
-                quantity_phrase.append(child.text)
-                
-                # Look for nouns or time units following the number
-                for gchild in child.children:
-                    if gchild.pos_ in ["NOUN"] or gchild.text in ["days", "weeks", "months", "years"]:
-                        quantity_phrase.append(gchild.text)
-                
-                result_dict["quantities"].append(" ".join(quantity_phrase))
-    
-    # 2. Use NER to extract quantities and temporal information
-    for ent in doc.ents:
-        # Skip if the entity is part of the medical term itself
-        if (ent.start >= span.start and ent.start < span.end) or \
-           (ent.end > span.start and ent.end <= span.end):
-            continue
-        
-        # Check if entity appears in the same sentence or nearby context
-        if ent.sent == sent or abs(ent.start - span.end) <= 10 or abs(span.start - ent.end) <= 10:
-            # Temporal information
-            if ent.label_ in ["DATE", "TIME", "DURATION"]:
-                # Check if this entity is related to our term using dependency path
-                if is_entity_related_to_span(ent, span):
-                    result_dict["temporal"].append(ent.text)
-            
-            # Quantities
-            elif ent.label_ in ["CARDINAL", "QUANTITY", "ORDINAL", "PERCENT"]:
-                if is_entity_related_to_span(ent, span):
-                    result_dict["quantities"].append(ent.text)
-    
-    # 3. Handle special patterns like "X feels Y"
-    extract_special_patterns(span, result_dict)
-    
-    # Remove duplicates while preserving order
-    result_dict["modifiers"] = list(dict.fromkeys(result_dict["modifiers"]))
-    result_dict["quantities"] = list(dict.fromkeys(result_dict["quantities"]))
-    result_dict["temporal"] = list(dict.fromkeys(result_dict["temporal"]))
-    
-    return result_dict
-
-def is_entity_related_to_span(ent: Span, span: Span) -> bool:
-    """
-    Determine if an entity is related to a span using dependency path analysis.
-    
-    Args:
-        ent: Named entity span
-        span: Medical term span
-        
-    Returns:
-        True if related, False otherwise
-    """
-    # Simple proximity check
-    if abs(ent.start - span.end) <= 5 or abs(span.start - ent.end) <= 5:
-        return True
-    
-    # Check for specific patterns that indicate relation
-    # For example: "pain for 3 days" - "3 days" is related to "pain"
-    
-    # Check for preposition relationship
-    for token in span:
-        # Look for prepositions after the span
-        for child in token.children:
-            if child.pos_ == "ADP" and child.i > span.end:
-                # Check if entity appears after the preposition
-                if child.i < ent.start:
-                    return True
-    
-    # More complex path analysis could be added here
-    
-    return False
-
-def extract_special_patterns(span: Span, result_dict: Dict[str, Any]) -> None:
-    """
-    Extract modifiers using common symptom description patterns.
-    
-    Args:
-        span: Medical term span
-        result_dict: Dictionary to update with extracted information
-    """
-    doc = span.doc
-    sent = span.sent
-    
-    # Pattern: "X feels Y" where X is the term and Y is a modifier
-    for token in sent:
-        if token.lemma_ in ["feel", "seem", "appear", "be"] and is_token_related_to_span(token, span):
-            for child in token.children:
-                if child.pos_ == "ADJ":
-                    result_dict["modifiers"].append(child.text)
-    
-    # Pattern: "X for Y" where Y is temporal
-    for token in sent:
-        if token.text == "for" and is_token_related_to_span(token, span):
-            for child in token.children:
-                if child.pos_ == "NUM" or child.dep_ == "nummod":
-                    temporal_phrase = [t.text for t in child.subtree]
-                    result_dict["temporal"].append(" ".join(temporal_phrase))
-
-def is_token_related_to_span(token: Token, span: Span) -> bool:
-    """Check if a token is directly related to a span via dependency path"""
-    for sp_token in span:
-        # Check direct path
-        if token.head == sp_token or sp_token.head == token:
-            return True
-        
-        # Check one level up
-        if token.head == sp_token.head:
-            return True
-    
-    return False
-
-def find_modifiers_for_medical_span(span: Span) -> Dict[str, Any]:
-    """
-    Given a span, use DependencyMatcher to find all target nouns (POS "NOUN").
-    For each target, record a dictionary with:
-      - "term": the target token's text,
-      - "modifiers": list containing the head of the target (if different from target)
-                     plus any adjective children (with DEP "amod" or "attr") attached to the head,
-      - "quantities": list of tokens (or extracted PP spans) that indicate numeric/compound modifiers.
-    Only tokens in the same sentence as the target are considered.
-    Returns a dictionary.
-    """
-    # Load the model (in practice, load this once externally)
-    nlp_en = spacy.load("en_core_web_trf")
-    
-    matcher = DependencyMatcher(nlp_en.vocab)
-    # Our pattern matches any token with POS "NOUN"
-    pattern = [
-        {"RIGHT_ID": "target", "RIGHT_ATTRS": {"POS": "NOUN"}}
-    ]
-    matcher.add("FOUNDED", [pattern])
-    results = []
-    
-    # Run the matcher on the span.
-    matches = matcher(span)
-    for match_id, token_ids in matches:
-        result_dict = {
-            "term": "",
-            "modifiers": [],
-            "quantities": []
-        }
-        target = span[token_ids[0]]
-        result_dict["term"] = span.text
-        
-        # Process direct children of the target to get direct modifiers/quantities.
-        for child in target.children:
-            if child.pos_ == "ADJ" and child.dep_ in ("amod", "attr"):
-                result_dict["modifiers"].append(child.text)
-            if child.dep_ in ("nummod", "quantmod", "compound"):
-                result_dict["quantities"].append(child.text)
-
-        # Process children of the target's head.
-        for child in target.head.children:
-            # Only consider tokens in the same sentence.
-            if child.sent != target.sent:
-                continue
-            # If a child is an adjective (and its dependency is "amod" or "attr"), record it.
-            if child.pos_ == "ADJ" and child.dep_ in ("amod", "attr"):
-                result_dict["modifiers"].append(child.text)
-            # If a child is numeric or compound, record it as quantity.
-            if child.dep_ in ("nummod", "quantmod", "compound"):
-                result_dict["quantities"].append(child.text)
-            # If a child is a preposition, extract its prepositional object span.
-            if child.pos_ == "ADP":
-                pp_span = extract_pp_object_span(target.head)
-                if pp_span is not None:
-                    # Add the full PP text as a quantity modifier.
-                    result_dict["quantities"].append(pp_span.text)
-        
-        results.append(result_dict)
-    print("Extracted dicts: ", results)
-    if len(results) == 0:
-        return {
-            "term": span.text,
-            "modifiers": [],
-            "quantities": []
-        }
-    if len(results) == 1:
-        return results[0]
-    return merge_results_dicts(results)
-
 
 def find_medical_modifiers(doc: Doc) -> List[Dict[str, Any]]:
     """
-    Iterate over all spans in the Doc (here, we assume medical terms appear as entities)
-    that have the custom extension 'is_medical_term' set to True.
-    For each such span, find and return its adjective and number modifiers.
-    Returns a list of dictionaries, each containing modifier information for a medical term.
-    """
-    features = []
-    for span in doc.ents:
-        # Check if the span is marked as medical.
-        if span._.is_medical_term == True:
-            print("Medical term: ", span.text)
-            mods = find_modifiers_for_medical_span(span)
-            # Ensure we're adding a dictionary, not a list
-            if isinstance(mods, dict):
-                features.append(mods)
-            elif isinstance(mods, list):
-                # If for some reason find_modifiers_for_medical_span returns a list,
-                # extend features with the list items
-                for item in mods:
-                    if isinstance(item, dict):
-                        features.append(item)
-    
-    # Now merge the dictionaries to remove duplicates
-    merged_features = merge_results_dicts(features)
-    return merged_features
-
-def merge_results_dicts(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Merge dictionaries with the same 'term' field, combining their modifiers and quantities lists.
+    Extract medical terms and their modifiers from the document.
+    Uses spaCy's native NER functionality to process spans and incorporate standard
+    entity types like DATE, TIME, CARDINAL, etc.
     
     Args:
-        results: List of dictionaries, each with 'term', 'modifiers', and 'quantities' fields
+        doc: Processed spaCy Doc
+    
+    Returns:
+        List of dictionaries with medical terms and their modifiers
+    """
+    results = []
+    
+    # First collect all standard spaCy entities for context
+    standard_entities = {}
+    for ent in doc.ents:
+        # Skip irrelevant entity types
+        if ent.label_ in ["PRODUCT", "FAC", "ORG", "EVENT"]:
+            continue
+            
+        standard_entities[ent.start] = {
+            "text": ent.text,
+            "type": ent.label_,
+            "start": ent.start,
+            "end": ent.end
+        }
+    
+    # Process medical entities
+    for ent in doc.ents:
+        # Only process entities marked as medical terms
+        if getattr(ent._, "is_medical_term", False):
+            # Create result dictionary with required fields
+            result = {
+                "term": ent.text,
+                "semantic_type": ent.label_,
+                "cui": getattr(ent._, "cui", ""),
+                "tui": getattr(ent._, "tui", ""),
+                "modifiers": [],
+                "quantities": [],
+                "locations": [],
+                "temporal": [],
+                "negations": []  # Store complete negated phrases
+            }
+            
+            # Get the sentence containing the entity (safely)
+            try:
+                sent = ent.sent
+                sent_start = sent.start
+                sent_end = sent.end
+            except ValueError:
+                # Create a safe window around the entity if it spans sentences
+                sent_start = max(0, ent.start - 5)
+                sent_end = min(len(doc), ent.end + 5)
+                sent = doc[sent_start:sent_end]
+            
+            # Check for negation
+            term_negation = check_term_negation(ent, sent, doc)
+            if term_negation:
+                result["negations"].append({
+                    "negated_item": "term",
+                    "negated_value": ent.text,
+                    "negation_phrase": term_negation
+                })
+            
+            # Process modifiers using dependency parsing
+            for token in ent:
+                # Safety check
+                if token.i < 0 or token.i >= len(doc):
+                    continue
+                    
+                # Use token.children directly - it's usually safe in spaCy
+                for child in token.children:
+                    # Safety check
+                    if child.i < 0 or child.i >= len(doc):
+                        continue
+                    
+                    # Adjective modifiers
+                    if child.pos_ in ["ADJ", "ADV"] or child.dep_ in ["amod", "advmod"]:
+                        modifier = child.text
+                        result["modifiers"].append(modifier)
+                    
+                    # Numerical modifiers 
+                    elif child.dep_ in ["nummod", "quantmod"] or child.pos_ == "NUM":
+                        # Get the subtree safely
+                        try:
+                            # Sort subtree by position to maintain correct word order
+                            subtree_tokens = sorted([t for t in child.subtree if 0 <= t.i < len(doc)], key=lambda t: t.i)
+                            if subtree_tokens:
+                                quantity_phrase = " ".join(t.text for t in subtree_tokens)
+                                
+                                # Determine if this is a temporal expression
+                                time_words = ["day", "week", "month", "year", "hour", "minute", "second", "ago"]
+                                if any(word in quantity_phrase.lower() for word in time_words):
+                                    result["temporal"].append(quantity_phrase)
+                                else:
+                                    result["quantities"].append(quantity_phrase)
+                        except Exception:
+                            # Fallback to just the token text if subtree fails
+                            result["quantities"].append(child.text)
+                    
+                    # Prepositions for location and temporal expressions
+                    elif child.pos_ == "ADP" and child.dep_ == "prep":
+                        try:
+                            # Get and sort the subtree safely
+                            subtree_tokens = sorted([t for t in child.subtree if 0 <= t.i < len(doc)], key=lambda t: t.i)
+                            if subtree_tokens:
+                                prep_phrase = " ".join(t.text for t in subtree_tokens)
+                                
+                                # Classify by preposition type
+                                if child.text.lower() in ["in", "on", "at", "near", "around", "throughout"]:
+                                    result["locations"].append(prep_phrase)
+                                elif child.text.lower() in ["for", "since", "during", "after", "before", "ago"]:
+                                    result["temporal"].append(prep_phrase)
+                                else:
+                                    result["modifiers"].append(prep_phrase)
+                        except Exception:
+                            # Fallback if subtree fails
+                            pass
+            
+            # Now look for standard NER entities in the sentence that might relate to our medical term
+            for idx in range(sent_start, sent_end):
+                if idx in standard_entities:
+                    std_ent = standard_entities[idx]
+                    
+                    # Skip if the entity overlaps with our medical term
+                    if (std_ent["start"] <= ent.end and std_ent["end"] >= ent.start):
+                        continue
+                    
+                    # Check if this standard entity is close to our medical term
+                    distance = min(abs(std_ent["start"] - ent.end), abs(ent.start - std_ent["end"]))
+                    if distance <= 10:  # Within 10 tokens
+                        entity_type = std_ent["type"]
+                        entity_text = std_ent["text"]
+                        
+                        # Process based on entity type
+                        if entity_type in ["DATE", "TIME"]:
+                            result["temporal"].append(entity_text)
+                        elif entity_type in ["CARDINAL", "QUANTITY", "PERCENT", "MONEY"]:
+                            result["quantities"].append(entity_text)
+                        elif entity_type in ["GPE", "LOC"]:
+                            result["locations"].append(entity_text)
+                        elif entity_type == "ORDINAL":
+                            result["modifiers"].append(entity_text)
+            
+            # Add to results
+            results.append(result)
+    
+    # Process and deduplicate results
+    unique_results = {}
+    for result in results:
+        term = result["term"]
+        if term not in unique_results:
+            unique_results[term] = result
+        else:
+            # Merge fields
+            for field in ["modifiers", "quantities", "locations", "temporal", "negations"]:
+                if field in result and field in unique_results[term]:
+                    unique_results[term][field].extend(result[field])
+    
+    # Remove duplicates while preserving order
+    for term, data in unique_results.items():
+        for field in ["modifiers", "quantities", "locations", "temporal"]:
+            if field in data:
+                data[field] = list(dict.fromkeys(data[field]))
+        
+        # Special handling for negations
+        if "negations" in data:
+            unique_negations = []
+            seen = set()
+            for neg in data["negations"]:
+                key = f"{neg.get('negated_item', '')}:{neg.get('negated_value', '')}"
+                if key not in seen:
+                    seen.add(key)
+                    unique_negations.append(neg)
+            data["negations"] = unique_negations
+    
+    return list(unique_results.values())
+
+def check_term_negation(entity: Span, sentence: Span, doc: Doc) -> Optional[str]:
+    """
+    Check if a medical term is negated and return the negation phrase
+    
+    Args:
+        entity: The medical entity
+        sentence: The sentence containing the entity
+        doc: The full document
         
     Returns:
-        List of merged dictionaries
+        Negation phrase or None if not negated
     """
-    if not results:
-        return []
-    
-    merged = {}
-    for item in results:
-        # Skip non-dictionary items
-        if not isinstance(item, dict):
-            print(f"Skipping non-dictionary item: {item}")
-            continue
+    # Safety check for entity bounds
+    if entity.start < 0 or entity.end > len(doc):
+        return None
         
-        term = item.get("term", "")
-        if not term:  # Skip items without a term
+    negation_words = ["no", "not", "n't", "never", "without", "deny", "denies", "denied"]
+    
+    # Look for negation words within a window before the entity
+    start_idx = max(0, entity.start - 3)
+    for i in range(start_idx, entity.start):
+        if i >= len(doc):
             continue
             
-        if term in merged:
-            # Extend existing modifiers and quantities lists
-            modifiers = item.get("modifiers", [])
-            quantities = item.get("quantities", [])
-            
-            if isinstance(modifiers, list):
-                merged[term]["modifiers"].extend(modifiers)
-            if isinstance(quantities, list):
-                merged[term]["quantities"].extend(quantities)
-        else:
-            # Create a new entry copying the lists to avoid modifying the original lists
-            merged[term] = {
-                "term": term,
-                "modifiers": list(item.get("modifiers", [])),
-                "quantities": list(item.get("quantities", []))
-            }
+        token = doc[i]
+        if token.lower_ in negation_words or token.lemma_ in negation_words:
+            # Example: "no fever" or "denies headache"
+            return f"{token.text} {entity.text}"
     
-    return list(merged.values())
+    # Check for negation as a child of the entity head
+    for token in entity:
+        if token.i >= len(doc):
+            continue
+            
+        for child in token.children:
+            if child.i >= len(doc):
+                continue
+                
+            if child.dep_ == "neg":
+                # Example: "pain is not present"
+                return f"{entity.text} {child.text}"
+    
+    return None
