@@ -5,7 +5,7 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
-class TemplateService:
+class SectionTemplateService:
     """
     Service for managing section templates and fields
     """
@@ -14,7 +14,7 @@ class TemplateService:
         """Initialize the template service"""
         self.neo4j = neo4j_session
     
-    def find_templates_by_text(self, search_text: str, similarity_threshold: float = 0.65, limit: int = 5) -> List[Dict[str, Any]]:
+    def find_templates_by_text(self, search_text: str, is_doctor: bool=True, similarity_threshold: float = 0.65, limit: int = 5) -> List[Dict[str, Any]]:
         """
         Find section templates by semantic similarity to text
         
@@ -32,9 +32,10 @@ class TemplateService:
         # Search for templates using vector search
         results = self.neo4j.run_vector_search(
             label="SectionTemplate",
-            embedding_field="embedding",
+            embedding_field="embedding_1",
             vector=embedding,
             similarity_threshold=similarity_threshold,
+            is_doctor=is_doctor,
             limit=limit
         )
         
@@ -65,9 +66,9 @@ class TemplateService:
             Template with fields or None if not found
         """
         query = """
-        MATCH (t:SectionTemplate {id: $template_id})
-        OPTIONAL MATCH (t)-[r:HAS_FIELD]->(f:TemplateField)
-        RETURN t as template, collect({field: f, relationship: r}) as fields
+        MATCH (template:SectionTemplate {id: $template_id})
+        OPTIONAL MATCH (template)-[r:HAS_FIELD]->(field:TemplateField)
+        RETURN template, collect([r, field]) as fields
         """
         
         results = self.neo4j.run_query(query, {"template_id": template_id})
@@ -76,8 +77,8 @@ class TemplateService:
             return None
             
         template_node = results[0].get("template", {})
-        fields_data = results[0].get("fields", [])
-        
+        rel_fields = results[0].get("fields")
+
         # Build template object
         template = {
             "id": template_node.get("id"),
@@ -90,20 +91,29 @@ class TemplateService:
             "fields": []
         }
         
-        # Add fields with relationship properties
-        for field_data in fields_data:
-            field_node = field_data.get("field", {})
-            rel = field_data.get("relationship", {})
+        if len(rel_fields) < 1:
+            logger.info(f"No fields associated with the section template {template_id} has been found.")
+            return template
+        
+        for data in rel_fields:
+            if data == None:
+                continue
             
-            if field_node:
+            if len(data) != 2:
+                logger.warning("Invalid relationship or field!")
+                continue
+            relationship = data[0]
+            field_data = data[1]
+            
+            if field_data:
                 field = {
-                    "id": field_node.get("id"),
-                    "name": field_node.get("name"),
-                    "description": field_node.get("description"),
-                    "data_type": field_node.get("data_type"),
-                    "field_name": rel.get("name"),
-                    "required": rel.get("required", False),
-                    "order": rel.get("order", 0)
+                    "id": field_data.get("id"),
+                    "name": field_data.get("name"),
+                    "description": field_data.get("description"),
+                    "data_type": field_data.get("data_type"),
+                    "field_name": field_data.get("name"),
+                    "required": field_data.get("required", False),
+                    "order": field_data.get("order", 0)
                 }
                 template["fields"].append(field)
                 
@@ -168,7 +178,7 @@ class TemplateService:
             id: $id,
             name: $name,
             description: $description,
-            embedding: $embedding,
+            embedding_1: $embedding,
             created_at: timestamp(),
             created_by: $created_by,
             system_defined: $system_defined,
@@ -182,7 +192,7 @@ class TemplateService:
             "id": template_data.get("id"),
             "name": template_data.get("name"),
             "description": template_data.get("description", ""),
-            "embedding": embedding,
+            "embedding_1": embedding,
             "created_by": template_data.get("created_by", "user"),
             "system_defined": template_data.get("system_defined", False),
             "version": template_data.get("version", "1.0")
@@ -275,7 +285,7 @@ class TemplateService:
             description: $description,
             data_type: $data_type,
             required: $required,
-            embedding: $embedding,
+            embedding_1: $embedding,
             system_defined: $system_defined,
             created_at: timestamp()
         })
@@ -288,7 +298,7 @@ class TemplateService:
             "description": field_data.get("description", ""),
             "data_type": field_data.get("data_type", "text"),
             "required": field_data.get("required", False),
-            "embedding": embedding,
+            "embedding_1": embedding,
             "system_defined": field_data.get("system_defined", False)
         }
         
@@ -300,6 +310,188 @@ class TemplateService:
         # If creation failed, return the original ID
         return field_data.get("id")
     
+    def find_best_matching_field(self, context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Find a TemplateField node that best matches the input context
+        
+        Args:
+            context: Dictionary containing information to match against fields
+                - should contain at least 'text' or 'name' for embedding generation
+                - can contain 'data_type' to restrict search
+        
+        Returns:
+            Dictionary with field data or None if no good match found
+        """
+        # Create embedding from context
+        embedding_text = context.get('text', '')
+        if not embedding_text:
+            # Use name if text not provided
+            embedding_text = context.get('name', '')
+            
+            # Add description if available
+            if 'description' in context:
+                embedding_text += f" {context['description']}"
+                
+            # Add data type if available
+            if 'data_type' in context:
+                embedding_text += f" {context['data_type']}"
+        
+        # Validate we have something to search with
+        if not embedding_text:
+            return None
+        
+        # Generate embedding
+        embedding = self.neo4j.get_embedding(embedding_text)
+        
+        # Base query for vector similarity search
+        query = """
+        MATCH (f:TemplateField)
+        WHERE f.embedding_1 IS NOT NULL
+        """
+        
+        # Add data type filter if provided
+        if 'data_type' in context:
+            query += " AND f.data_type = $data_type"
+        
+        # Add similarity search and return fields
+        query += """
+        WITH f, vector.similarity.cosine(f.embedding_1, $embedding) AS similarity
+        WHERE similarity > $threshold
+        RETURN f.id AS id, f.name AS name, f.description AS description, 
+            f.data_type AS data_type, f.required AS required,
+            f.system_defined AS system_defined, similarity
+        ORDER BY similarity DESC
+        LIMIT 1
+        """
+        
+        # Prepare parameters
+        params = {
+            "embedding": embedding,
+            "threshold": context.get("threshold", 0.7)  # Default threshold
+        }
+        
+        # Add data_type if provided
+        if 'data_type' in context:
+            params["data_type"] = context['data_type']
+        
+        # Run the query
+        results = self.neo4j.run_query(query, params)
+        
+        # If no results with good similarity, return None
+        if not results:
+            return None
+        
+        # Return the best matching field
+        return {
+            "id": results[0]["id"],
+            "name": results[0]["name"],
+            "description": results[0]["description"],
+            "data_type": results[0]["data_type"],
+            "required": results[0]["required"],
+            "system_defined": results[0]["system_defined"],
+            "similarity_score": results[0]["similarity"]
+        }
+        
+    def find_matching_section_template_fields(self, template_id: str, context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Find TemplateFields connected to a specific template that best match the input context
+        
+        Args:
+            template_id: ID of the SectionTemplate to search within
+            context: Dictionary containing information to match against fields
+                - should contain at least 'text' or 'name' for embedding generation
+                - can contain 'data_type' to restrict search
+                - can contain 'limit' to control number of results returned
+        
+        Returns:
+            List of dictionaries containing field data, sorted by similarity
+        """
+        # Create embedding from context
+        embedding_text = context.get('text', '')
+        if not embedding_text:
+            # Use name if text not provided
+            embedding_text = context.get('name', '')
+            
+            # Add description if available
+            if 'description' in context:
+                embedding_text += f" {context['description']}"
+                
+            # Add data type if available
+            if 'data_type' in context:
+                embedding_text += f" {context['data_type']}"
+        
+        # Validate we have something to search with
+        if not embedding_text:
+            return []
+        
+        # Generate embedding
+        embedding = self.neo4j.get_embedding(embedding_text)
+        
+        # Query to find template fields connected to the specified template
+        query = """
+        MATCH (t:SectionTemplate)-[r:HAS_FIELD]->(f:TemplateField)
+        WHERE t.id = $template_id AND f.embedding_1 IS NOT NULL
+        """
+        
+        # Add data type filter if provided
+        if 'data_type' in context:
+            query += " AND f.data_type = $data_type"
+        
+        # Add similarity search and return fields with relationship properties
+        query += """
+        WITH f, r, vector.similarity.cosine(f.embedding_1, $embedding) AS similarity
+        WHERE similarity > $threshold
+        RETURN f.id AS id, 
+            f.name AS name, 
+            f.description AS description, 
+            f.data_type AS data_type, 
+            f.required AS required,
+            f.system_defined AS system_defined, 
+            r.name AS relationship_name,
+            r.required AS relationship_required,
+            r.order AS display_order,
+            similarity
+        ORDER BY similarity DESC
+        LIMIT $limit
+        """
+        
+        # Prepare parameters
+        params = {
+            "template_id": template_id,
+            "embedding": embedding,
+            "threshold": context.get("threshold", 0.6),  # Default threshold
+            "limit": context.get("limit", 5)  # Default limit
+        }
+        
+        # Add data_type if provided
+        if 'data_type' in context:
+            params["data_type"] = context['data_type']
+        
+        # Run the query
+        results = self.neo4j.run_query(query, params)
+        
+        # If no results with good similarity, return empty list
+        if not results:
+            return []
+        
+        # Process and return the matching fields
+        matching_fields = []
+        for result in results:
+            matching_fields.append({
+                "id": result["id"],
+                "name": result["name"],
+                "description": result["description"],
+                "data_type": result["data_type"],
+                "required": result["required"],
+                "system_defined": result["system_defined"],
+                "relationship_name": result["relationship_name"],
+                "relationship_required": result["relationship_required"],
+                "display_order": result["display_order"],
+                "similarity_score": result["similarity"]
+            })
+        
+        return matching_fields
+
     def search_content(self, search_text: str, similarity_threshold: float = 0.65) -> Dict[str, List[Dict[str, Any]]]:
         """
         Search for both templates and fields matching search text

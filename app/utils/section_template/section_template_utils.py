@@ -3,13 +3,11 @@ from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy.orm import Session
 
 from app.models.models import Section
-from app.services.template_service import TemplateService
-from app.schemas.section import FieldValueUpdate
-from app.db.neo4j_session import neo4j_session
+from app.services.section_template_service import SectionTemplateService
 
 logger = logging.getLogger(__name__)
 
-class TemplateSectionIntegration:
+class SectionTemplateMerger:
     """
     Service for integrating Neo4j templates with PostgreSQL sections
     """
@@ -22,7 +20,7 @@ class TemplateSectionIntegration:
             db_session: SQLAlchemy session
         """
         self.db = db_session
-        self.template_service = TemplateService()
+        self.template_service = SectionTemplateService()
     
     def get_template_with_field_values(self, section_id: int) -> Dict[str, Any]:
         """

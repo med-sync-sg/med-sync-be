@@ -28,9 +28,8 @@ class Neo4jInitializer:
         """
         self.neo4j_connection = Neo4jConnectionManager(uri=NEO4J_URI, user=NEO4J_USER, password=NEO4J_PASSWORD)
         self.template_manager = TemplateManager(self.neo4j_connection)
-        self.model = SentenceTransformer("all-minilm-l6-v2")
-        self.test_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
-        self.embedding_dimension = 384  # all-minilm-l6-v2 outputs 384-dimensional embeddings
+        self.model = SentenceTransformer("BAAI/bge-small-en-v1.5")
+        self.embedding_dimension = 384
         
     def initialize(self):
         logger.info(f"Neo4j Connection Status: {self.neo4j_connection.get_connection_status()}")
@@ -67,28 +66,6 @@ class Neo4jInitializer:
                 }}
             }}
             """,
-                        f"""
-            CREATE VECTOR INDEX section_template_embedding_test IF NOT EXISTS 
-            FOR (f:SectionTemplate) 
-            ON f.embedding_2
-            OPTIONS {{
-                indexConfig: {{
-                    `vector.dimensions`: {self.embedding_dimension},
-                    `vector.similarity_function`: "cosine"
-                }}
-            }}
-            """,
-                        f"""
-            CREATE VECTOR INDEX template_field_embedding_test IF NOT EXISTS 
-            FOR (f:TemplateField) 
-            ON f.embedding_2
-            OPTIONS {{
-                indexConfig: {{
-                    `vector.dimensions`: {self.embedding_dimension},
-                    `vector.similarity_function`: "cosine"
-                }}
-            }}
-            """
         ]
         
         # Create constraints
@@ -158,7 +135,6 @@ class Neo4jInitializer:
             t.name = $name,
             t.description = $description,
             t.embedding_1 = $embedding_1,
-            t.embedding_2 = $embedding_2,
             t.created_at = timestamp(),
             t.created_by = $created_by,
             t.system_defined = $system_defined,
@@ -180,9 +156,7 @@ class Neo4jInitializer:
             # Generate embedding from combined name and description for better semantic matching
             embedding_text = f"{template_params['name']} {template_params['description']}"
             embedding = self.model.encode(embedding_text).tolist()
-            embedding_test = self.test_model.encode(embedding_text).tolist()
             template_params["embedding_1"] = embedding
-            template_params["embedding_2"] = embedding_test
             
             # Create the template node
             self.neo4j_connection.run_query(create_template_query, template_params)
@@ -297,7 +271,6 @@ class Neo4jInitializer:
             f.required = $required,
             f.system_defined = $system_defined,
             f.embedding_1 = $embedding_1,
-            f.embedding_2 = $embedding_2,
             f.created_at = timestamp()
         """
         
@@ -316,9 +289,7 @@ class Neo4jInitializer:
             # Generate embedding from combined name and description
             embedding_text = f"{field_params['name']} {field_params['description']} {field_params['data_type']}"
             embedding = self.model.encode(embedding_text).tolist()
-            embedding_test = self.test_model.encode(embedding_text).tolist()
             field_params["embedding_1"] = embedding
-            field_params["embedding_2"] = embedding_test
             
             # Create the field node
             self.neo4j_connection.run_query(create_field_query, field_params)
@@ -455,59 +426,5 @@ class Neo4jInitializer:
             else:
                 logger.warning("Vector search didn't find any fields")
                 
-                
-
-            # Test template vector search
-            logger.info("Testing vector search for section templates...")
-            
-            # Generate a test query embedding
-            test_query = "information about patient symptoms and complaints"
-            query_embedding = self.test_model.encode(test_query).tolist()
-            
-            # Run the vector search
-            template_query = """
-            MATCH (t:SectionTemplate)
-            WHERE t.embedding_2 IS NOT NULL
-            WITH t, vector.similarity.cosine(t.embedding_2, $query_embedding) AS similarity
-            WHERE similarity > 0.5
-            RETURN t.id, t.name, t.description, similarity
-            ORDER BY similarity DESC
-            LIMIT 3
-            """
-            
-            results = self.neo4j_connection.run_query(template_query, {"query_embedding": query_embedding})
-            
-            if results:
-                logger.info(f"Vector search found {len(results)} matching templates:")
-                for record in results:
-                    logger.info(f"  - {record['t.id']} ({record['t.name']}): similarity = {record['similarity']:.4f}")
-            else:
-                logger.warning("Vector search didn't find any templates")
-                
-            logger.info("Testing vector search with BAAI/bge-small-en-v1.5")
-            
-            # Generate a test query embedding for fields
-            field_test_query = "cough"
-            field_query_embedding = self.test_model.encode(field_test_query).tolist()
-            
-            # Run the vector search for fields
-            field_query = """
-            MATCH (f:TemplateField)
-            WHERE f.embedding_2 IS NOT NULL
-            WITH f, vector.similarity.cosine(f.embedding_2, $query_embedding) AS similarity
-            WHERE similarity > 0.5
-            RETURN f.id, f.name, f.description, f.data_type, similarity
-            ORDER BY similarity DESC
-            LIMIT 3
-            """
-            
-            field_results = self.neo4j_connection.run_query(field_query, {"query_embedding": field_query_embedding})
-            
-            if field_results:
-                logger.info(f"Vector search found {len(field_results)} matching fields:")
-                for record in field_results:
-                    logger.info(f"  - {record['f.id']} ({record['f.name']}): similarity = {record['similarity']:.4f}")
-            else:
-                logger.warning("Vector search didn't find any fields")
         except Exception as e:
             logger.error(f"Error testing vector search: {str(e)}")

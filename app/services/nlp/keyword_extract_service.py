@@ -1,11 +1,12 @@
 import logging
 import copy
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Tuple
 from sqlalchemy.orm import Session
 
 from app.utils.nlp.spacy_utils import find_medical_modifiers
 from app.utils.nlp.nlp_utils import merge_flat_keywords_into_template
 from app.schemas.section import SectionCreate
+from app.services.section_template_service import SectionTemplateService
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -16,16 +17,14 @@ class KeywordExtractService:
     Manages keyword extraction, classification, and template mapping.
     """
     
-    def __init__(self, db: Session):
+    def __init__(self):
         """
         Initialize keyword service
         
         Args:
-            data_store: IrisDataStore instance or None to use singleton
         """
-        self.db = db
+        self.section_template_service = SectionTemplateService()
         self.buffer_keywords = []
-        self.final_keywords = []
         
         logger.info("KeywordService initialized")
     
@@ -60,139 +59,72 @@ class KeywordExtractService:
             
         logger.debug(f"Added {len(new_keywords)} keywords to buffer (total: {len(self.buffer_keywords)})")
     
-    def merge_keywords(self) -> None:
+    def create_section_from_keywords(self) -> Tuple[list, List[SectionCreate]]:
         """
-        Merge buffered keywords with final keywords
-        """
-        for keyword_dict in self.buffer_keywords:
-            self._merge_or_add_keyword(keyword_dict)
-            
-        # Clear buffer after merging
-        self.buffer_keywords = []
-        logger.info(f"Merged keywords, now have {len(self.final_keywords)} unique keyword sets")
-    
-    def _merge_or_add_keyword(self, keyword_dict: Dict[str, Any]) -> None:
-        """
-        Merge keyword with existing one or add as new
+        Create a section based on a keyword dictionary by finding and populating templates
         
         Args:
-            keyword_dict: Keyword dictionary to merge or add
-        """
-        term = keyword_dict.get("term", "")
-        if not term:
-            logger.warning("Skipping keyword with empty term")
-            return
-            
-        # Look for matching term in final keywords
-        found = False
-        for i, existing_dict in enumerate(self.final_keywords):
-            if keyword_dict["term"] == existing_dict["term"]:
-                # Merge with existing entry
-                try:
-                    self.final_keywords[i] = self.data_store.merge_flat_keywords_into_template(
-                        existing_dict, keyword_dict
-                    )
-                    logger.debug(f"Merged keyword for term: {term}")
-                    found = True
-                    break
-                except Exception as e:
-                    logger.error(f"Error merging keywords for {term}: {str(e)}")
-                    found = True  # Mark as found to avoid adding duplicate
-                    break
-                    
-        # Add as new entry if not found
-        if not found:
-            self.final_keywords.append(keyword_dict)
-            logger.debug(f"Added new keyword for term: {term}")
-    
-    def create_sections(self, user_id: int, note_id: int) -> List[SectionCreate]:
-        """
-        Create sections from the final keywords
-        
-        Args:
-            user_id: User ID for the sections
-            note_id: Note ID for the sections
+            keyword_dict: Dictionary containing the keyword term and its modifiers
             
         Returns:
-            List of SectionCreate objects
+            SectionCreate object if a template is found, None otherwise
         """
-        sections = []
-        
         try:
-
-            
-            # Get content dictionaries for each keyword
-            content_dicts = self.fill_content_dictionaries()
-            
-            # Create sections from content dictionaries
-            for index, content in enumerate(content_dicts):
-                if index >= len(self.final_keywords):
-                    logger.warning(f"No keyword found for content at index {index}")
-                    continue
+            sections = []
+            templates = []
+            for keyword_dict in self.buffer_keywords:
+                # Extract the term from the keyword dictionary
+                term = keyword_dict.get("term", "")
+                if not term:
+                    logger.warning("Keyword dictionary missing 'term' field")
+                    return ([], [])
                     
-                keyword = self.final_keywords[index]
-                term = keyword.get("term", "")
+                # Find relevant template for this term
+                templates = self.section_template_service.find_templates_by_text(term, similarity_threshold=0.0)
+                if not templates:
+                    logger.info(f"No template found for term: {term}")
+                    return ([], [])
+                    
+                    
+                def getMax(value):
+                    if "similarity_score" in value:
+                        return value["similarity_score"]
+                    else:
+                        return 0.0
+                    
+                # Use the first template found (could be enhanced to select best match)
+                template = max(templates, key=getMax)
                 
-                # Classify text to determine category - returns section type code
-                section_type_id, section_type_code = self.section_type_service.get_semantic_section_type(term)
+                # Create a copy of the template to avoid modifying the original
+                section_data = copy.deepcopy(template)
                 
-                # Create section
-                section = SectionCreate(
-                    user_id=user_id,
-                    note_id=note_id,
-                    title=keyword.get("label", term or "Section"),
-                    content=content,
-                    section_type_id=section_type_id,
-                    section_type_code=section_type_code,
+                # Merge the keyword and its modifiers into the template
+                content = merge_flat_keywords_into_template(
+                    template=template,
+                    keywords=keyword_dict
                 )
                 
-                sections.append(section)
+                # Create section with populated content
+                section = SectionCreate(
+                    user_id=1,
+                    title=section_data.get("name", ""),
+                    content=content,
+                    template_id=template.get("id", ""),
+                    soap_category=template.get("id", "OTHER")
+                )
                 
-            logger.info(f"Created {len(sections)} sections from keywords")
-            return sections
+                logger.info(f"Created section from keyword: {term}")
+                sections.append(section)
+            
+            return (templates, sections)
             
         except Exception as e:
-            logger.error(f"Error creating sections: {str(e)}")
-            return []
-    
-    def fill_content_dictionaries(self) -> List[Dict[str, Any]]:
-        """
-        Fill content dictionaries based on the final keywords
-        
-        Returns:
-            List of content dictionaries
-        """
-        result = []
-        
-        for keyword_dict in self.final_keywords:
-            try:
-                term = keyword_dict.get("term", "")
-                
-                # Classify text to determine category
-                category = self.section_type_service.get_semantic_section_type(term)
-                
-                # Find matching template
-                template = self.section_type_service.find_content_dictionary(keyword_dict, category)
-                
-                # Fill template with keyword data
-                content = merge_flat_keywords_into_template(
-                    keyword_dict, template
-                )
-                
-                result.append(content)
-                
-            except Exception as e:
-                logger.error(f"Error filling content dictionary for term '{keyword_dict.get('term', '')}': {str(e)}")
-                # Add an empty dictionary to maintain index correspondence
-                result.append({})
-        
-        logger.info(f"Filled {len(result)} content dictionaries from keywords")
-        return result
-    
+            logger.error(f"Error creating section from keyword: {str(e)}")
+            return (templates, [])
+
     def clear(self) -> None:
         """Clear all keywords"""
         self.buffer_keywords = []
-        self.final_keywords = []
         logger.info("Cleared all keywords")
     
     def get_keyword_summary(self) -> Dict[str, Any]:
@@ -202,10 +134,9 @@ class KeywordExtractService:
         Returns:
             Dictionary with keyword summary
         """
-        terms = [kw.get("term", "") for kw in self.final_keywords]
+        terms = [kw.get("term", "") for kw in self.buffer_keywords]
         
         return {
             "buffer_count": len(self.buffer_keywords),
-            "final_count": len(self.final_keywords),
             "unique_terms": terms,
         }

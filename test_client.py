@@ -91,8 +91,8 @@ class TestClient:
             
             # self.generate_test_report_doctor(user_id=2, note_id=12, template_type="doctor")
             
-            # self.test_text_processing()
-            self.test_adaptation_feature()
+            self.test_text_processing()
+            # self.test_adaptation_feature()
             logger.info("All tests completed successfully!")
             return True
             
@@ -321,34 +321,10 @@ class TestClient:
             
             # Process response
             result = response.json()
-            
             # Log the results
             logger.info("Text processing successful!")
-            
-            if isinstance(result, list):
-                logger.info(f"Received {len(result)} processed sections")
-                for i, section in enumerate(result):
-                    if isinstance(section, str):
-                        # If it's a serialized JSON string, try to parse it
-                        try:
-                            section_obj = json.loads(section)
-                            logger.info(f"Section {i+1}:")
-                            # Check for common patterns in the returned data
-                            if "Main Symptom" in section_obj:
-                                symptom_name = section_obj["Main Symptom"].get("name", "Unknown")
-                                logger.info(f"  - Main symptom: {symptom_name}")
-                            # Log the full object if it's small enough
-                            if len(section) < 500:
-                                logger.info(f"  - Full content: {section}")
-                            else:
-                                logger.info(f"  - Full content omitted (too large)")
-                        except json.JSONDecodeError:
-                            logger.info(f"Section {i+1}: {section[:100]}...")
-                    else:
-                        logger.info(f"Section {i+1}: {section}")
-            else:
-                logger.info(f"Result: {result}")
-                
+        
+            print_formatted_transcript_results(result)
             return result
             
         except Exception as e:
@@ -463,8 +439,97 @@ def parse_arguments():
     parser.add_argument("--audio-file", default=DEFAULT_AUDIO_FILE, help="Path to audio file for testing")
     return parser.parse_args()
 
+def print_formatted_transcript_results(result: dict):
+    """
+    Prints the results from the process_text_transcript endpoint in a nicely formatted way
+    
+    Args:
+        result: Response dictionary from the text-transcript endpoint
+    """
+    if not result.get("success", False):
+        print("\n❌ TRANSCRIPT PROCESSING FAILED")
+        print(f"Error: {result.get('error', 'Unknown error')}")
+        return
+
+    print("\n✅ TRANSCRIPT PROCESSING SUCCESSFUL")
+    print("=" * 80)
+    
+    # Print summary
+    transcript = result.get("transcription", "")
+    print(f"📝 TRANSCRIPT ({len(transcript)} chars):")
+    print("-" * 80)
+    print(transcript[:200] + "..." if len(transcript) > 200 else transcript)
+    print("-" * 80)
+    
+    # Print extracted keywords
+    keywords = result.get("entities", [])
+    print(f"\n🔑 EXTRACTED KEYWORDS: {len(keywords)}")
+    print("-" * 80)
+    for i, kw in enumerate(keywords[:5]):  # Show first 5 keywords
+        if isinstance(kw, dict) and "term" in kw:
+            print(f"  {i+1}. Term: {kw.get('term')}")
+            
+            # Print modifiers if available
+            modifiers = kw.get("modifiers", [])
+            if modifiers:
+                print(f"     Modifiers: {', '.join(modifiers[:3])}" + 
+                      (f" (+ {len(modifiers) - 3} more)" if len(modifiers) > 3 else ""))
+                
+            # Print quantities if available
+            quantities = kw.get("quantities", [])
+            if quantities:
+                print(f"     Quantities: {', '.join(quantities[:3])}" + 
+                      (f" (+ {len(quantities) - 3} more)" if len(quantities) > 3 else ""))
+        else:
+            print(f"  {i+1}. {kw}")
+    
+    if len(keywords) > 5:
+        print(f"  ... and {len(keywords) - 5} more keywords")
+    print("-" * 80)
+    
+    # Print template suggestions
+    templates = result.get("template_suggestions", [])
+    print(f"\n📋 TEMPLATE SUGGESTIONS: {len(templates)}")
+    print("-" * 80)
+    for i, template in enumerate(templates):  # Show first 3 templates
+        print(f"  {i+1}. {template.get('name', 'Unnamed template')}")
+        print(f"     Description: {template.get('description', 'N/A')}")
+        print(f"     Similarity score: {template.get('similarity_score', 0):.2f}")
+        print(f"     Template ID: {template.get('id', 'N/A')}")
+        if i < len(templates) - 1:  # Add separator between templates
+            print("  " + "-" * 30)
+    
+    if len(templates) > 3:
+        print(f"  ... and {len(templates) - 3} more templates")
+    print("-" * 80)
+    
+    # Print processed content (sections)
+    sections = result.get("processed_content", [])
+    print(f"\n📊 PROCESSED SECTIONS: {len(sections)}")
+    print("-" * 80)
+    
+    for i, section in enumerate(sections):  # Show first 3 sections
+        # Handle different section formats
+        if isinstance(section, dict):
+            # Other section format
+            print(f"  {i+1}. Section: {next(iter(section.keys()))}")
+            for key, value in list(section.items()):
+                if isinstance(value, dict):
+                    print(f"     {key}: {next(iter(value.values()))}")
+                else:
+                    print(f"     {key}: {value}")
+        else:
+            print(f"  {i+1}. {section}")
+            
+        if i < len(sections) - 1:  # Add separator between sections
+            print("  " + "-" * 30)
+    
+    print("=" * 80)
+    print("PROCESSING COMPLETE\n")
+
 if __name__ == "__main__":
     args = parse_arguments()
     client = TestClient(args.db_url, args.app_url, args.audio_file)
     success = client.run_tests()
     sys.exit(0 if success else 1)
+    

@@ -2,37 +2,44 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 
 # Pydantic models for request/response validation
-class TemplateBase(BaseModel):
+class SectionTemplateBase(BaseModel):
     name: str
     description: Optional[str] = None
     
-class TemplateCreate(TemplateBase):
+class SectionTemplateCreate(SectionTemplateBase):
     system_defined: bool = False
     created_by: Optional[str] = "user"
     version: Optional[str] = "1.0"
     
-class TemplateRead(TemplateBase):
+class SectionTemplateRead(SectionTemplateBase):
     id: str
     system_defined: bool = False
     version: str = "1.0"
     
-class FieldBase(BaseModel):
+class TemplateFieldBase(BaseModel):
     name: str
     description: Optional[str] = None
     data_type: str = "text"
     
-class FieldCreate(FieldBase):
+class TemplateFieldCreate(TemplateFieldBase):
     required: bool = False
     system_defined: bool = False
     
-class FieldRead(FieldBase):
+class TemplateFieldRead(TemplateFieldBase):
     id: str
     required: bool = False
     
-class TemplateWithFields(TemplateRead):
-    fields: List[FieldRead] = []
+class TemplateFieldUpdate(TemplateFieldBase):
+    id: str
+    required: bool = False
+    name: Optional[str]
+    description: Optional[str]
     
-class FieldAssignment(BaseModel):
+    
+class SectionTemplateWithTemplateFields(SectionTemplateRead):
+    fields: List[TemplateFieldRead] = []
+    
+class FieldValueAssignment(BaseModel):
     field_id: str
     field_name: str
     required: bool = False

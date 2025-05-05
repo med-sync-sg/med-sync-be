@@ -4,7 +4,7 @@ import logging
 import json
 import base64
 import numpy as np
-from typing import Optional, Dict, Any, Union, Tuple
+from typing import Optional, Dict, Any, Union, Tuple, List
 import time
 import asyncio
 from contextlib import asynccontextmanager
@@ -15,7 +15,7 @@ from app.services.transcription_service import TranscriptionService
 from app.services.nlp.keyword_extract_service import KeywordExtractService
 from app.services.note_service import NoteService
 from app.services.report_generation.report_service import ReportService
-from app.models.models import ReportTemplate
+from app.models.models import ReportTemplate, Section
 from app.utils.speech_processor import SpeechProcessor
 from app.api.v1.endpoints.calibration import calibration_service
 
@@ -478,10 +478,9 @@ async def process_audio_chunk(
         
         # Process keywords
         keyword_service.process_and_buffer_keywords(keywords)
-        keyword_service.merge_keywords()
         
         # Create sections
-        sections = keyword_service.create_sections(user_id, note_id)
+        sections = keyword_service.create_section_from_keywords()
         
         # Reset buffer for next segment
         audio_service.reset_current_buffer()
@@ -494,7 +493,7 @@ async def process_audio_chunk(
         }))
         
         # Add sections to note and send to client
-        sections_json = []
+        sections_json: List[Section] = []
         for section in sections:
             try:
                 # Validate section data before saving
@@ -504,15 +503,9 @@ async def process_audio_chunk(
                     
                 # Save section to database
                 db_section = note_service.add_section_to_note(note_id, section)
-                if db_section:
+                if db_section != None:
                     # Convert to JSON for websocket response
-                    sections_json.append({
-                        'id': db_section.id,
-                        'title': db_section.title,
-                        'content': db_section.content,
-                        'section_type': db_section.section_type,
-                        'section_description': db_section.section_description
-                    })
+                    sections_json.append(db_section)
             except Exception as section_error:
                 logger.error(f"Error adding section: {str(section_error)}")
         

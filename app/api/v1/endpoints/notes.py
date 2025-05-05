@@ -7,7 +7,7 @@ from app.models.models import User, Note
 from app.schemas.note import NoteCreate, NoteRead, NoteUpdate
 from app.schemas.section import SectionCreate
 from app.services.note_service import NoteService
-from app.api.v1.endpoints.auth import get_current_user
+from app.utils.auth_utils import get_current_user
 
 router = APIRouter()
 get_session = DatabaseManager().get_session

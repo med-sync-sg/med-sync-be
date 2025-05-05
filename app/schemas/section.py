@@ -2,12 +2,34 @@ from app.schemas.base import BaseAuthModel
 from pydantic import BaseModel, ConfigDict
 from typing import Dict, Any, Union, Optional, List
 from datetime import datetime
-class FieldValue(BaseModel):
+
+### FOR DATA VALIDATION
+class FieldValueCreate(BaseModel):
     """Schema representing a template field value"""
     field_id: str
     name: str
     value: Any
+    data_type: str
+
+class FieldValueRead(BaseModel):
+    """Schema representing a template field value"""
+    field_id: str
+    name: str
+    value: Any
+    data_type: str
+
+class FieldValueUpdate(BaseModel):
+    field_id: str
+    field_name: str
+    value: Any
+    data_type: str
     
+class SectionFieldUpdate(BaseModel):
+    section_id: int
+    field_values: List[FieldValueUpdate]
+
+# Section Models
+
 class SectionCreate(BaseAuthModel):
     title: str
     template_id: Optional[str] = None
@@ -26,7 +48,7 @@ class SectionRead(BaseAuthModel):
     template_id: Optional[str] = None
     soap_category: str
     content: Optional[Dict[str, Any]] = None
-    field_values: Optional[Dict[str, Any]] = None
+    field_values: Optional[List[FieldValueRead]] = None
     is_visible_to_patient: bool = True
     display_order: int = 100
     created_at: Optional[datetime] = None
@@ -46,7 +68,7 @@ class SectionUpdate(BaseAuthModel):
     template_id: Optional[str] = None
     soap_category: Optional[str] = None
     content: Optional[Dict[str, Any]] = None
-    field_values: Optional[Dict[str, Any]] = None
+    field_values: Optional[List[FieldValueUpdate]] = None
     is_visible_to_patient: Optional[bool] = None
     display_order: Optional[int] = None
 
@@ -57,11 +79,3 @@ class SectionUpdate(BaseAuthModel):
         }
     )
 
-class FieldValueUpdate(BaseModel):
-    field_id: str
-    field_name: str
-    value: Any
-    
-class SectionFieldUpdate(BaseModel):
-    section_id: int
-    field_values: List[FieldValueUpdate]

@@ -91,7 +91,7 @@ def append_value_at_path(template: Dict[str, Any], path: List[str], new_value: A
         current[path[-1]] = str(new_value)
     return template
 
-def merge_flat_keywords_into_template(feature_dict: Dict[str, Any],
+def merge_flat_keywords_into_template(keywords: Dict[str, Any],
                                         template: Dict[str, Any],
                                         threshold: float = 0.5) -> Dict[str, Any]:
     """
@@ -111,7 +111,7 @@ def merge_flat_keywords_into_template(feature_dict: Dict[str, Any],
                 if isinstance(sub_val, str):
                     candidates.append(([t_key, sub_key], f"{sub_key}: {sub_val}"))
     
-    for f_key, f_value in feature_dict.items():
+    for f_key, f_value in keywords.items():
         if f_key == "label":
             continue
 

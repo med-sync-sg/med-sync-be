@@ -128,9 +128,10 @@ class Neo4jSession:
             return [0.0] * self.embedding_dimension  # Return zero vector
     
     def run_vector_search(self, label: str, embedding_field: str, 
-                         text: str = None, vector: List[float] = None,
+                         text: str = "", vector: List[float] = None,
                          similarity_threshold: float = 0.7, 
                          limit: int = 10,
+                         is_doctor: bool = True,
                          additional_filters: str = None) -> List[Dict[str, Any]]:
         """
         Run a vector similarity search
@@ -147,6 +148,11 @@ class Neo4jSession:
         Returns:
             List of matching records with similarity scores
         """
+        
+        if not is_doctor:
+            text = text + "; patient-reported, subjective"
+        else:
+            text = text + "; doctor's speech"
         # Get embedding vector
         if vector is None and text is not None:
             vector = self.get_embedding(text)
