@@ -90,14 +90,14 @@ class Neo4jInitializer:
             {
                 "id": "base-section",
                 "name": "Base Section",
-                "description": "Base template for all clinical note sections",
+                "description": "Base template for all clinical note sections.",
                 "created_by": "system",
                 "system_defined": True
             },
             {
                 "id": "subjective",
                 "name": "Subjective",
-                "description": "Patient-reported information and history",
+                "description": "Patient-reported information and history.",
                 "created_by": "system",
                 "system_defined": True,
                 "extends": "base-section"
@@ -105,7 +105,7 @@ class Neo4jInitializer:
             {
                 "id": "objective",
                 "name": "Objective",
-                "description": "Observable findings and measurements",
+                "description": "Observable findings and measurements, typically reported by the doctor.",
                 "created_by": "system",
                 "system_defined": True,
                 "extends": "base-section"
@@ -113,7 +113,7 @@ class Neo4jInitializer:
             {
                 "id": "assessment",
                 "name": "Assessment",
-                "description": "Clinician assessment and diagnosis",
+                "description": "Clinician assessment and diagnosis made clearly by the doctor.",
                 "created_by": "system",
                 "system_defined": True,
                 "extends": "base-section"
@@ -121,7 +121,7 @@ class Neo4jInitializer:
             {
                 "id": "plan",
                 "name": "Plan",
-                "description": "Treatment plan and next steps",
+                "description": "Treatment plan and next steps.",
                 "created_by": "system",
                 "system_defined": True,
                 "extends": "base-section"
@@ -286,7 +286,7 @@ class Neo4jInitializer:
                 "data_type": "code",
                 "required": False,
                 "system_defined": True,
-                "extends": "code-field"
+                "extends": "base-code-field"
             },
             
             ### DIAGNOSIS FIELDS
