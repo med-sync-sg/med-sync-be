@@ -16,6 +16,7 @@ from app.services.nlp.keyword_extract_service import KeywordExtractService
 from app.services.note_service import NoteService
 from app.services.report_generation.report_service import ReportService
 from app.models.models import ReportTemplate, Section
+from app.schemas.section import SectionCreate
 from app.utils.speech_processor import SpeechProcessor
 from app.api.v1.endpoints.calibration import calibration_service
 
@@ -256,8 +257,10 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_ses
                         use_adaptation, adaptation_user_id,
                         note_service, transcription_service, keyword_service, audio_service
                     )
+                elif data and "ping" in data:
+                    logger.info("Received ping from the websocket connection.")
                 else:
-                    logger.info("Received malformed data or control message")
+                    logger.info("Received malformed data or control message.")
                     continue
                     
             # Cancel heartbeat task
@@ -450,14 +453,14 @@ async def process_audio_chunk(
         start_time = time.time()
         if use_adaptation and adaptation_user_id is not None:
             # Use speaker-adapted transcription
-            transcription = speech_processor.transcribe_with_adaptation(
+            transcription = transcription_service.speech_processor.transcribe_with_adaptation(
                 audio_samples, 
                 adaptation_user_id,
                 db
             )
         else:
             # Use standard transcription
-            transcription = speech_processor.transcribe(audio_samples)
+            transcription = transcription_service.speech_processor.transcribe(audio_samples)
         
         processing_time = time.time() - start_time
         
@@ -479,12 +482,6 @@ async def process_audio_chunk(
         # Process keywords
         keyword_service.process_and_buffer_keywords(keywords)
         
-        # Create sections
-        sections = keyword_service.create_section_from_keywords()
-        
-        # Reset buffer for next segment
-        audio_service.reset_current_buffer()
-        
         # Send transcript update to client
         await websocket.send_text(json.dumps({
             'text': transcript_info['text'],
@@ -492,29 +489,72 @@ async def process_audio_chunk(
             'processing_time_ms': round(processing_time * 1000, 2)
         }))
         
+        
+        # Reset buffer for next segment
+        audio_service.reset_current_buffer()
+        
+        # Create sections and retrieve templates
+        templates, sections = keyword_service.create_section_from_keywords()
+        
         # Add sections to note and send to client
-        sections_json: List[Section] = []
+        sections_json = []
+        
+        # Process each section
         for section in sections:
+            logger.info("Sending section objects created...")
             try:
-                # Validate section data before saving
+                # Validate section data
                 if not section.content:
                     logger.warning(f"Skipping empty section for note {note_id}")
                     continue
-                    
+                
+                # Ensure section has proper user_id and note_id
+                section_create = SectionCreate(
+                    user_id=user_id,
+                    note_id=note_id,
+                    title=section.title,
+                    template_id=section.template_id,
+                    soap_category=section.soap_category,
+                    content=section.content,  # Now using our simplified content structure
+                    is_visible_to_patient=section.is_visible_to_patient,
+                    display_order=section.display_order,
+                    parent_id=section.parent_id
+                )
+                
                 # Save section to database
-                db_section = note_service.add_section_to_note(note_id, section)
-                if db_section != None:
-                    # Convert to JSON for websocket response
-                    sections_json.append(db_section)
+                # db_section = note_service.add_section_to_note(note_id, section_create)
+                
+                # if db_section:
+                #     # Convert to dict for JSON serialization
+                #     section_dict = {
+                #         "id": db_section.id,
+                #         "note_id": db_section.note_id,
+                #         "user_id": db_section.user_id,
+                #         "title": db_section.title,
+                #         "template_id": db_section.template_id,
+                #         "soap_category": db_section.soap_category,
+                #         "content": db_section.content,  # Direct content serialization
+                #         "is_visible_to_patient": db_section.is_visible_to_patient,
+                #         "display_order": db_section.display_order,
+                #         "created_at": db_section.created_at.isoformat() if hasattr(db_section, 'created_at') else None,
+                #         "updated_at": db_section.updated_at.isoformat() if hasattr(db_section, 'updated_at') else None
+                #     }
+                if section_create:
+                    # Convert to dict for JSON serialization
+                    section_dict = section_create.model_dump_json()
+                sections_json.append(section_dict)
             except Exception as section_error:
                 logger.error(f"Error adding section: {str(section_error)}")
         
         # Send sections to client
         if sections_json:
-            await websocket.send_text(json.dumps({
+            sending_json = json.dumps({
                 'sections': sections_json
-            }))
-            
+            })
+            print(sending_json)
+            await websocket.send_text(sending_json)
+        
+        keyword_service.clear()
         logger.info(f"Processed audio chunk: transcription_length={len(transcription)}, sections={len(sections_json)}, adaptation={use_adaptation}")
         
     except Exception as e:

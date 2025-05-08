@@ -1,57 +1,16 @@
-from app.schemas.base import BaseAuthModel
-from pydantic import BaseModel, ConfigDict
-from typing import Dict, Any, Union, Optional, List
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Dict, Any, Optional, List, Union
 from datetime import datetime
 
-### FOR DATA VALIDATION
-class FieldValueCreate(BaseModel):
-    """Schema representing a template field value"""
-    field_id: str
+# Template Field Schema
+class TemplateFieldContent(BaseModel):
+    """Schema for a template field with content"""
+    id: str
     name: str
-    value: Any
-    data_type: str
-
-class FieldValueRead(BaseModel):
-    """Schema representing a template field value"""
-    field_id: str
-    name: str
-    value: Any
-    data_type: str
-
-class FieldValueUpdate(BaseModel):
-    field_id: str
-    field_name: str
-    value: Any
-    data_type: str
-    
-class SectionFieldUpdate(BaseModel):
-    section_id: int
-    field_values: List[FieldValueUpdate]
-
-# Section Models
-
-class SectionCreate(BaseAuthModel):
-    title: str
-    template_id: Optional[str] = None
-    content: Optional[Dict[str, Any]] = None
-    soap_category: Optional[str] = None
-    field_values: Optional[Dict[str, Any]] = None
-    parent_id: Optional[int] = None
-    display_order: Optional[int] = None
-    is_visible_to_patient: Optional[bool] = True
-
-class SectionRead(BaseAuthModel):
-    id: int
-    note_id: int
-    user_id: int
-    title: str
-    template_id: Optional[str] = None
-    soap_category: str
-    content: Optional[Dict[str, Any]] = None
-    field_values: Optional[List[FieldValueRead]] = None
-    is_visible_to_patient: bool = True
-    display_order: int = 100
-    created_at: Optional[datetime] = None
+    data_type: str = "string"
+    value: Any = None
+    description: Optional[str] = None
+    required: bool = False
     updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(
@@ -61,17 +20,16 @@ class SectionRead(BaseAuthModel):
         }
     )
 
-class SectionUpdate(BaseAuthModel):
-    id: int
-    note_id: int
-    title: Optional[str] = None
+# Section Schemas
+class SectionBase(BaseModel):
+    """Base schema with common fields for all Section operations"""
+    title: str = ""
     template_id: Optional[str] = None
-    soap_category: Optional[str] = None
-    content: Optional[Dict[str, Any]] = None
-    field_values: Optional[List[FieldValueUpdate]] = None
-    is_visible_to_patient: Optional[bool] = None
-    display_order: Optional[int] = None
-
+    soap_category: str = "OTHER"
+    content: Dict[str, Union[TemplateFieldContent, List[TemplateFieldContent]]] = Field(default_factory=dict)
+    is_visible_to_patient: bool = True
+    display_order: int = 100
+    parent_id: Optional[int] = None
     model_config = ConfigDict(
         from_attributes=True,
         json_encoders={
@@ -79,3 +37,46 @@ class SectionUpdate(BaseAuthModel):
         }
     )
 
+class SectionCreate(SectionBase):
+    """Schema for creating a new section"""
+    note_id: int
+    user_id: int
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_encoders={
+            datetime: lambda dt: dt.isoformat()
+        }
+    )
+class SectionRead(SectionBase):
+    """Schema for reading a section"""
+    id: int
+    note_id: int
+    user_id: int
+    created_at: datetime
+    updated_at: datetime
+    last_modified_by_id: Optional[int] = None
+    
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_encoders={
+            datetime: lambda dt: dt.isoformat()
+        }
+    )
+
+class SectionUpdate(BaseModel):
+    """Schema for updating a section"""
+    title: Optional[str] = None
+    template_id: Optional[str] = None
+    soap_category: Optional[str] = None
+    content: Optional[Dict[str, Union[TemplateFieldContent, List[TemplateFieldContent]]]] = None
+    is_visible_to_patient: Optional[bool] = None
+    display_order: Optional[int] = None
+    parent_id: Optional[int] = None
+    last_modified_by_id: Optional[int] = None
+    
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_encoders={
+            datetime: lambda dt: dt.isoformat()
+        }
+    )

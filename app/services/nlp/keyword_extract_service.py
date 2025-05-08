@@ -5,9 +5,9 @@ from sqlalchemy.orm import Session
 
 from app.utils.nlp.spacy_utils import find_medical_modifiers
 from app.utils.nlp.nlp_utils import merge_keywords_into_template
-from app.schemas.section import SectionCreate
+from app.schemas.section import SectionCreate, SectionRead
 from app.services.section_template_service import SectionTemplateService
-
+from datetime import datetime
 # Configure logger
 logger = logging.getLogger(__name__)
 
@@ -61,74 +61,85 @@ class KeywordExtractService:
     
     def create_section_from_keywords(self) -> Tuple[list, List[SectionCreate]]:
         """
-        Create a section based on a keyword dictionary by finding and populating templates
+        Create sections based on keyword dictionaries by finding and populating templates
         
-        Args:
-            keyword_dict: Dictionary containing the keyword term and its modifiers
-            
         Returns:
-            SectionCreate object if a template is found, None otherwise
+            Tuple of (templates, sections)
         """
         sections = []
-        templates = []
+        found_templates = []
+        
         for keyword_dict in self.buffer_keywords:
             # Extract the term from the keyword dictionary
             term = keyword_dict.get("term", "")
             if not term:
                 logger.warning("Keyword dictionary missing 'term' field")
-                return ([], [])
+                continue
                 
             # Find relevant template for this term
             templates = self.section_template_service.find_templates_by_text(term, similarity_threshold=0.0)
             if not templates:
                 logger.info(f"No template found for term: {term}")
-                return ([], [])
-                
-                
-            def getMax(value):
-                if "similarity_score" in value:
-                    return value["similarity_score"]
-                else:
-                    return 0.0
-                
-            # Use the first template found (could be enhanced to select best match)
-            template = max(templates, key=getMax)
-            
-            # Create a copy of the template to avoid modifying the original
-            section_data = copy.deepcopy(template)
-            
-            template_fields = self.section_template_service.get_template_with_fields(template)
-            logger.info(template_fields)
-            if template_fields == None: 
-                template_fields = self.section_template_service.get_base_fields()
-            elif len(template_fields) < 1:
-                template_fields = self.section_template_service.get_base_fields()
-
-            # Merge the keyword and its modifiers into the template
-            content = merge_keywords_into_template(
-                keywords=keyword_dict,
-                template_fields=template_fields,
-                template_id=template.get("id"),
-            )
-            logger.info(f"Resulting content of section: {content}")
-            try:
-                # Create section with populated content
-                section = SectionCreate(
-                    user_id=1,
-                    title=section_data.get("name", ""),
-                    field_values=content,
-                    content=content,
-                    template_id=template.get("id", ""),
-                    soap_category=template.get("id", "OTHER")
-                )
-                
-                logger.info(f"Created section from keyword: {term}")
-                sections.append(section)
-            except Exception as e:
-                logger.error(f"Error creating section from keyword: {str(e)}")
                 continue
+                
+            # Select best template based on similarity score
+            template = max(templates, key=lambda t: t.get("similarity_score", 0))
+            found_templates.append(template)
+            
+            # Get template fields
+            template_fields = self.section_template_service.get_template_with_fields(template)
+            if template_fields is None or len(template_fields) < 1:
+                template_fields = self.section_template_service.get_base_fields()
 
-        return (templates, sections)
+            # Match template fields to keyword data
+            match_tuples = self.section_template_service.match_template_fields(
+                template_fields=template_fields, 
+                keyword_dict=keyword_dict
+            )
+            
+            # Initialize the content dictionary for this section
+            section_content = {}
+            
+            # Process each match tuple and add to section content
+            for match_tuple in match_tuples:
+                # Merge the keyword and its modifiers into the template
+                merged_result = merge_keywords_into_template(match_tuple=match_tuple)
+                
+                # Merge the content into our section content
+                for field_id, field_obj in merged_result["content"].items():
+                    if field_id in section_content:
+                        # Handle cases where field already exists in content
+                        if isinstance(section_content[field_id], list):
+                            # If already a list, append new field(s)
+                            if isinstance(field_obj, list):
+                                section_content[field_id].extend(field_obj)
+                            else:
+                                section_content[field_id].append(field_obj)
+                        else:
+                            # Convert to list and add new field(s)
+                            if isinstance(field_obj, list):
+                                section_content[field_id] = [section_content[field_id], *field_obj]
+                            else:
+                                section_content[field_id] = [section_content[field_id], field_obj]
+                    else:
+                        # New field, add directly
+                        section_content[field_id] = field_obj
+            
+            # Create the section data structure
+            section_data = {
+                "title": template.get("name", ""),
+                "template_id": template.get("id", ""),
+                "soap_category": template.get("soap_category", "OTHER"),
+                "content": section_content,
+                "user_id": 1,  # Default user ID, should be updated when actually creating
+                "note_id": 0   # Will be set when added to a note
+            }
+            
+            # Convert to section
+            section = convert_to_section_read(section_data)
+            sections.append(section)
+
+        return (found_templates, sections)
             
 
     def clear(self) -> None:
@@ -149,3 +160,49 @@ class KeywordExtractService:
             "buffer_count": len(self.buffer_keywords),
             "unique_terms": terms,
         }
+
+
+def convert_to_section_read(template_content: Dict[str, Any]) -> SectionRead:
+    """
+    Convert template content to a SectionRead object
+    
+    Args:
+        template_content: Merged template content with field values
+        
+    Returns:
+        SectionRead object
+    """
+    try:
+        # Create the SectionRead object
+        section = SectionRead(
+            id=0,  # This will be assigned when saved to the database
+            note_id=0,  # This will be assigned when saved to the database
+            user_id=template_content.get("user_id", 1),
+            title=template_content.get("title", ""),
+            template_id=template_content.get("template_id", ""),
+            soap_category=template_content.get("soap_category", "OTHER"),
+            content=template_content.get("content", {}),
+            is_visible_to_patient=template_content.get("is_visible_to_patient", True),
+            display_order=template_content.get("display_order", 100),
+            created_at=datetime.now(),
+            updated_at=datetime.now()
+        )
+        
+        return section
+        
+    except Exception as e:
+        logger.error(f"Error converting to SectionRead: {str(e)}")
+        # Return a minimal valid SectionRead
+        return SectionRead(
+            id=0,
+            note_id=0,
+            user_id=1,
+            title="Error",
+            template_id="",
+            soap_category="OTHER",
+            content={"error": str(e)},
+            is_visible_to_patient=True,
+            display_order=100,
+            created_at=datetime.now(),
+            updated_at=datetime.now()
+        )

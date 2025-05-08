@@ -63,14 +63,11 @@ class Section(Base):
     # Neo4j template reference
     template_id: Mapped[str] = mapped_column(String, nullable=True)
     
-    # SOAP categorization (maintained for backward compatibility)
+    # SOAP categorization
     soap_category: Mapped[str] = mapped_column(String, default=SOAPCategory.OTHER)
     
-    # Field values 
-    field_values = Column(JSONB, nullable=False, default=dict)
-    
-    # Raw content (stored for reference and backward compatibility)
-    content = Column(JSONB, nullable=True)
+    # Content as JSONB - stores TemplateField objects with filled values
+    content = Column(JSONB, nullable=False, default=dict)
     
     # Metadata
     is_visible_to_patient = Column(Boolean, default=True)
@@ -92,72 +89,115 @@ class Section(Base):
     
     def __init__(self, **kwargs):
         super(Section, self).__init__(**kwargs)
-        # Initialize empty field values if not provided
-        if 'field_values' not in kwargs:
-            self.field_values = {}
+        # Initialize empty content if not provided
+        if 'content' not in kwargs:
+            self.content = {}
     
-    def add_field_value(self, field_id: str, field_name: str, value: Any) -> None:
+    def add_field(self, field_id: str, field_name: str, field_type: str, 
+                  value: Any, description: str = None, required: bool = False) -> None:
         """
-        Add or update a field value
+        Add or update a template field in the content
         
         Args:
-            field_id: Neo4j field ID
+            field_id: Template field ID
             field_name: Field name (for display)
+            field_type: Data type of the field
             value: Field value
+            description: Optional field description
+            required: Whether the field is required
         """
-        if not self.field_values:
-            self.field_values = {}
+        if not self.content:
+            self.content = {}
             
-        self.field_values[field_id] = {
+        # Create template field with value
+        field = {
+            "id": field_id,
             "name": field_name,
+            "data_type": field_type,
             "value": value,
+            "description": description,
+            "required": required,
             "updated_at": datetime.datetime.now().isoformat()
         }
+        
+        # Add to content
+        if field_id in self.content:
+            # If this field ID already exists, convert to list for multiple entries
+            if isinstance(self.content[field_id], list):
+                self.content[field_id].append(field)
+            else:
+                self.content[field_id] = [self.content[field_id], field]
+        else:
+            self.content[field_id] = field
     
     def get_field_value(self, field_id: str) -> Any:
         """
-        Get a field value
+        Get a field value from content
         
         Args:
-            field_id: Neo4j field ID
+            field_id: Template field ID
             
         Returns:
             Field value or None if not found
         """
-        if not self.field_values or field_id not in self.field_values:
+        if not self.content or field_id not in self.content:
             return None
             
-        return self.field_values[field_id].get("value")
-    
-    def get_all_field_values(self) -> Dict[str, Any]:
-        """
-        Get all field values
+        field = self.content[field_id]
+        if isinstance(field, list):
+            # Return values from all fields with this ID
+            return [f.get("value") for f in field]
         
-        Returns:
-            Dictionary of field values
-        """
-        return self.field_values or {}
+        return field.get("value")
     
-    def update_from_content(self, content: Dict[str, Any]) -> None:
+    def get_field_values_by_name(self, field_name: str) -> List[Any]:
         """
-        Update field values from content dictionary
+        Get all field values with the given name
         
         Args:
-            content: Content dictionary
+            field_name: Field name to search for
+            
+        Returns:
+            List of values from fields with matching name
         """
-        self.content = content
+        values = []
         
-        # Extract values from content if possible
-        if isinstance(content, dict):
-            # Handle nested structure like "Main Symptom": {"name": "value"}
-            for key, value in content.items():
-                if isinstance(value, dict):
-                    for field_key, field_value in value.items():
-                        if field_value:  # Only add non-empty values
-                            field_id = f"{key.lower().replace(' ', '-')}-{field_key}"
-                            self.add_field_value(field_id, f"{key} {field_key}", field_value)
-                elif value:  # Add top-level values if not empty
-                    self.add_field_value(key.lower().replace(' ', '-'), key, value)
+        for field_id, field in self.content.items():
+            if isinstance(field, list):
+                for f in field:
+                    if f.get("name") == field_name:
+                        values.append(f.get("value"))
+            elif field.get("name") == field_name:
+                values.append(field.get("value"))
+        
+        return values
+    
+    def update_field_value(self, field_id: str, value: Any, index: int = None) -> bool:
+        """
+        Update a field's value
+        
+        Args:
+            field_id: Field ID to update
+            value: New value
+            index: Optional index for fields with multiple entries
+            
+        Returns:
+            True if update succeeded, False otherwise
+        """
+        if not self.content or field_id not in self.content:
+            return False
+            
+        field = self.content[field_id]
+        if isinstance(field, list):
+            if index is not None and 0 <= index < len(field):
+                field[index]["value"] = value
+                field[index]["updated_at"] = datetime.datetime.now().isoformat()
+                return True
+            return False
+        else:
+            field["value"] = value
+            field["updated_at"] = datetime.datetime.now().isoformat()
+            return True
 
 def post_section(pydantic_section: SectionCreate, db: Session) -> Section:
     """

@@ -1,9 +1,122 @@
 import logging
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Union, Tuple
 from app.db.neo4j_session import neo4j_session
+from app.utils.nlp.nlp_utils import cosine_similarity
 import uuid
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
+
+# Data type-related functions
+DATA_TYPE_GROUPS = {
+    "text_group": ["string", "text"],
+    "numeric_group": ["integer", "float", "number"],
+    "date_group": ["date", "datetime", "time"],
+    "boolean_group": ["boolean"],
+    "code_group": ["code"],
+    "complex_group": ["object", "any"],
+}
+
+# Create a reverse mapping for quick lookup
+DATA_TYPE_TO_GROUP = {}
+for group_name, types in DATA_TYPE_GROUPS.items():
+    for data_type in types:
+        DATA_TYPE_TO_GROUP[data_type] = group_name
+
+def get_data_type_group(data_type: str) -> str:
+    """
+    Get the compatibility group for a data type
+    
+    Args:
+        data_type: Data type string
+        
+    Returns:
+        Group name or 'other' if not found
+    """
+    return DATA_TYPE_TO_GROUP.get(data_type.lower(), "other")
+
+def are_data_types_compatible(type1: str, type2: str) -> bool:
+    """
+    Check if two data types are compatible
+    
+    Args:
+        type1: First data type
+        type2: Second data type
+        
+    Returns:
+        True if compatible, False otherwise
+    """
+    # If either type is missing, assume compatibility
+    if not type1 or not type2:
+        return True
+        
+    # Get groups for both types
+    group1 = get_data_type_group(type1)
+    group2 = get_data_type_group(type2)
+    
+    # Types in the same group are compatible
+    return group1 == group2
+
+def infer_value_data_type(value: Any) -> str:
+    """
+    Infer the most likely data type for a value
+    
+    Args:
+        value: Value to analyze
+        
+    Returns:
+        Inferred data type
+    """
+    if value is None:
+        return "string"  # Default to string for None values
+        
+    if isinstance(value, bool):
+        return "boolean"
+        
+    if isinstance(value, int):
+        return "integer"
+        
+    if isinstance(value, float):
+        return "float"
+        
+    if isinstance(value, list):
+        return "list"
+        
+    if isinstance(value, dict):
+        return "object"
+        
+    # Handle string values
+    if isinstance(value, str):
+        value_lower = value.lower().strip()
+        
+        # Check for date/time patterns
+        if any(pattern in value_lower for pattern in ["-", "/"]) and any(c.isdigit() for c in value_lower):
+            if ":" in value_lower:  # Has time component
+                return "datetime"
+            else:
+                return "date"
+                
+        # Check for boolean-like values
+        if value_lower in ["true", "false", "yes", "no", "y", "n"]:
+            return "boolean"
+            
+        # Check for numeric strings
+        try:
+            float(value_lower)
+            if "." in value_lower:
+                return "float"
+            else:
+                return "integer"
+        except ValueError:
+            pass
+        
+        # Default to string for all other cases
+        return "string"
+    
+    # Default for any other type
+    return "any"
+
+
 
 class SectionTemplateService:
     """
@@ -627,3 +740,197 @@ class SectionTemplateService:
             "templates": results[0].get("template_results", []),
             "fields": results[0].get("field_results", [])
         }
+        
+    def match_template_fields(
+        self,
+        template_fields: List[Dict[str, Any]],
+        keyword_dict: Dict[str, Any],
+        similarity_threshold: float = 0.6,
+        data_type_bonus: float = 0.2,
+    ) -> List[Tuple[str, Any, List[Dict[str, Any]]]]:
+        """
+        Match template fields to keywords and return tuples of (keyword_key, value, list_of_matching_fields).
+        Always returns a list of template fields as the third item in each tuple.
+        
+        Args:
+            template_fields: List of template field dictionaries
+            keyword_dict: Dictionary containing extracted medical keywords
+            similarity_threshold: Minimum similarity score for matching
+            data_type_bonus: Additional score for data type compatibility
+            max_matches_per_value: Maximum number of field matches per keyword value
+            
+        Returns:
+            List of tuples (keyword_key, keyword_value, [template_fields])
+        """
+        if not template_fields or not keyword_dict:
+            return []
+            
+        neo4j_session = self.neo4j
+        all_matches = []
+        
+        try:
+            # Define keyword types we want to match
+            keyword_keys = [
+                "term", "temporal", "locations", "quantities", 
+                "negations", "modifiers"
+            ]
+            
+            # Data type mappings for different keyword types
+            type_mappings = {
+                "temporal": ["date", "datetime", "time"],
+                "locations": ["location", "string"],
+                "quantities": ["number", "float", "integer"],
+                "modifiers": ["string", "enum", "text"],
+                "term": ["string", "enum", "text"],
+                "negations": ["boolean", "string"]
+            }
+            
+            # Track matches by keyword key and value
+            matches_by_key_value = {}
+            
+            # Process each keyword type
+            for key in keyword_keys:
+                if key not in keyword_dict or not keyword_dict[key]:
+                    continue
+                    
+                values = keyword_dict[key]
+                if not isinstance(values, list):
+                    values = [values]
+                
+                max_field_num = len(values)
+                for value in values:
+                    if not value:  # Skip empty values
+                        continue
+                    
+                    # Create embedding for this keyword value
+                    value_text = f"{key}: {value}"
+                    value_embedding = neo4j_session.get_embedding(value_text)
+                    
+                    # Dictionary to store scores for this value
+                    value_matches = []
+                    
+                    for field in template_fields:
+                        field_type = field.get("data_type", "string").lower()
+                        field_name = field.get("name", "")
+                        field_desc = field.get("description", "")
+                        
+                        # Check data type compatibility
+                        is_compatible = field_type in type_mappings.get(key, ["string"])
+                        
+                        # Generate field embedding
+                        field_text = f"{field_name} {field_desc}"
+                        field_embedding = neo4j_session.get_embedding(field_text)
+                        
+                        # Calculate similarity
+                        similarity = cosine_similarity(value_embedding, field_embedding)
+                        
+                        # Add bonus for compatible data types
+                        if is_compatible:
+                            similarity += data_type_bonus
+                            
+                        # Add bonus for name matches
+                        if isinstance(value, str) and (
+                            value.lower() in field_name.lower() or 
+                            key.lower() in field_name.lower()
+                        ):
+                            similarity += 0.15
+                        
+                        # Store match if above threshold
+                        if similarity >= similarity_threshold:
+                            # Create a clean copy of the template field
+                            field_copy = {
+                                "id": field.get("id", ""),
+                                "name": field.get("name", ""),
+                                "data_type": field.get("data_type", "string"),
+                                "similarity_score": similarity
+                            }
+                            value_matches.append(field_copy)
+                    
+                    # Sort matches by similarity score
+                    value_matches.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
+                    
+                    # Take top matches
+                    top_matches = value_matches[:max_field_num]
+                    
+                    # Store matches for this key-value pair if any exist
+                    if top_matches:
+                        matches_by_key_value[(key, str(value))] = top_matches
+            
+            # If no matches for a keyword type, add best match even if below threshold
+            matched_keys = {k for k, _ in matches_by_key_value.keys()}
+            unmatched_keys = set(k for k in keyword_keys if k in keyword_dict) - matched_keys
+            
+            for key in unmatched_keys:
+                if not keyword_dict.get(key):
+                    continue
+                    
+                values = keyword_dict[key]
+                if not isinstance(values, list):
+                    values = [values]
+                
+                if not values or not values[0]:
+                    continue
+                
+                max_field_num = len(values)
+                value = values[0]
+                
+                # Find best fields for this keyword type
+                best_fields = []
+                
+                for field in template_fields:
+                    field_type = field.get("data_type", "string").lower()
+                    field_name = field.get("name", "")
+                    
+                    # Calculate a base score
+                    if field_type in type_mappings.get(key, ["string"]):
+                        base_score = 0.3
+                    else:
+                        base_score = 0.1
+                        
+                    # Name match bonus
+                    if key.lower() in field_name.lower():
+                        base_score += 0.2
+                    
+                    if base_score > 0:
+                        # Create a clean copy of the template field
+                        field_copy = {
+                            "id": field.get("id", ""),
+                            "name": field.get("name", ""),
+                            "data_type": field.get("data_type", "string"),
+                            "similarity_score": base_score
+                        }
+                        best_fields.append(field_copy)
+                
+                # Sort and take top matches
+                if best_fields:
+                    best_fields.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
+                    matches_by_key_value[(key, str(value))] = best_fields[:max_field_num]
+            
+            # Convert matches dictionary to list of tuples
+            for (key, value_str), fields in matches_by_key_value.items():
+                # Convert value back to original type if possible
+                try:
+                    # Handle potential numeric values
+                    if value_str.isdigit():
+                        value = int(value_str)
+                    else:
+                        try:
+                            value = float(value_str)
+                        except ValueError:
+                            value = value_str
+                except:
+                    value = value_str
+                    
+                all_matches.append((key, value, fields))
+            
+            # Sort by highest similarity score in each field group
+            all_matches.sort(
+                key=lambda x: max([f.get("similarity_score", 0) for f in x[2]]), 
+                reverse=True
+            )
+            
+            return all_matches
+            
+        except Exception as e:
+            logger.error(f"Error matching template fields: {str(e)}")
+            return []

@@ -6,7 +6,7 @@ from datetime import datetime
 
 from app.models.models import Note, Section, User
 from app.schemas.note import NoteCreate, NoteUpdate
-from app.schemas.section import SectionCreate, SectionUpdate, FieldValueUpdate
+from app.schemas.section import SectionCreate, SectionUpdate
 
 logger = logging.getLogger(__name__)
 
@@ -178,10 +178,6 @@ class NoteService:
             # Create section
             section = Section(**section_dict)
             
-            # If content is provided but field_values isn't, try to extract field values from content
-            if section.content and not section.field_values:
-                section.update_from_content(section.content)
-            
             self.db.add(section)
             self.db.commit()
             self.db.refresh(section)
@@ -218,10 +214,6 @@ class NoteService:
                 section.soap_category = section_data.soap_category
             if section_data.content is not None:
                 section.content = section_data.content
-                # If content is updated, also update field values
-                section.update_from_content(section.content)
-            if section_data.field_values is not None:
-                section.field_values = section_data.field_values
             if section_data.is_visible_to_patient is not None:
                 section.is_visible_to_patient = section_data.is_visible_to_patient
             if section_data.display_order is not None:
@@ -263,42 +255,3 @@ class NoteService:
             logger.error(f"Error deleting section {section_id}: {str(e)}")
             return False
     
-    def update_section_field_values(self, section_id: int, field_updates: List[FieldValueUpdate]) -> Optional[Section]:
-        """
-        Update field values for a section
-        
-        Args:
-            section_id: Section ID
-            field_updates: List of field value updates
-            
-        Returns:
-            Updated section or None if failed
-        """
-        try:
-            section = self.db.query(Section).filter(Section.id == section_id).first()
-            if not section:
-                logger.warning(f"Section {section_id} not found for field value update")
-                return None
-            
-            # Initialize field values if not present
-            if not section.field_values:
-                section.field_values = {}
-            
-            # Update each field
-            for field_update in field_updates:
-                section.add_field_value(
-                    field_id=field_update.field_id,
-                    field_name=field_update.field_name,
-                    value=field_update.value
-                )
-            
-            section.updated_at = datetime.now()
-            
-            self.db.commit()
-            self.db.refresh(section)
-            return section
-            
-        except SQLAlchemyError as e:
-            self.db.rollback()
-            logger.error(f"Error updating field values for section {section_id}: {str(e)}")
-            return None
