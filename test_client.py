@@ -51,6 +51,7 @@ Patient: No, but I've been feeling a bit feverish since last night. I haven't ch
 Doctor: Fatigue and feverishness can be common with viral infections. Any chills or sweating?
 Patient: No.
 Doctor: Understood. Based on your symptoms, it looks like an upper respiratory tract infection, likely viral. Let me examine your throat to confirm.
+Doctor: I will give you acetaminophen for the fever. Take two at a time three times a day.
 """
 
 class WebSocketTester:
@@ -512,11 +513,11 @@ class TestClient:
             # self.create_test_note()
             
             # Test WebSocket (needs to run in an async context)
-            asyncio.run(self.test_websocket())
+            # asyncio.run(self.test_websocket())
             
             # self.generate_test_report_doctor(user_id=2, note_id=12, template_type="doctor")
             
-            # self.test_text_processing()
+            self.test_text_processing()
             # self.test_adaptation_feature()
             logger.info("All tests completed.")
             return True

@@ -18,7 +18,7 @@ class TemplateManager:
         """
         self.connection = connection_manager
         # Load the sentence transformer model for generating embeddings
-        self.model = SentenceTransformer("all-minilm-l6-v2")
+        self.model = SentenceTransformer("BAAI/bge-small-en-v1.5")
         
     def find_template_by_description(self, description: str, 
                                     similarity_threshold: float = 0.7, 

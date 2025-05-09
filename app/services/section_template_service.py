@@ -151,20 +151,29 @@ class SectionTemplateService:
             is_doctor=is_doctor,
             limit=limit
         )
-        
         # Format results
         templates = []
         for result in results:
             node = result.get("n", {})
-            
-            templates.append({
-                "id": node.get("id"),
-                "name": node.get("name"),
-                "description": node.get("description"),
-                "system_defined": node.get("system_defined", False),
-                "version": node.get("version", "1.0"),
-                "similarity_score": result.get("similarity", 0)
-            })
+            print(search_text, node.get("id"), result.get("similarity"))
+            if node.get("id") == "base-section":
+                templates.append({
+                    "id": node.get("id"),
+                    "name": node.get("name"),
+                    "description": node.get("description"),
+                    "system_defined": node.get("system_defined", False),
+                    "version": node.get("version", "1.0"),
+                    "similarity_score": result.get("similarity", 0) - 0.1 # Do not use base section unless absolutely needed
+                })
+            else:
+                templates.append({
+                    "id": node.get("id"),
+                    "name": node.get("name"),
+                    "description": node.get("description"),
+                    "system_defined": node.get("system_defined", False),
+                    "version": node.get("version", "1.0"),
+                    "similarity_score": result.get("similarity", 0)
+                })
             
         return templates
     

@@ -97,7 +97,7 @@ class Neo4jInitializer:
             {
                 "id": "subjective",
                 "name": "Subjective",
-                "description": "Patient-reported information and history.",
+                "description": "PATIENT-REPORTED symptoms, concerns, and history expressed in the patient's perspective. Contains statements about what the patient feels, experiences, or reports. Typically includes the chief complaint, history of present illness, and review of systems. EXCLUDES clinician observations, measurements, or medical conclusions.",
                 "created_by": "system",
                 "system_defined": True,
                 "extends": "base-section"
@@ -105,7 +105,7 @@ class Neo4jInitializer:
             {
                 "id": "objective",
                 "name": "Objective",
-                "description": "Observable findings and measurements, typically reported by the doctor.",
+                "description": "CLINICIAN-OBSERVED findings from physical examination, tests, and measurements. Contains numerical values, visible signs, and quantifiable data collected by healthcare providers. Typically includes vital signs, examination results, and laboratory findings. EXCLUDES patient opinions, subjective experiences, diagnoses, or treatment plans.",
                 "created_by": "system",
                 "system_defined": True,
                 "extends": "base-section"
@@ -113,7 +113,7 @@ class Neo4jInitializer:
             {
                 "id": "assessment",
                 "name": "Assessment",
-                "description": "Clinician assessment and diagnosis made clearly by the doctor.",
+                "description": "DIAGNOSTIC CONCLUSIONS and medical determinations made by the clinician. Contains specific diagnoses, differential diagnoses, problem lists, and clinical reasoning made by the provider. Represents the physician's medical judgment and interpretation of subjective and objective information. EXCLUDES patient-reported symptoms, physical measurements, or treatment recommendations.",
                 "created_by": "system",
                 "system_defined": True,
                 "extends": "base-section"
@@ -121,7 +121,7 @@ class Neo4jInitializer:
             {
                 "id": "plan",
                 "name": "Plan",
-                "description": "Treatment plan and next steps.",
+                "description": "TREATMENT DIRECTIVES and future actions to address the diagnoses. Contains medications prescribed, therapies ordered, referrals made, patient education provided, and follow-up instructions. Focuses exclusively on next steps and interventions determined by the provider. EXCLUDES diagnostic information, patient complaints, or clinical findings.",
                 "created_by": "system",
                 "system_defined": True,
                 "extends": "base-section"
@@ -293,7 +293,7 @@ class Neo4jInitializer:
             {
                 "id": "diagnosis-field",
                 "name": "Diagnosis Field",
-                "description": "Diagnosis made by the medical provider",
+                "description": "DIAGNOSIS made by the medical provider",
                 "data_type": "string",
                 "required": False,
                 "system_defined": True,
@@ -311,7 +311,7 @@ class Neo4jInitializer:
             {
                 "id": "patient-symptom-field",
                 "name": "Patient-reported Symptom Field",
-                "description": "Any symptom reported by the patient",
+                "description": "Any symptom reported BY THE PATIENT",
                 "data_type": "string",
                 "required": False,
                 "system_defined": True,
@@ -320,7 +320,7 @@ class Neo4jInitializer:
             {
                 "id": "observed-symptom-field",
                 "name": "Observed Symptom Field",
-                "description": "Symptom observed by the medical provider",
+                "description": "Symptom observed BY THE MEDICAL PROVIDER, typically doctors",
                 "data_type": "string",
                 "required": False,
                 "system_defined": True,
@@ -331,7 +331,7 @@ class Neo4jInitializer:
             {
                 "id": "base-plan-field",
                 "name": "Base Plan Field",
-                "description": "Any future plans for either the patient or the medical provider",
+                "description": "Any future plans",
                 "data_type": "any",
                 "required": False,
                 "system_defined": True,
@@ -460,7 +460,7 @@ class Neo4jInitializer:
         """Test vector search functionality to ensure it's working properly"""
         try:
             # Test template vector search
-            logger.info("Testing vector search using all-minilm-l6-v2")
+            logger.info("Testing vector search using BAAI/bge-small-en-v1.5")
             
             # Generate a test query embedding
             test_query = "information about diagnosis code and ICD standards"

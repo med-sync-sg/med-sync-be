@@ -9,7 +9,7 @@ import copy
 from datetime import datetime
 from app.schemas.section import SectionRead
 
-DEFAULT_MODEL = SentenceTransformer("all-minilm-l6-v2")
+DEFAULT_MODEL = SentenceTransformer("BAAI/bge-small-en-v1.5")
 
 logger = logging.getLogger(__name__)
 

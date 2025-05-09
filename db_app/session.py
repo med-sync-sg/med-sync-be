@@ -91,7 +91,7 @@ class DataStore:
                 
                 # Load the sentence transformer model
                 logger.info("Loading SentenceTransformer model...")
-                self.model = SentenceTransformer("all-minilm-l6-v2")
+                self.model = SentenceTransformer("BAAI/bge-small-en-v1.5")
                 logger.info("SentenceTransformer model loaded successfully")
                 
                 # Setup database schema and extensions
