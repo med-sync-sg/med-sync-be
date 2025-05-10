@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Body, HTTPException, Request, File, UploadFile, Form, Query
+from fastapi import APIRouter, Depends, Body, HTTPException, Request, File, UploadFile, Form, Query, Path
 from tempfile import NamedTemporaryFile
 import wave
 from fastapi.responses import JSONResponse
@@ -229,29 +229,68 @@ def count_word_differences(text1: str, text2: str) -> Dict[str, Any]:
         "word_match_rate": 1.0 - word_error_rate,
         "word_count_difference": len(words2) - len(words1)
     }
-
-@router.post("/test-report")
-async def generate_report_for_note(
-    note_id: int,
-    user_id: int,
-    report_type: str = "doctor",
+    
+@router.post("/doctor/generate", response_class=HTMLResponse)
+async def generate_doctor_report_direct(
+    note_data: Dict = Body(..., description="Note data with sections"),
+    template_id: Optional[int] = Query(None, description="Optional template ID to use"),
     db: Session = Depends(get_session)
 ):
     """
-    Generate a report for an existing note
+    Generate a SOAP-structured doctor's report from directly provided note data
     
     Args:
-        note_id: ID of the note to generate report for
-        report_type: Type of report to generate ('doctor' or 'patient')
+        note_data: Note data with sections
         template_id: Optional template ID to use
         db: Database session
         
     Returns:
-        HTML report as a string
+        HTML report
+    """
+    try:
+        # Initialize report service
+        report_service = ReportService(db)
+        
+        # Generate doctor report
+        report_html = report_service.generate_report_from_data(note_data, "doctor", template_id)
+        
+        if not report_html:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate doctor report"
+            )
+        
+        return HTMLResponse(content=report_html, media_type="text/html")
+        
+    except Exception as e:
+        logger.error(f"Error generating doctor report from data: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generating report: {str(e)}"
+        )
+        
+@router.get("/{note_id}/{report_type}", response_class=HTMLResponse)
+async def generate_report_from_db(
+    note_id: int = Path(..., description="ID of the note to generate report for"),
+    report_type: str = Path(..., description="Type of report (doctor or patient)"),
+    template_id: Optional[int] = Query(None, description="Optional template ID to use"),
+    db: Session = Depends(get_session)
+):
+    """
+    Generate a report for an existing note from the database
+    
+    Args:
+        note_id: ID of the note to generate report for
+        report_type: Type of report to generate (doctor or patient)
+        template_id: Optional template ID to use
+        db: Database session
+        
+    Returns:
+        HTML report
     """
     try:
         # Check if note exists
-        note = db.query(Note).filter(Note.id == note_id, Note.user_id == user_id).first()
+        note = db.query(Note).filter(Note.id == note_id).first()
         if not note:
             raise HTTPException(
                 status_code=404,
@@ -261,13 +300,12 @@ async def generate_report_for_note(
         # Initialize report service
         report_service = ReportService(db)
         
-
-        if report_type == "patient":
-            # Generate default patient report
-            report_html = report_service.generate_patient_report(note_id)
+        # Generate report based on report type
+        report_html = None
+        if report_type.lower() == "patient":
+            report_html = report_service.generate_patient_report(note_id, template_id)
         else:
-            # Generate default doctor report
-            report_html = report_service.generate_doctor_report(note_id)
+            report_html = report_service.generate_doctor_report(note_id, template_id)
         
         if not report_html:
             raise HTTPException(
@@ -275,13 +313,53 @@ async def generate_report_for_note(
                 detail="Failed to generate report"
             )
             
-        # Return the report as HTML
         return HTMLResponse(content=report_html, media_type="text/html")
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error generating report: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generating report: {str(e)}"
+        )
+
+@router.post("/generate-report", response_class=HTMLResponse)
+async def generate_report_direct(
+    note_data: Dict = Body(..., description="Note data with sections"),
+    report_type: str = Query("doctor", description="Type of report to generate (doctor or patient)"),
+    template_id: Optional[int] = Query(None, description="Optional template ID to use"),
+    db: Session = Depends(get_session)
+):
+    """
+    Generate a report from directly provided note data without saving to database
+    
+    Args:
+        note_data: Note data with sections
+        report_type: Type of report to generate (doctor or patient)
+        template_id: Optional template ID to use
+        db: Database session
+        
+    Returns:
+        HTML report
+    """
+    try:
+        # Initialize report service
+        report_service = ReportService(db)
+        
+        # Add generate_report_from_data method to ReportService
+        report_html = report_service.generate_report_from_data(note_data, report_type, template_id)
+        
+        if not report_html:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate report"
+            )
+        
+        return HTMLResponse(content=report_html, media_type="text/html")
+        
+    except Exception as e:
+        logger.error(f"Error generating report from data: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=f"Error generating report: {str(e)}"

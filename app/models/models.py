@@ -8,6 +8,7 @@ from sqlalchemy.sql import func
 import numpy as np
 import pickle
 from enum import Enum
+from datetime import datetime
 
 Base = declarative_base()
 
@@ -45,7 +46,7 @@ class Note(Base):
     patient_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     title: Mapped[str] = mapped_column(String, nullable=False)
     # Changed from String to DateTime
-    encounter_date: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
+    encounter_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     user: Mapped["User"] = relationship("User", back_populates="notes")
     sections: Mapped[list["Section"]] = relationship("Section", back_populates="note", cascade="all, delete-orphan")
@@ -74,8 +75,8 @@ class Section(Base):
     display_order = Column(Integer, default=100)
     
     # Timestamps and tracking
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     last_modified_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     last_modified_by = relationship("User", foreign_keys=[last_modified_by_id])
     
@@ -117,7 +118,7 @@ class Section(Base):
             "value": value,
             "description": description,
             "required": required,
-            "updated_at": datetime.datetime.now().isoformat()
+            "updated_at": datetime.now().isoformat()
         }
         
         # Add to content
@@ -191,12 +192,12 @@ class Section(Base):
         if isinstance(field, list):
             if index is not None and 0 <= index < len(field):
                 field[index]["value"] = value
-                field[index]["updated_at"] = datetime.datetime.now().isoformat()
+                field[index]["updated_at"] = datetime.now().isoformat()
                 return True
             return False
         else:
             field["value"] = value
-            field["updated_at"] = datetime.datetime.now().isoformat()
+            field["updated_at"] = datetime.now().isoformat()
             return True
 
 def post_section(pydantic_section: SectionCreate, db: Session) -> Section:
@@ -230,8 +231,8 @@ class SpeakerProfile(Base):
     
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     
     # Profile data - serialized as binary
     profile_data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
@@ -308,7 +309,7 @@ class CalibrationRecording(Base):
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     phrase_id: Mapped[int] = mapped_column(Integer, ForeignKey("calibration_phrases.id"), nullable=False)
     speaker_profile_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("speaker_profiles.id"), nullable=True)
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     
     # Features extracted from recording - serialized as binary
     features: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
@@ -327,16 +328,30 @@ class CalibrationRecording(Base):
     speaker_profile: Mapped[Optional["SpeakerProfile"]] = relationship("SpeakerProfile", back_populates="calibration_recordings")
 
 class ReportTemplate(Base):
+    """Model for storing report templates with SOAP structure"""
     __tablename__ = "report_templates"
     
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    
+    # Basic template information
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str] = mapped_column(String, nullable=True)
+    
+    # Template type and format
     report_type: Mapped[str] = mapped_column(String, nullable=False)  # "doctor", "patient", "custom"
-    template_data: Mapped[dict] = mapped_column(JSONB, nullable=False)  # Stores section ordering, formatting rules
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    html_template: Mapped[str] = mapped_column(String, nullable=True)  # Optional custom HTML template
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)  # Flag for default template
+    
+    # Template data structure - stored as JSONB for flexibility
+    template_data: Mapped[dict] = mapped_column(JSONB, nullable=False)  
+    
+    # Version control
+    version: Mapped[str] = mapped_column(String, default="1.0")
+    
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     
     # Relationships
     user: Mapped["User"] = relationship("User", back_populates="report_templates")

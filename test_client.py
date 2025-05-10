@@ -517,7 +517,8 @@ class TestClient:
             
             # self.generate_test_report_doctor(user_id=2, note_id=12, template_type="doctor")
             
-            self.test_text_processing()
+            results = self.test_text_processing()
+            self.generate_doctor_report_from_text_processing(results)
             # self.test_adaptation_feature()
             logger.info("All tests completed.")
             return True
@@ -557,26 +558,120 @@ class TestClient:
         else:
             print("Error:", response.text)
 
-    def generate_test_report_doctor(self, note_id: int, user_id: int, template_type: str) -> Optional[int]:
-        """Create a test report template"""
+    def generate_doctor_report_from_note(self, note_id: int):
+        """
+        Generate a SOAP-structured doctor's report from an existing note in the database
+        
+        Args:
+            note_id: ID of the note to generate report for
+            
+        Returns:
+            HTML content of the report or None if failed
+        """
+        logger.info(f"Generating SOAP-structured doctor report for note {note_id}")
+        
         try:
-            response = requests.post(f"{self.app_url}/tests/test-report", params={
-                "note_id": note_id,
-                "user_id": user_id,
-                "report_type": template_type
-            })
+            # Call the doctor report generation endpoint
+            response = requests.get(
+                f"{self.app_url}/reports/doctor/{note_id}", 
+                headers={"Authorization": f"Bearer {self.token}"} if self.token else None
+            )
+            
             if response.status_code == 200:
-                print(response.content)
-                template_data = response.content
-                print(f"Created {template_type} template")
-                return template_data
+                # Return HTML content
+                report_html = response.text
+                logger.info(f"Successfully generated SOAP-structured doctor report for note {note_id} ({len(report_html)} bytes)")
+                
+                # Save the report to a file for inspection
+                timestamp = int(time.time())
+                filename = f"soap_doctor_report_{note_id}_{timestamp}.html"
+                with open(filename, "w", encoding="utf-8") as f:
+                    f.write(report_html)
+                logger.info(f"Saved SOAP-structured doctor report to {filename}")
+                
+                return report_html
             else:
-                print(f"Failed to create template: {response.text}")
+                logger.error(f"Failed to generate doctor report: {response.status_code} - {response.text}")
                 return None
+                
         except Exception as e:
-            print(f"Error creating template: {str(e)}")
+            logger.error(f"Error generating doctor report: {str(e)}")
             return None
-    
+
+    def generate_doctor_report_from_text_processing(self, processing_result):
+        """
+        Generate a SOAP-structured doctor's report from text processing results
+        
+        Args:
+            processing_result: Result from test_text_processing method
+            
+        Returns:
+            Doctor report HTML or None if failed
+        """
+        if not processing_result or not processing_result.get("success", False):
+            logger.error("No valid text processing result provided")
+            return None
+        
+        try:
+            # Extract entities and sections from the processing result
+            entities = processing_result.get("entities", [])
+            processed_content = processing_result.get("processed_content", [])
+            
+            # Create a note structure from the processing result
+            note_data = {
+                "title": "SOAP Report from Processed Text",
+                "patient_id": None,  # No patient ID for demonstration
+                "user_id": self.user_id if hasattr(self, "user_id") else 1,
+                "encounter_date": datetime.datetime.now().strftime("%Y-%m-%d"),
+                "sections": []
+            }
+            
+            # Convert processed content to sections with SOAP categories
+            for section in processed_content:
+                # Handle different section formats
+                if isinstance(section, dict):
+                    # Extract the first key as the title if present
+                    title = next(iter(section.keys())) if section else "Untitled Section"
+                    
+                    # Determine SOAP category based on content
+                    soap_category = section.get("soap_category", "N/A")
+                    
+                    # Add to sections
+                    note_data["sections"].append({
+                        "title": title,
+                        "soap_category": soap_category,
+                        "content": section
+                    })
+            
+            # Generate doctor report
+            logger.info(f"Generating SOAP-structured doctor report from text processing data")
+            
+            response = requests.post(
+                f"{self.app_url}/tests/doctor/generate",
+                json=note_data,
+                headers={"Authorization": f"Bearer {self.token}"} if self.token else None
+            )
+            
+            if response.status_code == 200:
+                # Get HTML content
+                report_html = response.text
+                
+                # Save the report to a file for inspection
+                timestamp = int(time.time())
+                filename = f"soap_doctor_report_direct_{timestamp}.html"
+                with open(filename, "w", encoding="utf-8") as f:
+                    f.write(report_html)
+                logger.info(f"Saved SOAP-structured doctor report to {filename}")
+                
+                return report_html
+            else:
+                logger.error(f"Failed to generate doctor report: {response.status_code} - {response.text}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error generating doctor report from text processing: {str(e)}")
+            return None
+        
     def test_db_connection(self):
         """Test connection to the database service"""
         logger.info("Testing database service connection...")
