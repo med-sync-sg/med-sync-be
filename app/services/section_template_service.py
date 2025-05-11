@@ -161,6 +161,7 @@ class SectionTemplateService:
                     "id": node.get("id"),
                     "name": node.get("name"),
                     "description": node.get("description"),
+                    "soap_category": node.get("soap_category", "OTHER"),
                     "system_defined": node.get("system_defined", False),
                     "version": node.get("version", "1.0"),
                     "similarity_score": result.get("similarity", 0) - 0.1 # Do not use base section unless absolutely needed
@@ -170,6 +171,7 @@ class SectionTemplateService:
                     "id": node.get("id"),
                     "name": node.get("name"),
                     "description": node.get("description"),
+                    "soap_category": node.get("soap_category", "OTHER"),
                     "system_defined": node.get("system_defined", False),
                     "version": node.get("version", "1.0"),
                     "similarity_score": result.get("similarity", 0)
@@ -271,6 +273,7 @@ class SectionTemplateService:
             "id": template_node.get("id"),
             "name": template_node.get("name"),
             "description": template_node.get("description"),
+            "soap_category": template_node.get("soap_category", "OTHER"),
             "system_defined": template_node.get("system_defined", False),
             "created_at": template_node.get("created_at"),
             "created_by": template_node.get("created_by"),
@@ -340,6 +343,7 @@ class SectionTemplateService:
             templates.append({
                 "id": template_node.get("id"),
                 "name": template_node.get("name"),
+                "soap_category": template_node.get("soap_category", "OTHER"),
                 "description": template_node.get("description"),
                 "system_defined": template_node.get("system_defined", False),
                 "version": template_node.get("version", "1.0")
@@ -370,6 +374,7 @@ class SectionTemplateService:
             id: $id,
             name: $name,
             description: $description,
+            soap_category: $soap_category,
             embedding_1: $embedding,
             created_at: timestamp(),
             created_by: $created_by,
@@ -384,6 +389,7 @@ class SectionTemplateService:
             "id": template_data.get("id"),
             "name": template_data.get("name"),
             "description": template_data.get("description", ""),
+            "soap_category": template_data.get("soap_category", "OTHER"),
             "embedding_1": embedding,
             "created_by": template_data.get("created_by", "user"),
             "system_defined": template_data.get("system_defined", False),

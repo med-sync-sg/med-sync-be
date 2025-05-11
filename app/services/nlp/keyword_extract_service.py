@@ -136,7 +136,7 @@ class KeywordExtractService:
             }
             
             # Convert to section
-            section = convert_to_section_read(section_data)
+            section = convert_to_section_create(section_data)
             sections.append(section)
 
         return (found_templates, sections)
@@ -162,7 +162,7 @@ class KeywordExtractService:
         }
 
 
-def convert_to_section_read(template_content: Dict[str, Any]) -> SectionRead:
+def convert_to_section_create(template_content: Dict[str, Any]) -> SectionCreate:
     """
     Convert template content to a SectionRead object
     
@@ -174,9 +174,8 @@ def convert_to_section_read(template_content: Dict[str, Any]) -> SectionRead:
     """
     try:
         # Create the SectionRead object
-        section = SectionRead(
-            id=0,  # This will be assigned when saved to the database
-            note_id=0,  # This will be assigned when saved to the database
+        section = SectionCreate(
+            note_id=1,
             user_id=template_content.get("user_id", 1),
             title=template_content.get("title", ""),
             template_id=template_content.get("template_id", ""),
@@ -193,9 +192,8 @@ def convert_to_section_read(template_content: Dict[str, Any]) -> SectionRead:
     except Exception as e:
         logger.error(f"Error converting to SectionRead: {str(e)}")
         # Return a minimal valid SectionRead
-        return SectionRead(
-            id=0,
-            note_id=0,
+        return SectionCreate(
+            note_id=1,
             user_id=1,
             title="Error",
             template_id="",

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 from typing import Dict, Any, Optional, List, Union
 from datetime import datetime
 
@@ -13,11 +13,12 @@ class TemplateFieldContent(BaseModel):
     required: bool = False
     updated_at: Optional[datetime] = None
 
+    @field_serializer('updated_at')
+    def serialize_datetime(self, datetime_object: datetime, _info):
+        return datetime_object.isoformat()
+    
     model_config = ConfigDict(
         from_attributes=True,
-        json_encoders={
-            datetime: lambda dt: dt.isoformat()
-        }
     )
 
 # Section Schemas
@@ -30,23 +31,30 @@ class SectionBase(BaseModel):
     is_visible_to_patient: bool = True
     display_order: int = 100
     parent_id: Optional[int] = None
+    
     model_config = ConfigDict(
         from_attributes=True,
-        json_encoders={
-            datetime: lambda dt: dt.isoformat()
-        }
     )
 
 class SectionCreate(SectionBase):
     """Schema for creating a new section"""
     note_id: int
     user_id: int
+    created_at: datetime
+    updated_at: datetime
+    
+    @field_serializer('created_at')
+    def serialize_datetime(self, datetime_object: datetime, _info):
+        return datetime_object.isoformat()
+    
+    @field_serializer('updated_at')
+    def serialize_datetime(self, datetime_object: datetime, _info):
+        return datetime_object.isoformat()
+    
     model_config = ConfigDict(
         from_attributes=True,
-        json_encoders={
-            datetime: lambda dt: dt.isoformat()
-        }
     )
+
 class SectionRead(SectionBase):
     """Schema for reading a section"""
     id: int
@@ -56,11 +64,16 @@ class SectionRead(SectionBase):
     updated_at: datetime
     last_modified_by_id: Optional[int] = None
     
+    @field_serializer('created_at')
+    def serialize_datetime(self, datetime_object: datetime, _info):
+        return datetime_object.isoformat()
+    
+    @field_serializer('updated_at')
+    def serialize_datetime(self, datetime_object: datetime, _info):
+        return datetime_object.isoformat()
+    
     model_config = ConfigDict(
         from_attributes=True,
-        json_encoders={
-            datetime: lambda dt: dt.isoformat()
-        }
     )
 
 class SectionUpdate(BaseModel):
@@ -72,11 +85,18 @@ class SectionUpdate(BaseModel):
     is_visible_to_patient: Optional[bool] = None
     display_order: Optional[int] = None
     parent_id: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
     last_modified_by_id: Optional[int] = None
+    
+    @field_serializer('created_at')
+    def serialize_datetime(self, datetime_object: datetime, _info):
+        return datetime_object.isoformat()
+    
+    @field_serializer('updated_at')
+    def serialize_datetime(self, datetime_object: datetime, _info):
+        return datetime_object.isoformat()
     
     model_config = ConfigDict(
         from_attributes=True,
-        json_encoders={
-            datetime: lambda dt: dt.isoformat()
-        }
     )

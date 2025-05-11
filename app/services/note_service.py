@@ -174,10 +174,9 @@ class NoteService:
             # Prepare section data
             section_dict = section_data.model_dump(exclude={"id"})
             section_dict["note_id"] = note_id
-            
             # Create section
             section = Section(**section_dict)
-            
+
             self.db.add(section)
             self.db.commit()
             self.db.refresh(section)

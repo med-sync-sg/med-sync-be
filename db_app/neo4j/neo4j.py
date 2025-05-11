@@ -90,6 +90,7 @@ class Neo4jInitializer:
             {
                 "id": "base-section",
                 "name": "Base Section",
+                "soap_category": "OTHER",
                 "description": "Base template for all clinical note sections.",
                 "created_by": "system",
                 "system_defined": True
@@ -97,6 +98,7 @@ class Neo4jInitializer:
             {
                 "id": "subjective",
                 "name": "Subjective",
+                "soap_category": "SUBJECTIVE",
                 "description": "PATIENT-REPORTED symptoms, concerns, and history expressed in the patient's perspective. Contains statements about what the patient feels, experiences, or reports. Typically includes the chief complaint, history of present illness, and review of systems. EXCLUDES clinician observations, measurements, or medical conclusions.",
                 "created_by": "system",
                 "system_defined": True,
@@ -105,6 +107,7 @@ class Neo4jInitializer:
             {
                 "id": "objective",
                 "name": "Objective",
+                "soap_category": "OBJECTIVE",
                 "description": "CLINICIAN-OBSERVED findings from physical examination, tests, and measurements. Contains numerical values, visible signs, and quantifiable data collected by healthcare providers. Typically includes vital signs, examination results, and laboratory findings. EXCLUDES patient opinions, subjective experiences, diagnoses, or treatment plans.",
                 "created_by": "system",
                 "system_defined": True,
@@ -113,6 +116,7 @@ class Neo4jInitializer:
             {
                 "id": "assessment",
                 "name": "Assessment",
+                "soap_category": "ASSESSMENT",
                 "description": "DIAGNOSTIC CONCLUSIONS and medical determinations made by the clinician. Contains specific diagnoses, differential diagnoses, problem lists, and clinical reasoning made by the provider. Represents the physician's medical judgment and interpretation of subjective and objective information. EXCLUDES patient-reported symptoms, physical measurements, or treatment recommendations.",
                 "created_by": "system",
                 "system_defined": True,
@@ -121,6 +125,7 @@ class Neo4jInitializer:
             {
                 "id": "plan",
                 "name": "Plan",
+                "soap_category": "PLAN",
                 "description": "TREATMENT DIRECTIVES and future actions to address the diagnoses. Contains medications prescribed, therapies ordered, referrals made, patient education provided, and follow-up instructions. Focuses exclusively on next steps and interventions determined by the provider. EXCLUDES diagnostic information, patient complaints, or clinical findings.",
                 "created_by": "system",
                 "system_defined": True,
@@ -134,6 +139,7 @@ class Neo4jInitializer:
         ON CREATE SET 
             t.name = $name,
             t.description = $description,
+            t.soap_category = $soap_category,
             t.embedding_1 = $embedding_1,
             t.created_at = timestamp(),
             t.created_by = $created_by,

@@ -522,23 +522,23 @@ async def process_audio_chunk(
                 )
                 
                 # Save section to database
-                # db_section = note_service.add_section_to_note(note_id, section_create)
+                db_section = note_service.add_section_to_note(note_id, section_create)
                 
-                # if db_section:
-                #     # Convert to dict for JSON serialization
-                #     section_dict = {
-                #         "id": db_section.id,
-                #         "note_id": db_section.note_id,
-                #         "user_id": db_section.user_id,
-                #         "title": db_section.title,
-                #         "template_id": db_section.template_id,
-                #         "soap_category": db_section.soap_category,
-                #         "content": db_section.content,  # Direct content serialization
-                #         "is_visible_to_patient": db_section.is_visible_to_patient,
-                #         "display_order": db_section.display_order,
-                #         "created_at": db_section.created_at.isoformat() if hasattr(db_section, 'created_at') else None,
-                #         "updated_at": db_section.updated_at.isoformat() if hasattr(db_section, 'updated_at') else None
-                #     }
+                if db_section:
+                    # Convert to dict for JSON serialization
+                    section_dict = {
+                        "id": db_section.id,
+                        "note_id": db_section.note_id,
+                        "user_id": db_section.user_id,
+                        "title": db_section.title,
+                        "template_id": db_section.template_id,
+                        "soap_category": db_section.soap_category,
+                        "content": db_section.content,  # Direct content serialization
+                        "is_visible_to_patient": db_section.is_visible_to_patient,
+                        "display_order": db_section.display_order,
+                        "created_at": db_section.created_at.isoformat() if hasattr(db_section, 'created_at') else None,
+                        "updated_at": db_section.updated_at.isoformat() if hasattr(db_section, 'updated_at') else None
+                    }
                 if section_create:
                     # Convert to dict for JSON serialization
                     section_dict = section_create.model_dump_json()

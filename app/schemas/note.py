@@ -1,5 +1,5 @@
 from typing import List, Optional, Union, Dict, Any
-from pydantic import BaseModel, field_validator, ConfigDict
+from pydantic import BaseModel, field_serializer, ConfigDict
 from .section import SectionCreate, SectionRead, SectionUpdate
 from datetime import datetime
 
@@ -9,13 +9,14 @@ class NoteCreate(BaseModel):
     user_id: int
     title: str
     encounter_date: datetime
-    sections: List[Union[SectionCreate, Dict[str, Any]]] = []
+    sections: List[SectionCreate] = []
 
+    @field_serializer('encounter_date')
+    def serialize_datetime(self, datetime_object: datetime, _info):
+        return datetime_object.isoformat()
+    
     model_config = ConfigDict(
         from_attributes=True,
-        json_encoders={
-            datetime: lambda dt: dt.isoformat()
-        }
     )
     
 class NoteRead(BaseModel):
@@ -27,11 +28,12 @@ class NoteRead(BaseModel):
     encounter_date: datetime
     sections: List[SectionRead] = []
     
+    @field_serializer('encounter_date')
+    def serialize_datetime(self, datetime_object: datetime, _info):
+        return datetime_object.isoformat()
+    
     model_config = ConfigDict(
         from_attributes=True,
-        json_encoders={
-            datetime: lambda dt: dt.isoformat()
-        }
     )
     
 class NoteUpdate(BaseModel):
@@ -42,9 +44,10 @@ class NoteUpdate(BaseModel):
     encounter_date: Optional[datetime] = None
     sections: List[SectionUpdate] = []
     
+    @field_serializer('encounter_date')
+    def serialize_datetime(self, datetime_object: datetime, _info):
+        return datetime_object.isoformat()
+    
     model_config = ConfigDict(
         from_attributes=True,
-        json_encoders={
-            datetime: lambda dt: dt.isoformat()
-        }
     )

@@ -40,19 +40,26 @@ DEFAULT_DB_URL = "http://127.0.0.1:8002"
 DEFAULT_APP_URL = "http://127.0.0.1:8001"
 DEFAULT_AUDIO_FILE = os.path.join("test_audios", "test_30sec.wav")
 
+# SAMPLE_TRANSCRIPT = """
+# Patient: Doctor, I've had a sore throat for the past three days, and it's getting worse. It feels scratchy, and swallowing is uncomfortable.
+# Doctor: I see. Has it been painful enough to affect eating or drinking?
+# Patient: No, but I also have a mild cough and keep sneezing a lot. My nose has been running non-stop.
+# Doctor: Sounds like you're experiencing some nasal irritation. Have you noticed any thick or discolored mucus?
+# Patient: Yeah, sometimes I feel some mucus at the back of my throat.
+# Doctor: Alright. Do you feel any tightness in your chest or shortness of breath when coughing?
+# Patient: No, but I've been feeling a bit feverish since last night. I haven't checked my temperature though. My body feels tired too.
+# Doctor: Fatigue and feverishness can be common with viral infections. Any chills or sweating?
+# Patient: No.
+# Doctor: Understood. Based on your symptoms, it looks like an upper respiratory tract infection, likely viral. Let me examine your throat to confirm.
+# Doctor: I will give you acetaminophen for the fever. Take two at a time three times a day.
+# """
+
 SAMPLE_TRANSCRIPT = """
-Patient: Doctor, I've had a sore throat for the past three days, and it's getting worse. It feels scratchy, and swallowing is uncomfortable.
+Patient: Doctor, I've had a sore throat, and it's getting worse. It feels scratchy, and swallowing is uncomfortable.
 Doctor: I see. Has it been painful enough to affect eating or drinking?
-Patient: No, but I also have a mild cough and keep sneezing a lot. My nose has been running non-stop.
-Doctor: Sounds like you're experiencing some nasal irritation. Have you noticed any thick or discolored mucus?
-Patient: Yeah, sometimes I feel some mucus at the back of my throat.
-Doctor: Alright. Do you feel any tightness in your chest or shortness of breath when coughing?
-Patient: No, but I've been feeling a bit feverish since last night. I haven't checked my temperature though. My body feels tired too.
-Doctor: Fatigue and feverishness can be common with viral infections. Any chills or sweating?
-Patient: No.
-Doctor: Understood. Based on your symptoms, it looks like an upper respiratory tract infection, likely viral. Let me examine your throat to confirm.
-Doctor: I will give you acetaminophen for the fever. Take two at a time three times a day.
 """
+
+DEBUG_PATH = "test_client_results"
 
 class WebSocketTester:
     """Helper class for testing WebSocket functionality of the application"""
@@ -518,7 +525,7 @@ class TestClient:
             # self.generate_test_report_doctor(user_id=2, note_id=12, template_type="doctor")
             
             results = self.test_text_processing()
-            self.generate_doctor_report_from_text_processing(results)
+            # self.generate_doctor_report_from_text_processing(results)
             # self.test_adaptation_feature()
             logger.info("All tests completed.")
             return True
@@ -585,7 +592,7 @@ class TestClient:
                 # Save the report to a file for inspection
                 timestamp = int(time.time())
                 filename = f"soap_doctor_report_{note_id}_{timestamp}.html"
-                with open(filename, "w", encoding="utf-8") as f:
+                with open(os.path.join(DEBUG_PATH, filename), "w", encoding="utf-8") as f:
                     f.write(report_html)
                 logger.info(f"Saved SOAP-structured doctor report to {filename}")
                 
@@ -613,8 +620,7 @@ class TestClient:
             return None
         
         try:
-            # Extract entities and sections from the processing result
-            entities = processing_result.get("entities", [])
+            # Extract sections from the processing result
             processed_content = processing_result.get("processed_content", [])
             
             # Create a note structure from the processing result
@@ -626,30 +632,136 @@ class TestClient:
                 "sections": []
             }
             
+            # Log what we're processing
+            logger.info(f"Processing {len(processed_content)} sections from text processing")
+            
             # Convert processed content to sections with SOAP categories
-            for section in processed_content:
-                # Handle different section formats
-                if isinstance(section, dict):
-                    # Extract the first key as the title if present
-                    title = next(iter(section.keys())) if section else "Untitled Section"
+            for i, section in enumerate(processed_content):
+                if not isinstance(section, dict):
+                    logger.warning(f"Section {i+1} is not a dictionary, skipping")
+                    continue
                     
-                    # Determine SOAP category based on content
-                    soap_category = section.get("soap_category", "N/A")
+                # Extract section data
+                section_title = section.get("title", "Untitled Section")
+                soap_category = section.get("soap_category", "OTHER")
+                template_id = section.get("template_id", "")
+                
+                # Debug the section data
+                logger.info(f"Section {i+1}: {section_title} ({soap_category})")
+                logger.info(f"  Template ID: {template_id}")
+                
+                # Process content to ensure proper format for report generation
+                formatted_content = {}
+                raw_content = section.get("content", {})
+                
+                if isinstance(raw_content, dict):
+                    logger.info(f"  Raw content keys: {list(raw_content.keys())}")
                     
-                    # Add to sections
-                    note_data["sections"].append({
-                        "title": title,
-                        "soap_category": soap_category,
-                        "content": section
-                    })
+                    # Convert content to proper field format
+                    for field_key, field_data in raw_content.items():
+                        # If already in field format with name, data_type, value
+                        if isinstance(field_data, dict) and "name" in field_data and "data_type" in field_data and "value" in field_data:
+                            formatted_content[field_key] = field_data
+                            logger.info(f"  Field '{field_key}' already properly formatted")
+                        
+                        # Handle list of fields
+                        elif isinstance(field_data, list):
+                            formatted_list = []
+                            
+                            for i, item in enumerate(field_data):
+                                # Check if item is already a field object
+                                if isinstance(item, dict) and "name" in item and "data_type" in item and "value" in item:
+                                    formatted_list.append(item)
+                                else:
+                                    # Create a field object for this item
+                                    field_name = f"{field_key.replace('_', ' ').title()} {i+1}"
+                                    data_type = "string"
+                                    
+                                    # Try to infer data type
+                                    if isinstance(item, bool):
+                                        data_type = "boolean"
+                                    elif isinstance(item, (int, float)):
+                                        data_type = "number"
+                                    elif isinstance(item, dict):
+                                        data_type = "object"
+                                        # Convert complex dictionary to string
+                                        item = json.dumps(item)
+                                    
+                                    formatted_list.append({
+                                        "name": field_name,
+                                        "data_type": data_type,
+                                        "value": item
+                                    })
+                            
+                            # Add list to content
+                            formatted_content[field_key] = formatted_list
+                            logger.info(f"  Formatted list field '{field_key}' with {len(formatted_list)} items")
+                        
+                        # Handle regular value
+                        else:
+                            # Create field structure
+                            field_name = field_key.replace('_', ' ').title()
+                            
+                            # Determine data type
+                            data_type = "string"
+                            if isinstance(field_data, bool):
+                                data_type = "boolean"
+                            elif isinstance(field_data, (int, float)):
+                                data_type = "number"
+                            elif isinstance(field_data, dict):
+                                data_type = "object"
+                                # For nested objects, we'll create a string representation
+                                field_data = json.dumps(field_data)
+                            elif isinstance(field_data, list):
+                                data_type = "array"
+                                # For lists, we'll create a string representation
+                                field_data = ", ".join(str(item) for item in field_data)
+                            
+                            # Add formatted field
+                            formatted_content[field_key] = {
+                                "name": field_name,
+                                "data_type": data_type,
+                                "value": field_data
+                            }
+                            logger.info(f"  Formatted field '{field_key}' as {data_type}")
+                else:
+                    logger.warning(f"  Content is not a dictionary: {type(raw_content).__name__}")
+                    # Create a single text field with the content
+                    formatted_content["text"] = {
+                        "name": "Text",
+                        "data_type": "string",
+                        "value": str(raw_content)
+                    }
+                
+                # Create the section structure with properly formatted content
+                section_data = {
+                    "title": section_title,
+                    "soap_category": soap_category,
+                    "template_id": template_id,
+                    "content": formatted_content,
+                    "user_id": self.user_id if hasattr(self, "user_id") else 1
+                }
+                
+                # Add section to note data
+                note_data["sections"].append(section_data)
+            
+            # Debug the final note data before sending
+            logger.info(f"Final note data has {len(note_data['sections'])} sections")
+            
+            # Save the note data to a JSON file for debugging
+            try:
+                import json
+                with open(os.path.join(DEBUG_PATH, 'note_data_debug.json'), 'w') as f:
+                    json.dump(note_data, f, indent=2, default=str)
+                logger.info("Note data saved to note_data_debug.json for debugging")
+            except Exception as e:
+                logger.warning(f"Could not save debug data: {str(e)}")
             
             # Generate doctor report
-            logger.info(f"Generating SOAP-structured doctor report from text processing data")
-            
             response = requests.post(
                 f"{self.app_url}/tests/doctor/generate",
                 json=note_data,
-                headers={"Authorization": f"Bearer {self.token}"} if self.token else None
+                headers={"Authorization": f"Bearer {self.token}"} if hasattr(self, "token") and self.token else None
             )
             
             if response.status_code == 200:
@@ -658,8 +770,8 @@ class TestClient:
                 
                 # Save the report to a file for inspection
                 timestamp = int(time.time())
-                filename = f"soap_doctor_report_direct_{timestamp}.html"
-                with open(filename, "w", encoding="utf-8") as f:
+                filename = f"soap_doctor_report_direct.html"
+                with open(os.path.join(DEBUG_PATH, filename), 'w', encoding='utf-8') as f:
                     f.write(report_html)
                 logger.info(f"Saved SOAP-structured doctor report to {filename}")
                 
@@ -670,6 +782,8 @@ class TestClient:
                 
         except Exception as e:
             logger.error(f"Error generating doctor report from text processing: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
         
     def test_db_connection(self):
@@ -733,12 +847,12 @@ class TestClient:
                     "age": 30,
                     "notes": []
                 }
-                requests.post(f"{self.app_url}/auth/sign-up", json=signup_data)
+                requests.post(f"{self.app_url}/auth/signup", json=signup_data)
             except:
                 logger.info("User may already exist, proceeding to login")
             
             # Login
-            response = requests.post(f"{self.app_url}/auth/login", json=credentials)
+            response = requests.post(f"{self.app_url}/auth/signin", json=credentials)
             if response.status_code != 200:
                 raise Exception(f"Authentication failed: {response.status_code}")
             
@@ -830,7 +944,7 @@ class TestClient:
             
             # Send the text to the backend for processing
             response = requests.post(
-                f"{self.app_url}/tests/text-transcript", 
+                f"{self.app_url}/tests/text-transcript-db", 
                 json=request_data, 
                 headers=headers
             )

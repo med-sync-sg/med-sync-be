@@ -13,6 +13,8 @@ from app.models.models import Note, Section, User, ReportTemplate
 # Configure logger
 logger = logging.getLogger(__name__)
 
+
+DEBUG_PATH = os.path.join("test_client_results")
 # Dictionary of medical jargon replacements for patient-friendly reports
 MEDICAL_JARGON_REPLACEMENTS = {
     "myocardial infarction": "heart attack",
@@ -67,19 +69,50 @@ class ReportService:
             db: SQLAlchemy session for database operations
         """
         self.db = db
+        
+        # Update the templates path to correctly point to the default_html directory
         self.templates_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "utils", "nlp", "report_templates"
-        )
-        self.env = Environment(
-            loader=FileSystemLoader(self.templates_path),
-            autoescape=select_autoescape(['html', 'xml'])
+            os.path.dirname(os.path.abspath(__file__)),
+            "default_html"
         )
         
-        # Register custom filters
-        self.env.filters['simplify_medical_terms'] = self._simplify_medical_terms
+        # Check if the templates directory exists
+        if not os.path.exists(self.templates_path):
+            logger.warning(f"Templates directory not found: {self.templates_path}")
+            # Try alternate path - fallback
+            alternate_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "utils", "nlp", "report_templates"
+            )
+            if os.path.exists(alternate_path):
+                logger.info(f"Using alternate templates path: {alternate_path}")
+                self.templates_path = alternate_path
+            else:
+                logger.warning(f"Alternate templates directory not found: {alternate_path}")
         
-        logger.info(f"ReportService initialized with templates from {self.templates_path}")
+        try:
+            self.env = Environment(
+                loader=FileSystemLoader(self.templates_path),
+                autoescape=select_autoescape(['html', 'xml'])
+            )
+            
+            # Register custom filters
+            self.env.filters['simplify_medical_terms'] = self._simplify_medical_terms
+            
+            # Check if required templates exist
+            required_templates = ["default_doctor.html", "default_patient.html"]
+            for template_name in required_templates:
+                if not os.path.exists(os.path.join(self.templates_path, template_name)):
+                    logger.warning(f"Required template not found: {template_name}")
+                else:
+                    logger.info(f"Found template: {template_name}")
+                    
+            logger.info(f"ReportService initialized with templates from {self.templates_path}")
+            
+        except Exception as e:
+            logger.error(f"Error initializing Jinja2 environment: {str(e)}")
+            # Initialize with a dummy environment as fallback
+            self.env = Environment()
     
     #
     # TEMPLATE MANAGEMENT METHODS
@@ -104,6 +137,7 @@ class ReportService:
                 )
             ).all()
             
+            logger.info(f"Retrieved {len(templates)} templates for user {user_id}")
             return templates
             
         except Exception as e:
@@ -130,6 +164,11 @@ class ReportService:
                 )
             ).first()
             
+            if template:
+                logger.info(f"Retrieved template {template_id} for user {user_id}")
+            else:
+                logger.warning(f"Template {template_id} not found for user {user_id}")
+                
             return template
             
         except Exception as e:
@@ -150,8 +189,13 @@ class ReportService:
             template = self.db.query(ReportTemplate).filter(
                 ReportTemplate.report_type == report_type,
                 ReportTemplate.is_default == True
-            ).first()
+            ).order_by(ReportTemplate.updated_at.desc()).first()
             
+            if template:
+                logger.info(f"Retrieved default {report_type} template: {template.name}")
+            else:
+                logger.warning(f"No default template found for {report_type}")
+                
             return template
             
         except Exception as e:
@@ -185,6 +229,7 @@ class ReportService:
             self.db.commit()
             self.db.refresh(template)
             
+            logger.info(f"Created template: {template.name} (ID: {template.id})")
             return template
             
         except Exception as e:
@@ -232,6 +277,7 @@ class ReportService:
             self.db.commit()
             self.db.refresh(template)
             
+            logger.info(f"Updated template {template_id}")
             return template
             
         except Exception as e:
@@ -264,7 +310,7 @@ class ReportService:
             
             self.db.delete(template)
             self.db.commit()
-            
+            logger.info(f"Deleted template {template_id}")
             return True
             
         except Exception as e:
@@ -298,6 +344,10 @@ class ReportService:
             template = None
             if template_id:
                 template = self.db.query(ReportTemplate).filter(ReportTemplate.id == template_id).first()
+                if template:
+                    logger.info(f"Using custom template: {template.name}")
+                else:
+                    logger.warning(f"Custom template {template_id} not found, falling back to default")
             
             # Use default template if no custom template specified or found
             if not template:
@@ -305,6 +355,7 @@ class ReportService:
                 if not template:
                     logger.error(f"No default doctor template found")
                     return None
+                logger.info(f"Using default doctor template: {template.name}")
             
             # Get patient info if available
             patient_info = self._get_patient_info(note.patient_id)
@@ -314,6 +365,7 @@ class ReportService:
             
             # Format sections for doctor report
             formatted_sections = self._format_sections_for_doctor(note.sections, template)
+            logger.info(f"Formatted {len(formatted_sections)} sections for doctor report")
             
             # Prepare report data
             report_data = {
@@ -329,11 +381,17 @@ class ReportService:
             # Render template
             rendered_report = self._render_report(template, report_data)
             
-            logger.info(f"Generated doctor report for note {note_id}")
+            if rendered_report:
+                logger.info(f"Generated doctor report for note {note_id} ({len(rendered_report)} bytes)")
+            else:
+                logger.error(f"Failed to render doctor report for note {note_id}")
+                
             return rendered_report
             
         except Exception as e:
             logger.error(f"Error generating doctor report for note {note_id}: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
     
     def _format_sections_for_doctor(self, sections: List[Section], template: ReportTemplate) -> List[Dict[str, Any]]:
@@ -350,21 +408,27 @@ class ReportService:
         formatted_sections = []
         
         # Get template configuration
-        template_data = template.template_data
+        template_data = template.template_data or {}
         section_configs = template_data.get('sections', {})
+        
+        # Debug info
+        logger.info(f"Formatting {len(sections)} sections for doctor report")
+        logger.info(f"Template has section configs: {list(section_configs.keys())}")
         
         # Process each section
         for section in sections:
             # Skip empty sections
             if not section.content:
+                logger.debug(f"Skipping empty section (no content)")
                 continue
             
             # Get section category and config
-            soap_category = section.soap_category
+            soap_category = section.soap_category or "OTHER"
             config = section_configs.get(soap_category, section_configs.get("OTHER", {}))
             
             # Skip if this category should not be included
             if not config.get('include', True):
+                logger.debug(f"Skipping section {section.id} (category {soap_category} not included)")
                 continue
                 
             # Get format options from template
@@ -388,11 +452,20 @@ class ReportService:
             
             # Add to list
             formatted_sections.append(formatted_section)
+            logger.debug(f"Added formatted section '{title}' ({soap_category})")
         
         # Sort sections by order within each SOAP category
         formatted_sections.sort(key=lambda s: s.get('order', 999))
         
+        # Log the formatted sections
+        logger.info(f"Formatted {len(formatted_sections)} sections for doctor report")
+        for i, section in enumerate(formatted_sections):
+            logger.info(f"  Section {i+1}: {section.get('title')} ({section.get('soap_category')})")
+            logger.info(f"    Content keys: {list(section.get('content', {}).keys())}")
+            logger.info(f"    Has content_html: {'Yes' if section.get('content_html') else 'No'}")
+        
         return formatted_sections
+
     
     def _format_section_for_doctor(self, section: Section, title: str, format_options: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -410,8 +483,9 @@ class ReportService:
         formatted_section = {
             'id': section.id,
             'title': title,
-            'soap_category': section.soap_category,
-            'content_html': ''
+            'soap_category': section.soap_category or "OTHER",
+            'content_html': '',
+            'content': {} # Add the actual content for template rendering
         }
         
         # Format content based on its type
@@ -419,17 +493,25 @@ class ReportService:
         
         # Process content if available
         if content:
+            logger.debug(f"Processing content for section {section.id}: {type(content)}")
+            
             # For doctor report, use detailed technical content
             if isinstance(content, dict):
-                # Format each part of the content
+                # Copy the content to the formatted section
+                formatted_section['content'] = content
+                
+                # Also generate HTML representation
                 content_html = self._format_dictionary_content(content, format_options, is_doctor=True)
                 formatted_section['content_html'] = content_html
             elif isinstance(content, str):
                 # Format text content
                 formatted_section['content_html'] = content
+                formatted_section['content'] = {"text": {"name": "Text", "data_type": "string", "value": content}}
             else:
                 # Unknown content type
+                logger.warning(f"Unknown content type for section {section.id}: {type(content)}")
                 formatted_section['content_html'] = str(content)
+                formatted_section['content'] = {"text": {"name": "Text", "data_type": "string", "value": str(content)}}
         
         return formatted_section
     
@@ -450,12 +532,70 @@ class ReportService:
         for key, value in content.items():
             formatted_key = key.replace('_', ' ').title()
             
-            if isinstance(value, dict):
+            # Handle single FieldTemplate object
+            if isinstance(value, dict) and all(k in value for k in ['name', 'data_type']):
+                # This is a field object, format accordingly
+                field_name = value.get('name', formatted_key)
+                field_value = value.get('value', '')
+                field_type = value.get('data_type', 'string')
+                
+                # Apply special formatting for doctor reports
+                if is_doctor:
+                    # Highlight abnormal values
+                    highlight_abnormal = format_options.get('highlight_abnormal', False)
+                    if highlight_abnormal and self._is_abnormal_value(key, field_value):
+                        field_value = f'<span class="abnormal">{field_value}</span>'
+                    
+                    # Format diagnostic codes
+                    if field_type.lower() in ["code"] or key.lower() in ["code", "codes", "diagnosis_code", "icd", "cpt", "snomed"]:
+                        field_value = f'<span class="diagnosis-code">{field_value}</span>'
+                
+                html_parts.append(f'<div class="field-item"><span class="field-name">{field_name}:</span> <span class="field-value">{field_value}</span></div>')
+            
+            # Handle list of FieldTemplate objects
+            elif isinstance(value, list):
+                list_items = []
+                
+                for i, item in enumerate(value):
+                    if isinstance(item, dict) and all(k in item for k in ['name', 'data_type']):
+                        # This is a field object in a list
+                        field_name = item.get('name', f"{formatted_key} {i+1}")
+                        field_value = item.get('value', '')
+                        field_type = item.get('data_type', 'string')
+                        
+                        # Apply special formatting for doctor reports
+                        if is_doctor:
+                            # Highlight abnormal values
+                            highlight_abnormal = format_options.get('highlight_abnormal', False)
+                            if highlight_abnormal and self._is_abnormal_value(key, field_value):
+                                field_value = f'<span class="abnormal">{field_value}</span>'
+                            
+                            # Format diagnostic codes
+                            if field_type.lower() in ["code"] or key.lower() in ["code", "codes", "diagnosis_code", "icd", "cpt", "snomed"]:
+                                field_value = f'<span class="diagnosis-code">{field_value}</span>'
+                        
+                        list_items.append(f'<div class="list-item"><span class="field-name">{field_name}:</span> <span class="field-value">{field_value}</span></div>')
+                    else:
+                        # Regular list item
+                        list_items.append(f'<div class="list-item">{item}</div>')
+                
+                if list_items:
+                    list_html = "\n".join(list_items)
+                    html_parts.append(f'<div class="content-section"><h4>{formatted_key}</h4><div class="list-content">{list_html}</div></div>')
+            
+            # Handle nested dictionary
+            elif isinstance(value, dict):
                 # Nested dictionary - use section-based formatting
                 nested_parts = []
                 for sub_key, sub_value in value.items():
                     formatted_sub_key = sub_key.replace('_', ' ').title()
-                    formatted_sub_value = str(sub_value)
+                    
+                    # Handle different value types
+                    if isinstance(sub_value, dict):
+                        # Nested dictionary, format recursively
+                        formatted_sub_value = self._format_dictionary_content({sub_key: sub_value}, format_options, is_doctor)
+                    else:
+                        formatted_sub_value = str(sub_value)
                     
                     # Apply special formatting for doctor reports
                     if is_doctor:
@@ -472,6 +612,8 @@ class ReportService:
                 
                 nested_html = "\n".join(nested_parts)
                 html_parts.append(f'<div class="content-section"><h4>{formatted_key}</h4><div class="nested-fields">{nested_html}</div></div>')
+            
+            # Handle simple key-value
             else:
                 # Simple key-value
                 formatted_value = str(value)
@@ -513,7 +655,7 @@ class ReportService:
         if "*" in str_value or "!" in str_value:
             return True
         
-        # Check specific vital signs or lab values (could be expanded with actual ranges)
+        # Check specific vital signs or lab values
         if "blood pressure" in key.lower() and any(str_value.startswith(prefix) for prefix in ["14", "15", "16", "17", "18", "19"]):
             return True
         if "temperature" in key.lower() and any(num in str_value for num in ["99.", "100", "101", "102", "103", "104"]):
@@ -553,6 +695,10 @@ class ReportService:
             template = None
             if template_id:
                 template = self.db.query(ReportTemplate).filter(ReportTemplate.id == template_id).first()
+                if template:
+                    logger.info(f"Using custom template: {template.name}")
+                else:
+                    logger.warning(f"Custom template {template_id} not found, falling back to default")
             
             # Use default template if no custom template specified or found
             if not template:
@@ -560,6 +706,7 @@ class ReportService:
                 if not template:
                     logger.error(f"No default patient template found")
                     return None
+                logger.info(f"Using default patient template: {template.name}")
             
             # Get patient info if available
             patient_info = self._get_patient_info(note.patient_id)
@@ -569,6 +716,7 @@ class ReportService:
             
             # Format sections for patient report
             formatted_sections = self._format_sections_for_patient(note.sections, template)
+            logger.info(f"Formatted {len(formatted_sections)} sections for patient report")
             
             # Prepare report data
             report_data = {
@@ -584,11 +732,17 @@ class ReportService:
             # Render template
             rendered_report = self._render_report(template, report_data)
             
-            logger.info(f"Generated patient report for note {note_id}")
+            if rendered_report:
+                logger.info(f"Generated patient report for note {note_id} ({len(rendered_report)} bytes)")
+            else:
+                logger.error(f"Failed to render patient report for note {note_id}")
+                
             return rendered_report
             
         except Exception as e:
             logger.error(f"Error generating patient report for note {note_id}: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
     
     def _format_sections_for_patient(self, sections: List[Section], template: ReportTemplate) -> List[Dict[str, Any]]:
@@ -605,7 +759,7 @@ class ReportService:
         formatted_sections = []
         
         # Get template configuration
-        template_data = template.template_data
+        template_data = template.template_data or {}
         section_configs = template_data.get('sections', {})
         
         # Process each section
@@ -614,12 +768,18 @@ class ReportService:
             if not section.content:
                 continue
             
+            # Skip sections not visible to patient
+            if hasattr(section, 'is_visible_to_patient') and not section.is_visible_to_patient:
+                logger.debug(f"Skipping section {section.id} (not visible to patient)")
+                continue
+            
             # Get section category and config
-            soap_category = section.soap_category
+            soap_category = section.soap_category or "OTHER"
             config = section_configs.get(soap_category, section_configs.get("OTHER", {}))
             
             # Skip if this category should not be included
             if not config.get('include', True):
+                logger.debug(f"Skipping section {section.id} (category {soap_category} not included)")
                 continue
                 
             # Get format options from template
@@ -665,8 +825,9 @@ class ReportService:
         formatted_section = {
             'id': section.id,
             'title': title,
-            'soap_category': section.soap_category,
-            'content_html': ''
+            'soap_category': section.soap_category or "OTHER",
+            'content_html': '',
+            'content': {} # Add the actual content for template rendering
         }
         
         # Format content based on its type
@@ -676,17 +837,32 @@ class ReportService:
         if content:
             # For patient report, simplify language
             if isinstance(content, dict):
+                # Copy the content to the formatted section, but possibly simplify field names
+                simplified_content = {}
+                for key, value in content.items():
+                    if isinstance(value, dict) and 'name' in value:
+                        # Simplify the field name
+                        value['name'] = self._simplify_medical_terms(value['name'])
+                        # Simplify the value if it's a string
+                        if isinstance(value.get('value'), str):
+                            value['value'] = self._simplify_medical_terms(value['value'])
+                    simplified_content[key] = value
+                
+                formatted_section['content'] = simplified_content
+                
                 # Format each part of the content
-                content_html = self._format_dictionary_content(content, format_options, is_doctor=False)
-                # Simplify medical terms in content
-                content_html = self._simplify_medical_terms(content_html)
+                content_html = self._format_dictionary_content(simplified_content, format_options, is_doctor=False)
                 formatted_section['content_html'] = content_html
             elif isinstance(content, str):
                 # Format text content and simplify medical terms
-                formatted_section['content_html'] = self._simplify_medical_terms(content)
+                simplified_text = self._simplify_medical_terms(content)
+                formatted_section['content_html'] = simplified_text
+                formatted_section['content'] = {"text": {"name": "Text", "data_type": "string", "value": simplified_text}}
             else:
                 # Unknown content type
-                formatted_section['content_html'] = self._simplify_medical_terms(str(content))
+                logger.warning(f"Unknown content type for section {section.id}: {type(content)}")
+                formatted_section['content_html'] = str(content)
+                formatted_section['content'] = {"text": {"name": "Text", "data_type": "string", "value": str(content)}}
         
         return formatted_section
     
@@ -744,6 +920,7 @@ class ReportService:
                     "contact": user.email
                 }
             else:
+                logger.warning(f"User {user_id} not found")
                 return {
                     "id": user_id,
                     "name": "Unknown Provider",
@@ -771,15 +948,24 @@ class ReportService:
         Returns:
             Simplified text
         """
+        if not text:
+            return ""
+            
         # Simple implementation - replace known terms
         result = text
-        for medical_term, simple_term in MEDICAL_JARGON_REPLACEMENTS.items():
-            # Case insensitive replacement
-            result = result.replace(medical_term, simple_term)
-            result = result.replace(medical_term.capitalize(), simple_term.capitalize())
+        try:
+            for medical_term, simple_term in MEDICAL_JARGON_REPLACEMENTS.items():
+                # Case insensitive replacement
+                result = result.replace(medical_term, simple_term)
+                result = result.replace(medical_term.capitalize(), simple_term.capitalize())
+        except (AttributeError, TypeError):
+            # Handle case where text is not a string
+            logger.warning(f"Cannot simplify non-string content: {type(text)}")
+            return str(text)
         
         return result
     
+
     def _render_report(self, template: ReportTemplate, report_data: Dict[str, Any]) -> str:
         """
         Render a report using template
@@ -791,15 +977,60 @@ class ReportService:
         Returns:
             Rendered HTML
         """
-        # Check if template has custom HTML
-        if template.html_template:
-            # Use custom HTML template
-            template_obj = Template(template.html_template)
-            return template_obj.render(**report_data)
-        else:
+        try:
+            # Debug the report data to ensure sections are properly formatted
+            logger.info(f"Rendering report with data: note_title='{report_data.get('note_title')}'")
+            logger.info(f"Number of sections in report data: {len(report_data.get('sections', []))}")
+            
+            # Debug section data structure more deeply
+            for i, section in enumerate(report_data.get('sections', [])):
+                logger.info(f"Section {i+1}: {section.get('title')} ({section.get('soap_category')})")
+                logger.info(f"  Content keys: {list(section.get('content', {}).keys())}")
+                
+                # Debug the first few content fields
+                for j, (key, value) in enumerate(section.get('content', {}).items()):
+                    if j < 3:  # Only show first 3 fields to avoid log flooding
+                        if isinstance(value, dict):
+                            logger.info(f"    Field '{key}': name='{value.get('name')}', type='{value.get('data_type')}', value={value.get('value')}")
+                        else:
+                            logger.info(f"    Field '{key}': {type(value).__name__}={value}")
+            
+            # Check if template has custom HTML
+            if template.html_template:
+                # Use custom HTML template
+                logger.info(f"Using custom HTML template from database ({len(template.html_template)} bytes)")
+                try:
+                    # Create Jinja2 environment for the template string
+                    env = Environment(autoescape=True)
+                    template_obj = env.from_string(template.html_template)
+                    
+                    # Debugging the template variables
+                    template_source = template.html_template[:500] + "..." if len(template.html_template) > 500 else template.html_template
+                    logger.info(f"Template source preview: {template_source}")
+                    
+                    # Add a debug filter to the environment
+                    def debug_filter(value):
+                        logger.info(f"DEBUG: {type(value).__name__} = {value}")
+                        return value
+                    env.filters['debug'] = debug_filter
+                    
+                    # Render the template with our report data
+                    html = template_obj.render(**report_data)
+                    return html
+                except Exception as e:
+                    logger.error(f"Error rendering custom template: {str(e)}")
+                    logger.error(f"Falling back to default template")
+            
             # Use default template based on report type
             template_file = "default_patient.html" if template.report_type == "patient" else "default_doctor.html"
+            logger.info(f"Using default template file: {template_file}")
             return self._render_template(template_file, report_data)
+            
+        except Exception as e:
+            logger.error(f"Error in _render_report: {str(e)}")
+            # Fallback to generate a simple HTML report
+            return self._generate_fallback_html(report_data)
+
     
     def _render_template(self, template_file: str, report_data: Dict[str, Any]) -> str:
         """
@@ -813,12 +1044,110 @@ class ReportService:
             Rendered HTML
         """
         try:
+            logger.info(f"Rendering template {template_file}")
+            report_data['debug_mode'] = True
+
+            # Add a debug filter to the environment
+            def add_debug_filters(jinja_env):
+                """Add debugging filters to a Jinja environment"""
+                
+                def debug_filter(value):
+                    """Print the value and its type to the logs"""
+                    print(f"DEBUG: {type(value).__name__} = {str(value)[:100]}")
+                    return value
+                
+                def dump_filter(value):
+                    """Dump detailed structure of complex objects"""
+                    import json
+                    try:
+                        if isinstance(value, (list, dict)):
+                            return json.dumps(value, indent=2, default=str)
+                        else:
+                            return str(value)
+                    except:
+                        return f"<{type(value).__name__} - not serializable>"
+                
+                jinja_env.filters['debug'] = debug_filter
+                jinja_env.filters['dump'] = dump_filter
+                return jinja_env
+
+            # Add to your environment
+            self.env = add_debug_filters(self.env)
+
+            # Log key sections data
+            logger.info(f"Rendering with {len(report_data.get('sections', []))} sections")
+            for i, section in enumerate(report_data.get('sections', [])[:3]):  # First 3 sections
+                soap_cat = section.get('soap_category', 'N/A')
+                logger.info(f"Section {i+1}: {section.get('title')} - SOAP Category: {soap_cat}")
+                
+                # Check if sections will be sorted correctly
+                if soap_cat == 'SUBJECTIVE':
+                    logger.info(f"  Will be added to subjective_sections")
+                elif soap_cat == 'OBJECTIVE':
+                    logger.info(f"  Will be added to objective_sections")
+                elif soap_cat == 'ASSESSMENT':
+                    logger.info(f"  Will be added to assessment_sections")
+                elif soap_cat == 'PLAN':
+                    logger.info(f"  Will be added to plan_sections")
+                else:
+                    logger.info(f"  Will be added to other_sections")
+            
+            # Add a Jinja variable tracer
+            def tracer(name, value):
+                logger.info(f"TRACE: {name} = {type(value).__name__}")
+                return value
+                
+            self.env.globals['trace'] = tracer
+            
+            # Dump all variables into debug.json for inspection
+            import json
+            try:
+                debug_data = {
+                    "note_title": report_data.get("note_title"),
+                    "report_date": report_data.get("report_date"),
+                    "encounter_date": report_data.get("encounter_date"),
+                    "patient_info": report_data.get("patient_info"),
+                    "provider_info": report_data.get("provider_info"),
+                    "sections_count": len(report_data.get("sections", [])),
+                    "sections_sample": [
+                        {
+                            "title": section.get("title"),
+                            "soap_category": section.get("soap_category"),
+                            "content_keys": list(section.get("content", {}).keys()),
+                            "has_content_html": "content_html" in section and bool(section.get("content_html")),
+                            "content": section.get("content")
+                        }
+                        for section in report_data.get("sections", [])[:3]  # First 3 sections
+                    ]
+                }
+                
+                with open(os.path.join(DEBUG_PATH, 'debug_template_data.json'), 'w') as f:
+                    json.dump(debug_data, f, indent=2, default=str)
+                    
+                logger.info("Debug data written to debug_template_data.json")
+            except Exception as debug_error:
+                logger.warning(f"Could not write debug data: {str(debug_error)}")
+            
             template = self.env.get_template(template_file)
-            return template.render(**report_data)
+            html = template.render(**report_data)
+            logger.info(f"Successfully rendered template ({len(html)} bytes)")
+            
+            # Save the report data and HTML output for debugging
+            try:
+                with open(os.path.join(DEBUG_PATH, 'rendered_report_debug.html'), 'w') as f:
+                    f.write(html)
+                logger.info("Rendered template saved to rendered_report_debug.html")
+            except Exception as save_error:
+                logger.warning(f"Could not save rendered HTML: {str(save_error)}")
+                
+            return html
         except Exception as e:
             logger.error(f"Error rendering template {template_file}: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             # Fallback to simple HTML
             return self._generate_fallback_html(report_data)
+
     
     def _generate_fallback_html(self, report_data: Dict[str, Any]) -> str:
         """
@@ -830,6 +1159,8 @@ class ReportService:
         Returns:
             Simple HTML report
         """
+        logger.warning("Generating fallback HTML report")
+        
         # Create a simple HTML report
         html = f"""
         <!DOCTYPE html>
@@ -862,16 +1193,37 @@ class ReportService:
             </div>
         """
         
-        # Add sections
+        # Group sections by SOAP category
+        section_groups = {}
         for section in report_data.get('sections', []):
-            html += f"""
-            <div class="section">
-                <h2>{section.get('title', 'Untitled Section')}</h2>
-                <div class="content">
-                    {section.get('content_html', '')}
+            category = section.get('soap_category', 'OTHER')
+            if category not in section_groups:
+                section_groups[category] = []
+            section_groups[category].append(section)
+        
+        # Add sections grouped by SOAP category
+        soap_order = ['SUBJECTIVE', 'OBJECTIVE', 'ASSESSMENT', 'PLAN', 'OTHER']
+        
+        for category in soap_order:
+            if category in section_groups:
+                html += f"""
+                <div class="soap-category">
+                    <h2>{category}</h2>
+                """
+                
+                for section in section_groups[category]:
+                    html += f"""
+                    <div class="section">
+                        <h3>{section.get('title', 'Untitled Section')}</h3>
+                        <div class="content">
+                            {section.get('content_html', '')}
+                        </div>
+                    </div>
+                    """
+                
+                html += """
                 </div>
-            </div>
-            """
+                """
         
         # Close HTML
         html += """
@@ -885,6 +1237,7 @@ class ReportService:
     # DIRECT DATA REPORT GENERATION
     #
     
+
     def generate_report_from_data(self, note_data: Dict[str, Any], report_type: str, template_id: Optional[int] = None) -> Optional[str]:
         """
         Generate a report directly from note data without requiring a database record
@@ -902,6 +1255,10 @@ class ReportService:
             template = None
             if template_id:
                 template = self.db.query(ReportTemplate).filter(ReportTemplate.id == template_id).first()
+                if template:
+                    logger.info(f"Using custom template: {template.name}")
+                else:
+                    logger.warning(f"Custom template {template_id} not found, falling back to default")
             
             # Use default template if no custom template specified or found
             if not template:
@@ -909,6 +1266,9 @@ class ReportService:
                 if not template:
                     logger.error(f"No default {report_type} template found")
                     return None
+                logger.info(f"Using default {report_type} template: {template.name}")
+            
+            logger.info(note_data)
             
             # Extract note information
             title = note_data.get("title", "Medical Note")
@@ -933,6 +1293,7 @@ class ReportService:
             
             # Extract sections
             sections_data = note_data.get("sections", [])
+            logger.info(f"Processing {len(sections_data)} sections from data")
             
             # Create Section objects from the data
             sections = []
@@ -964,16 +1325,32 @@ class ReportService:
                 "report_type": report_type
             }
             
+            # Debug information to log what's being sent to the template
+            logger.debug(f"Report data note_title: {report_data['note_title']}")
+            logger.debug(f"Report data sections count: {len(report_data['sections'])}")
+            for i, section in enumerate(report_data['sections']):
+                logger.debug(f"Section {i+1} - {section.get('title')}: {section.get('soap_category')}")
+                if 'content' in section:
+                    logger.debug(f"  Content fields: {list(section['content'].keys())}")
+                if 'content_html' in section:
+                    logger.debug(f"  Content HTML length: {len(section['content_html'])}")
+            
             # Render template
             rendered_report = self._render_report(template, report_data)
             
-            logger.info(f"Generated {report_type} report from direct data")
+            if rendered_report:
+                logger.info(f"Generated {report_type} report from direct data ({len(rendered_report)} bytes)")
+            else:
+                logger.error(f"Failed to render {report_type} report from direct data")
+                
             return rendered_report
             
         except Exception as e:
             logger.error(f"Error generating report from data: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
-    
+
     def _create_section_from_data(self, section_data: Dict[str, Any]) -> Section:
         """
         Create a Section object from dictionary data
@@ -984,15 +1361,138 @@ class ReportService:
         Returns:
             Section object
         """
-        # Create a temporary Section object (not saved to database)
-        section = Section(
-            id=section_data.get("id", 0),
-            note_id=section_data.get("note_id", 0),
-            user_id=section_data.get("user_id", 1),
-            title=section_data.get("title", "Untitled Section"),
-            template_id=section_data.get("template_id"),
-            soap_category=section_data.get("soap_category", "OTHER"),
-            content=section_data.get("content", {})
-        )
-        
-        return section
+        try:
+            # Extract required fields with defaults
+            section_id = section_data.get("id", 0)
+            note_id = section_data.get("note_id", 0)
+            user_id = section_data.get("user_id", 1)
+            title = section_data.get("title", "Untitled Section")
+            template_id = section_data.get("template_id")
+            soap_category = section_data.get("soap_category", "OTHER")
+            
+            # Handle content field - ensure it's a dictionary with proper field structure
+            content = {}
+            raw_content = section_data.get("content", {})
+            
+            # Log the raw content for debugging
+            logger.debug(f"Raw content for section '{title}': {type(raw_content).__name__}")
+            if isinstance(raw_content, dict):
+                logger.debug(f"  Content keys: {list(raw_content.keys())}")
+            
+            # Format content properly if it's not already structured correctly
+            if isinstance(raw_content, dict):
+                # Check if content has the expected structure with fields
+                for key, value in raw_content.items():
+                    # If value is already a field object with name, data_type, value
+                    if isinstance(value, dict) and "name" in value and "data_type" in value and "value" in value:
+                        content[key] = value
+                        logger.debug(f"  Field '{key}' already properly formatted")
+                    
+                    # If value is a list of field objects
+                    elif isinstance(value, list):
+                        # Check if all items have proper structure
+                        formatted_list = []
+                        for i, item in enumerate(value):
+                            if isinstance(item, dict) and "name" in item and "data_type" in item and "value" in item:
+                                # Already properly formatted
+                                formatted_list.append(item)
+                                logger.debug(f"  List item {i} in field '{key}' already properly formatted")
+                            else:
+                                # Create field structure for this item
+                                field_name = f"{key.replace('_', ' ').title()} {i+1}"
+                                data_type = "string"
+                                
+                                # Try to infer data type
+                                if isinstance(item, bool):
+                                    data_type = "boolean"
+                                elif isinstance(item, (int, float)):
+                                    data_type = "number"
+                                elif isinstance(item, dict):
+                                    data_type = "object"
+                                
+                                formatted_list.append({
+                                    "name": field_name,
+                                    "data_type": data_type,
+                                    "value": item
+                                })
+                                logger.debug(f"  Formatted list item {i} in field '{key}' as {data_type}")
+                        
+                        # Add the formatted list to content
+                        content[key] = formatted_list
+                        logger.debug(f"  Formatted list field '{key}' with {len(formatted_list)} items")
+                    
+                    # If value is a simple type, convert to a field object
+                    else:
+                        field_name = key.replace('_', ' ').title()
+                        data_type = "string"
+                        
+                        # Try to infer data type
+                        if isinstance(value, bool):
+                            data_type = "boolean"
+                        elif isinstance(value, (int, float)):
+                            data_type = "number"
+                        elif isinstance(value, dict):
+                            data_type = "object"
+                            # For complex objects, consider a string representation
+                            if len(value) > 10:  # If it's a large object
+                                value = f"Complex object with {len(value)} fields"
+                        elif isinstance(value, list):
+                            data_type = "array"
+                            # For simple lists, convert to comma-separated string
+                            if all(isinstance(x, (str, int, float, bool)) for x in value):
+                                value = ", ".join(str(x) for x in value)
+                        
+                        content[key] = {
+                            "name": field_name,
+                            "data_type": data_type,
+                            "value": value
+                        }
+                        logger.debug(f"  Formatted field '{key}' as {data_type}")
+            elif isinstance(raw_content, str):
+                # If content is a string, create a text field
+                content["text"] = {
+                    "name": "Text",
+                    "data_type": "string",
+                    "value": raw_content
+                }
+                logger.debug("  Converted string content to text field")
+            elif raw_content is None:
+                # Empty content
+                content = {}
+                logger.debug("  Empty content")
+            else:
+                # Unknown content type, use string representation
+                content["data"] = {
+                    "name": "Data",
+                    "data_type": "string",
+                    "value": str(raw_content)
+                }
+                logger.debug(f"  Unknown content type: {type(raw_content).__name__}")
+            
+            # Create a temporary Section object (not saved to database)
+            section = Section(
+                id=section_id,
+                note_id=note_id,
+                user_id=user_id,
+                title=title,
+                template_id=template_id,
+                soap_category=soap_category,
+                content=content
+            )
+            
+            logger.info(f"Created section: {title} ({soap_category}) with {len(content)} content fields")
+            return section
+            
+        except Exception as e:
+            logger.error(f"Error creating section from data: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            # Return a minimal valid Section
+            return Section(
+                id=0,
+                note_id=0,
+                user_id=1,
+                title="Error",
+                soap_category="OTHER",
+                content={"error": {"name": "Error", "data_type": "string", "value": str(e)}}
+            )

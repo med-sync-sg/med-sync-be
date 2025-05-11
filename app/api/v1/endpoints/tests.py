@@ -252,7 +252,7 @@ async def generate_doctor_report_direct(
         report_service = ReportService(db)
         
         # Generate doctor report
-        report_html = report_service.generate_report_from_data(note_data, "doctor", template_id)
+        report_html = report_service.generate_report_from_data(note_data, "doctor")
         
         if not report_html:
             raise HTTPException(
@@ -494,6 +494,88 @@ async def process_text_transcript(
         keyword_service.process_and_buffer_keywords(keywords)
         
         templates, sections = keyword_service.create_section_from_keywords()
+        
+        # Prepare the response
+        response = {
+            "success": True,
+            "transcription": text,
+            "entity_count": len(keyword_service.buffer_keywords),
+            "entities": keyword_service.buffer_keywords,
+            "template_suggestions": templates,
+            "processed_content": sections
+        }
+        
+        return response
+    
+    except Exception as e:
+        logger.error(f"Error processing transcript: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+@router.post("/text-transcript-db")
+async def process_text_transcript(
+    fragment: TranscriptFragment,
+    db: Session = Depends(get_session),
+    neo4j: Neo4jSession = Depends(get_neo4j_session)
+):
+    """
+    Process a text transcript and extract medical entities, creating content 
+    that can be used with templates
+    
+    Args:
+        fragment: TranscriptFragment with the transcript text
+        
+    Returns:
+        Dictionary with transcription, entities, and processed content
+    """
+    try:
+
+            
+        # Limit very long transcripts to prevent overloading
+        text = fragment.transcript
+        
+        # Input validation
+        if not text or len(text.strip()) == 0:
+            raise HTTPException(status_code=400, detail="Empty transcript provided")
+
+        max_length = 10000  # Character limit
+        if len(text) > max_length:
+            logger.warning(f"Transcript truncated from {len(text)} to {max_length} characters")
+            text = text[:max_length]
+        
+        keyword_service = KeywordExtractService()
+        transcription_service = TranscriptionService()
+        note_service = NoteService(db)
+        
+        test_note = note_service.create_note(NoteCreate(
+            patient_id=12345,
+            user_id=1,
+            title="TEST NOTE",
+            sections=[],
+            encounter_date=datetime.datetime.now()
+        ))
+        
+        # Manually update transcription service state
+        transcription_service.full_transcript = fragment.transcript
+        transcription_service.transcript_segments.append(fragment.transcript)
+        
+        # Extract keywords
+        keywords = transcription_service.extract_keywords()
+        
+        # Process keywords using the existing service methods
+        keyword_service.process_and_buffer_keywords(keywords)
+        
+        templates, sections = keyword_service.create_section_from_keywords()
+        
+        if test_note != None:
+            for section in sections:
+                test_section = note_service.add_section_to_note(test_note.id, section_data=section)
+                if test_section != None:
+                    logger.info(f"Test section created for Note {test_note.id}")
         
         # Prepare the response
         response = {
@@ -767,7 +849,7 @@ async def process_text_chunk(
         
         # Process keywords using the existing service methods
         keyword_service.process_and_buffer_keywords(keywords)
-        sections = keyword_service.create_section_from_keywords()
+        found_templates, sections = keyword_service.create_section_from_keywords()
         
         # Add sections to note and format for response
         sections_data = []
@@ -780,7 +862,7 @@ async def process_text_chunk(
                     'id': db_section.id,
                     'title': db_section.title,
                     'content': db_section.content,
-                    'section_type': db_section.section_type
+                    'soap_category': db_section.soap_category
                 })
         
         return {
