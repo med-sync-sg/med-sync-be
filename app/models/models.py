@@ -355,3 +355,140 @@ class ReportTemplate(Base):
     
     # Relationships
     user: Mapped["User"] = relationship("User", back_populates="report_templates")
+    
+    
+class ReportTemplate(Base):
+    __tablename__ = "report_templates"
+    
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    template_type: Mapped[str] = mapped_column(String, nullable=False)  # "doctor", "patient", etc.
+    html_template: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    layout_config: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    version: Mapped[str] = mapped_column(String, default="1.0")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    # Relationships
+    user: Mapped["User"] = relationship("User", back_populates="report_templates")
+    section_configs: Mapped[List["ReportTemplateSectionConfig"]] = relationship(
+        "ReportTemplateSectionConfig", 
+        back_populates="template", 
+        cascade="all, delete-orphan"
+    )
+    report_instances: Mapped[List["ReportInstance"]] = relationship(
+        "ReportInstance", 
+        back_populates="template"
+    )
+
+
+class ReportTemplateSectionConfig(Base):
+    __tablename__ = "report_template_section_configs"
+    
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    template_id: Mapped[int] = mapped_column(Integer, ForeignKey("report_templates.id"), nullable=False)
+    soap_category: Mapped[str] = mapped_column(String, nullable=False)
+    display_order: Mapped[int] = mapped_column(Integer, default=0)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    is_visible: Mapped[bool] = mapped_column(Boolean, default=True)
+    field_mappings: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    # Relationships
+    template: Mapped["ReportTemplate"] = relationship("ReportTemplate", back_populates="section_configs")
+    field_configs: Mapped[List["ReportTemplateFieldConfig"]] = relationship(
+        "ReportTemplateFieldConfig", 
+        back_populates="section_config", 
+        cascade="all, delete-orphan"
+    )
+
+
+class ReportTemplateFieldConfig(Base):
+    __tablename__ = "report_template_field_configs"
+    
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    section_config_id: Mapped[int] = mapped_column(Integer, ForeignKey("report_template_section_configs.id"), nullable=False)
+    field_id: Mapped[str] = mapped_column(String, nullable=False)
+    display_name: Mapped[str] = mapped_column(String, nullable=False)
+    field_type: Mapped[str] = mapped_column(String, nullable=False)
+    display_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_visible: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    # Relationships
+    section_config: Mapped["ReportTemplateSectionConfig"] = relationship(
+        "ReportTemplateSectionConfig", 
+        back_populates="field_configs"
+    )
+
+
+class ReportInstance(Base):
+    __tablename__ = "report_instances"
+    
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    note_id: Mapped[int] = mapped_column(Integer, ForeignKey("notes.id"), nullable=False)
+    template_id: Mapped[int] = mapped_column(Integer, ForeignKey("report_templates.id"), nullable=False)
+    custom_layout: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    is_finalized: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    # Relationships
+    user: Mapped["User"] = relationship("User", back_populates="report_instances")
+    note: Mapped["Note"] = relationship("Note", back_populates="report_instances")
+    template: Mapped["ReportTemplate"] = relationship("ReportTemplate", back_populates="report_instances")
+    sections: Mapped[List["ReportSection"]] = relationship(
+        "ReportSection", 
+        back_populates="report_instance", 
+        cascade="all, delete-orphan"
+    )
+
+
+class ReportSection(Base):
+    __tablename__ = "report_sections"
+    
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    report_instance_id: Mapped[int] = mapped_column(Integer, ForeignKey("report_instances.id"), nullable=False)
+    original_section_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("sections.id"), nullable=True)
+    soap_category: Mapped[str] = mapped_column(String, nullable=False)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    display_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_visible: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    # Relationships
+    report_instance: Mapped["ReportInstance"] = relationship("ReportInstance", back_populates="sections")
+    original_section: Mapped[Optional["Section"]] = relationship("Section")
+    fields: Mapped[List["ReportField"]] = relationship(
+        "ReportField", 
+        back_populates="report_section", 
+        cascade="all, delete-orphan"
+    )
+
+
+class ReportField(Base):
+    __tablename__ = "report_fields"
+    
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    report_section_id: Mapped[int] = mapped_column(Integer, ForeignKey("report_sections.id"), nullable=False)
+    field_id: Mapped[str] = mapped_column(String, nullable=False)
+    display_name: Mapped[str] = mapped_column(String, nullable=False)
+    field_type: Mapped[str] = mapped_column(String, nullable=False)
+    display_order: Mapped[int] = mapped_column(Integer, default=0)
+    value: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    original_value: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    is_visible: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    # Relationships
+    report_section: Mapped["ReportSection"] = relationship("ReportSection", back_populates="fields")
