@@ -14,7 +14,6 @@ from app.services.audio_service import AudioService
 from app.services.transcription_service import TranscriptionService
 from app.services.nlp.keyword_extract_service import KeywordExtractService
 from app.services.note_service import NoteService
-from app.services.report_generation.report_service import ReportService
 from app.models.models import ReportTemplate, Section
 from app.schemas.section import SectionCreate
 from app.utils.speech_processor import SpeechProcessor
@@ -64,66 +63,6 @@ async def managed_websocket_connection(websocket: WebSocket, connection_id: str)
             del active_connections[connection_id]
             logger.info(f"WebSocket resources cleaned up for {connection_id}")
 
-async def handle_report_request(
-    ws: WebSocket, 
-    message: Dict[str, Any], 
-    db: Session,
-    note_id: int,
-    user_id: int
-) -> None:
-    """Handle report generation requests through websocket"""
-    try:
-        report_type = message.get("report_type", "doctor")  # Default to doctor report
-        template_id = message.get("template_id")  # Optional template ID
-        
-        # Initialize report service
-        report_service = ReportService(db)
-        
-        # Generate appropriate report based on request
-        if template_id:
-            # Get template and verify access
-            template = db.query(ReportTemplate).filter(
-                ReportTemplate.id == template_id
-            ).first()
-            
-            if not template:
-                await ws.send_text(json.dumps({
-                    "error": "Template not found",
-                    "success": False
-                }))
-                return
-                
-            # Generate report with custom template
-            report_html = report_service.generate_report_from_template(note_id, template)
-        elif report_type == "patient":
-            # Generate default patient report
-            report_html = report_service.generate_patient_report(note_id)
-        else:
-            # Generate default doctor report
-            report_html = report_service.generate_doctor_report(note_id)
-        
-        if not report_html:
-            await ws.send_text(json.dumps({
-                "error": "Failed to generate report",
-                "success": False
-            }))
-            return
-            
-        # Send the report back to the client
-        await ws.send_text(json.dumps({
-            "report_html": report_html,
-            "report_type": report_type,
-            "success": True
-        }))
-        
-        logger.info(f"Generated {report_type} report for note {note_id}")
-        
-    except Exception as e:
-        logger.error(f"Error generating report: {str(e)}")
-        await ws.send_text(json.dumps({
-            "error": f"Error generating report: {str(e)}",
-            "success": False
-        }))
 
 async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_session)):
     """
@@ -236,16 +175,6 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_ses
                         ws, data["config_update"], 
                         connection_id, db, 
                         use_adaptation, adaptation_user_id
-                    )
-                    continue
-                
-                if "report_request" in data:
-                    await handle_report_request(
-                        ws, 
-                        data["report_request"], 
-                        db,
-                        int(note_id),
-                        int(user_id)
                     )
                     continue
                                 
