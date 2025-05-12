@@ -502,7 +502,7 @@ class TestClient:
         self.audio_file = audio_file
         
         # Authentication info
-        self.token = None
+        self.token = "dev_mode_dummy_token"
         self.user_id = None
         self.note_id = None
         
@@ -524,8 +524,8 @@ class TestClient:
             
             # self.generate_test_report_doctor(user_id=2, note_id=12, template_type="doctor")
             
-            results = self.test_text_processing()
-            # self.generate_doctor_report_from_text_processing(results)
+            # results = self.test_text_processing()
+            self.test_report_system(1)
             # self.test_adaptation_feature()
             logger.info("All tests completed.")
             return True
@@ -564,227 +564,6 @@ class TestClient:
                 print("\nNo adaptation results available")
         else:
             print("Error:", response.text)
-
-    def generate_doctor_report_from_note(self, note_id: int):
-        """
-        Generate a SOAP-structured doctor's report from an existing note in the database
-        
-        Args:
-            note_id: ID of the note to generate report for
-            
-        Returns:
-            HTML content of the report or None if failed
-        """
-        logger.info(f"Generating SOAP-structured doctor report for note {note_id}")
-        
-        try:
-            # Call the doctor report generation endpoint
-            response = requests.get(
-                f"{self.app_url}/reports/doctor/{note_id}", 
-                headers={"Authorization": f"Bearer {self.token}"} if self.token else None
-            )
-            
-            if response.status_code == 200:
-                # Return HTML content
-                report_html = response.text
-                logger.info(f"Successfully generated SOAP-structured doctor report for note {note_id} ({len(report_html)} bytes)")
-                
-                # Save the report to a file for inspection
-                timestamp = int(time.time())
-                filename = f"soap_doctor_report_{note_id}_{timestamp}.html"
-                with open(os.path.join(DEBUG_PATH, filename), "w", encoding="utf-8") as f:
-                    f.write(report_html)
-                logger.info(f"Saved SOAP-structured doctor report to {filename}")
-                
-                return report_html
-            else:
-                logger.error(f"Failed to generate doctor report: {response.status_code} - {response.text}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error generating doctor report: {str(e)}")
-            return None
-
-    def generate_doctor_report_from_text_processing(self, processing_result):
-        """
-        Generate a SOAP-structured doctor's report from text processing results
-        
-        Args:
-            processing_result: Result from test_text_processing method
-            
-        Returns:
-            Doctor report HTML or None if failed
-        """
-        if not processing_result or not processing_result.get("success", False):
-            logger.error("No valid text processing result provided")
-            return None
-        
-        try:
-            # Extract sections from the processing result
-            processed_content = processing_result.get("processed_content", [])
-            
-            # Create a note structure from the processing result
-            note_data = {
-                "title": "SOAP Report from Processed Text",
-                "patient_id": None,  # No patient ID for demonstration
-                "user_id": self.user_id if hasattr(self, "user_id") else 1,
-                "encounter_date": datetime.datetime.now().strftime("%Y-%m-%d"),
-                "sections": []
-            }
-            
-            # Log what we're processing
-            logger.info(f"Processing {len(processed_content)} sections from text processing")
-            
-            # Convert processed content to sections with SOAP categories
-            for i, section in enumerate(processed_content):
-                if not isinstance(section, dict):
-                    logger.warning(f"Section {i+1} is not a dictionary, skipping")
-                    continue
-                    
-                # Extract section data
-                section_title = section.get("title", "Untitled Section")
-                soap_category = section.get("soap_category", "OTHER")
-                template_id = section.get("template_id", "")
-                
-                # Debug the section data
-                logger.info(f"Section {i+1}: {section_title} ({soap_category})")
-                logger.info(f"  Template ID: {template_id}")
-                
-                # Process content to ensure proper format for report generation
-                formatted_content = {}
-                raw_content = section.get("content", {})
-                
-                if isinstance(raw_content, dict):
-                    logger.info(f"  Raw content keys: {list(raw_content.keys())}")
-                    
-                    # Convert content to proper field format
-                    for field_key, field_data in raw_content.items():
-                        # If already in field format with name, data_type, value
-                        if isinstance(field_data, dict) and "name" in field_data and "data_type" in field_data and "value" in field_data:
-                            formatted_content[field_key] = field_data
-                            logger.info(f"  Field '{field_key}' already properly formatted")
-                        
-                        # Handle list of fields
-                        elif isinstance(field_data, list):
-                            formatted_list = []
-                            
-                            for i, item in enumerate(field_data):
-                                # Check if item is already a field object
-                                if isinstance(item, dict) and "name" in item and "data_type" in item and "value" in item:
-                                    formatted_list.append(item)
-                                else:
-                                    # Create a field object for this item
-                                    field_name = f"{field_key.replace('_', ' ').title()} {i+1}"
-                                    data_type = "string"
-                                    
-                                    # Try to infer data type
-                                    if isinstance(item, bool):
-                                        data_type = "boolean"
-                                    elif isinstance(item, (int, float)):
-                                        data_type = "number"
-                                    elif isinstance(item, dict):
-                                        data_type = "object"
-                                        # Convert complex dictionary to string
-                                        item = json.dumps(item)
-                                    
-                                    formatted_list.append({
-                                        "name": field_name,
-                                        "data_type": data_type,
-                                        "value": item
-                                    })
-                            
-                            # Add list to content
-                            formatted_content[field_key] = formatted_list
-                            logger.info(f"  Formatted list field '{field_key}' with {len(formatted_list)} items")
-                        
-                        # Handle regular value
-                        else:
-                            # Create field structure
-                            field_name = field_key.replace('_', ' ').title()
-                            
-                            # Determine data type
-                            data_type = "string"
-                            if isinstance(field_data, bool):
-                                data_type = "boolean"
-                            elif isinstance(field_data, (int, float)):
-                                data_type = "number"
-                            elif isinstance(field_data, dict):
-                                data_type = "object"
-                                # For nested objects, we'll create a string representation
-                                field_data = json.dumps(field_data)
-                            elif isinstance(field_data, list):
-                                data_type = "array"
-                                # For lists, we'll create a string representation
-                                field_data = ", ".join(str(item) for item in field_data)
-                            
-                            # Add formatted field
-                            formatted_content[field_key] = {
-                                "name": field_name,
-                                "data_type": data_type,
-                                "value": field_data
-                            }
-                            logger.info(f"  Formatted field '{field_key}' as {data_type}")
-                else:
-                    logger.warning(f"  Content is not a dictionary: {type(raw_content).__name__}")
-                    # Create a single text field with the content
-                    formatted_content["text"] = {
-                        "name": "Text",
-                        "data_type": "string",
-                        "value": str(raw_content)
-                    }
-                
-                # Create the section structure with properly formatted content
-                section_data = {
-                    "title": section_title,
-                    "soap_category": soap_category,
-                    "template_id": template_id,
-                    "content": formatted_content,
-                    "user_id": self.user_id if hasattr(self, "user_id") else 1
-                }
-                
-                # Add section to note data
-                note_data["sections"].append(section_data)
-            
-            # Debug the final note data before sending
-            logger.info(f"Final note data has {len(note_data['sections'])} sections")
-            
-            # Save the note data to a JSON file for debugging
-            try:
-                import json
-                with open(os.path.join(DEBUG_PATH, 'note_data_debug.json'), 'w') as f:
-                    json.dump(note_data, f, indent=2, default=str)
-                logger.info("Note data saved to note_data_debug.json for debugging")
-            except Exception as e:
-                logger.warning(f"Could not save debug data: {str(e)}")
-            
-            # Generate doctor report
-            response = requests.post(
-                f"{self.app_url}/tests/doctor/generate",
-                json=note_data,
-                headers={"Authorization": f"Bearer {self.token}"} if hasattr(self, "token") and self.token else None
-            )
-            
-            if response.status_code == 200:
-                # Get HTML content
-                report_html = response.text
-                
-                # Save the report to a file for inspection
-                timestamp = int(time.time())
-                filename = f"soap_doctor_report_direct.html"
-                with open(os.path.join(DEBUG_PATH, filename), 'w', encoding='utf-8') as f:
-                    f.write(report_html)
-                logger.info(f"Saved SOAP-structured doctor report to {filename}")
-                
-                return report_html
-            else:
-                logger.error(f"Failed to generate doctor report: {response.status_code} - {response.text}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error generating doctor report from text processing: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return None
         
     def test_db_connection(self):
         """Test connection to the database service"""
@@ -910,6 +689,294 @@ class TestClient:
         except requests.RequestException as e:
             raise Exception(f"Error creating test note: {str(e)}")
     
+    
+    def test_report_system(self, note_id: int):
+        """
+        Test the report management system with an existing note.
+        
+        This function tests:
+        1. Getting or creating a report template
+        2. Creating a report instance from a note
+        3. Modifying the report (reordering sections, updating field values)
+        4. Retrieving the modified report
+        
+        Args:
+            note_id: ID of an existing note to create a report from
+        """
+        try:
+            print("=" * 80)
+            print("TESTING REPORT MANAGEMENT SYSTEM")
+            print("=" * 80)
+            
+            # Check if we're authenticated
+            # if not self.token:
+            #     print("Authenticating...")
+            #     self.authenticate()
+            #     if not self.token:
+            #         print("Authentication failed, cannot proceed with test")
+            #         return False
+            
+            # 1. Get default doctor template or create a new one if none exists
+            print("\nStep 1: Getting report template...")
+            try:
+                response = requests.get(
+                    f"{self.app_url}/report-templates/defaults/doctor",
+                    headers={"Authorization": f"Bearer {self.token}"}
+                )
+                
+                if response.status_code == 200:
+                    template = response.json()
+                    template_id = template["id"]
+                    print(f"Using default doctor template (ID: {template_id})")
+                else:
+                    print("Default template not found, creating a new one...")
+                    
+                    # Create a basic template
+                    template_data = {
+                        "name": "Test Doctor Template",
+                        "description": "Template created by test client",
+                        "user_id": self.user_id,
+                        "template_type": "doctor",
+                        "is_default": False,
+                        "layout_config": {
+                            "page_format": "A4",
+                            "orientation": "portrait",
+                            "sections_order": ["header", "patient_info", "soap", "footer"]
+                        }
+                    }
+                    
+                    response = requests.post(
+                        f"{self.app_url}/report-templates/",
+                        headers={
+                            "Authorization": f"Bearer {self.token}",
+                            "Content-Type": "application/json"
+                        },
+                        json=template_data
+                    )
+                    
+                    if response.status_code == 201:
+                        template = response.json()
+                        template_id = template["id"]
+                        print(f"Created new template (ID: {template_id})")
+                    else:
+                        print(f"Failed to create template: {response.status_code} - {response.text}")
+                        return False
+            except Exception as e:
+                print(f"Error getting/creating template: {str(e)}")
+                return False
+            
+            # 2. Create a report instance from the note
+            print("\nStep 2: Creating report instance from note...")
+            try:
+                report_data = {
+                    "note_id": note_id,
+                    "template_id": template_id,
+                    "name": f"Test Report for Note {note_id}",
+                    "description": "Created by test client"
+                }
+                
+                response = requests.post(
+                    f"{self.app_url}/report-instances/",
+                    headers={
+                        "Authorization": f"Bearer {self.token}",
+                        "Content-Type": "application/json"
+                    },
+                    json=report_data
+                )
+                
+                if response.status_code == 201:
+                    report = response.json()
+                    report_id = report["id"]
+                    print(f"Created report instance (ID: {report_id})")
+                    
+                    # Print report sections
+                    if "sections" in report and report["sections"]:
+                        print("\nInitial report sections:")
+                        for i, section in enumerate(report["sections"]):
+                            print(f"  {i+1}. {section['title']} (Order: {section['display_order']}, Visible: {section['is_visible']})")
+                    
+                        # Store section IDs for later use
+                        section_ids = [s["id"] for s in report["sections"]]
+                    else:
+                        print("Report has no sections")
+                        section_ids = []
+                else:
+                    print(f"Failed to create report: {response.status_code} - {response.text}")
+                    return False
+            except Exception as e:
+                print(f"Error creating report instance: {str(e)}")
+                return False
+            
+            # 3. Modify the report (if there are sections to modify)
+            if section_ids:
+                print("\nStep 3: Modifying report...")
+                
+                # 3.1 Reverse the order of sections
+                try:
+                    print("\n3.1: Reordering sections (reversing order)...")
+                    
+                    # Get current sections to see their order
+                    response = requests.get(
+                        f"{self.app_url}/report-instances/{report_id}/sections",
+                        headers={"Authorization": f"Bearer {self.token}"}
+                    )
+                    
+                    if response.status_code == 200:
+                        sections = response.json()
+                        
+                        # Create reversed section order
+                        section_orders = []
+                        for i, section in enumerate(reversed(sections)):
+                            section_orders.append({
+                                "id": section["id"],
+                                "display_order": i
+                            })
+                        
+                        # Update section order
+                        response = requests.put(
+                            f"{self.app_url}/report-instances/{report_id}/section-order",
+                            headers={
+                                "Authorization": f"Bearer {self.token}",
+                                "Content-Type": "application/json"
+                            },
+                            json=section_orders
+                        )
+                        
+                        if response.status_code == 200:
+                            print("Successfully reordered sections")
+                        else:
+                            print(f"Failed to reorder sections: {response.status_code} - {response.text}")
+                    else:
+                        print(f"Failed to get sections: {response.status_code} - {response.text}")
+                except Exception as e:
+                    print(f"Error reordering sections: {str(e)}")
+                
+                # 3.2 Update a section title
+                try:
+                    print("\n3.2: Updating section title...")
+                    first_section_id = section_ids[0]
+                    
+                    response = requests.put(
+                        f"{self.app_url}/report-sections/{first_section_id}/title",
+                        headers={
+                            "Authorization": f"Bearer {self.token}",
+                            "Content-Type": "application/json"
+                        },
+                        json={"new_title": "Updated Section Title"}
+                    )
+                    
+                    if response.status_code == 200:
+                        print(f"Successfully updated title of section {first_section_id}")
+                    else:
+                        print(f"Failed to update section title: {response.status_code} - {response.text}")
+                except Exception as e:
+                    print(f"Error updating section title: {str(e)}")
+                
+                # 3.3 Toggle visibility of a section
+                try:
+                    print("\n3.3: Toggling section visibility...")
+                    # Use the last section
+                    last_section_id = section_ids[-1]
+                    
+                    response = requests.put(
+                        f"{self.app_url}/report-sections/{last_section_id}/visibility",
+                        headers={
+                            "Authorization": f"Bearer {self.token}",
+                            "Content-Type": "application/json"
+                        },
+                        json={"is_visible": False}
+                    )
+                    
+                    if response.status_code == 200:
+                        print(f"Successfully hid section {last_section_id}")
+                    else:
+                        print(f"Failed to toggle section visibility: {response.status_code} - {response.text}")
+                except Exception as e:
+                    print(f"Error toggling section visibility: {str(e)}")
+                
+                # 3.4 Update field value (if any fields are available)
+                try:
+                    print("\n3.4: Getting fields from first section...")
+                    first_section_id = section_ids[0]
+                    
+                    response = requests.get(
+                        f"{self.app_url}/report-sections/{first_section_id}/fields",
+                        headers={"Authorization": f"Bearer {self.token}"}
+                    )
+                    
+                    if response.status_code == 200:
+                        fields = response.json()
+                        
+                        if fields:
+                            print(f"Found {len(fields)} fields in section {first_section_id}")
+                            
+                            # Update the first field
+                            field_id = fields[0]["id"]
+                            
+                            print(f"Updating field {field_id}...")
+                            response = requests.put(
+                                f"{self.app_url}/report-fields/{field_id}/value",
+                                headers={
+                                    "Authorization": f"Bearer {self.token}",
+                                    "Content-Type": "application/json"
+                                },
+                                json={"new_value": "Updated by test client"}
+                            )
+                            
+                            if response.status_code == 200:
+                                print(f"Successfully updated field {field_id}")
+                            else:
+                                print(f"Failed to update field value: {response.status_code} - {response.text}")
+                        else:
+                            print("No fields found in the section")
+                    else:
+                        print(f"Failed to get fields: {response.status_code} - {response.text}")
+                except Exception as e:
+                    print(f"Error updating field value: {str(e)}")
+            
+            # 4. Retrieve the modified report
+            print("\nStep 4: Retrieving modified report...")
+            try:
+                response = requests.get(
+                    f"{self.app_url}/report-instances/{report_id}",
+                    headers={"Authorization": f"Bearer {self.token}"}
+                )
+                
+                if response.status_code == 200:
+                    modified_report = response.json()
+                    
+                    # Print modified report sections
+                    if "sections" in modified_report and modified_report["sections"]:
+                        print("\nModified report sections:")
+                        for i, section in enumerate(modified_report["sections"]):
+                            print(f"  {i+1}. {section['title']} (Order: {section['display_order']}, Visible: {section['is_visible']})")
+                            
+                        # Check if changes were successful
+                        if modified_report["sections"][0]["title"] == "Updated Section Title":
+                            print("\nSection title update verified!")
+                        
+                        # Check if last section is now hidden
+                        last_visible = modified_report["sections"][-1]["is_visible"]
+                        if not last_visible:
+                            print("Section visibility update verified!")
+                    else:
+                        print("Modified report has no sections")
+                else:
+                    print(f"Failed to retrieve modified report: {response.status_code} - {response.text}")
+                    return False
+            except Exception as e:
+                print(f"Error retrieving modified report: {str(e)}")
+                return False
+            
+            print("\nReport system test completed successfully!")
+            return True
+            
+        except Exception as e:
+            print(f"Error during report system test: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            return False
+
     def test_text_processing(self):
         """
         Test direct text processing without audio transcription

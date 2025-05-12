@@ -38,6 +38,7 @@ class User(Base):
     speaker_profiles: Mapped[list["SpeakerProfile"]] = relationship("SpeakerProfile", back_populates="user", cascade="all, delete-orphan")
     calibration_recordings: Mapped[list["CalibrationRecording"]]= relationship("CalibrationRecording", back_populates="user", cascade="all, delete-orphan")
     report_templates: Mapped[list["ReportTemplate"]] = relationship("ReportTemplate", back_populates="user", cascade="all, delete-orphan")
+    report_instances: Mapped[list["ReportInstance"]] = relationship("ReportInstance", back_populates="user", cascade="all, delete-orphan")
 
 class Note(Base):
     __tablename__ = "notes"
@@ -50,6 +51,9 @@ class Note(Base):
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     user: Mapped["User"] = relationship("User", back_populates="notes")
     sections: Mapped[list["Section"]] = relationship("Section", back_populates="note", cascade="all, delete-orphan")
+
+    report_instances: Mapped[list["ReportInstance"]] = relationship("ReportInstance", back_populates="note", cascade="all, delete-orphan")
+
 
 class Section(Base):
     __tablename__ = "sections"
@@ -326,36 +330,6 @@ class CalibrationRecording(Base):
     user: Mapped["User"] = relationship("User", back_populates="calibration_recordings")
     phrase: Mapped["CalibrationPhrase"] = relationship("CalibrationPhrase", back_populates="recordings")
     speaker_profile: Mapped[Optional["SpeakerProfile"]] = relationship("SpeakerProfile", back_populates="calibration_recordings")
-
-class ReportTemplate(Base):
-    """Model for storing report templates with SOAP structure"""
-    __tablename__ = "report_templates"
-    
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    
-    # Basic template information
-    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
-    name: Mapped[str] = mapped_column(String, nullable=False)
-    description: Mapped[str] = mapped_column(String, nullable=True)
-    
-    # Template type and format
-    report_type: Mapped[str] = mapped_column(String, nullable=False)  # "doctor", "patient", "custom"
-    html_template: Mapped[str] = mapped_column(String, nullable=True)  # Optional custom HTML template
-    is_default: Mapped[bool] = mapped_column(Boolean, default=False)  # Flag for default template
-    
-    # Template data structure - stored as JSONB for flexibility
-    template_data: Mapped[dict] = mapped_column(JSONB, nullable=False)  
-    
-    # Version control
-    version: Mapped[str] = mapped_column(String, default="1.0")
-    
-    # Timestamps
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    
-    # Relationships
-    user: Mapped["User"] = relationship("User", back_populates="report_templates")
-    
     
 class ReportTemplate(Base):
     __tablename__ = "report_templates"
@@ -364,7 +338,7 @@ class ReportTemplate(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
-    template_type: Mapped[str] = mapped_column(String, nullable=False)  # "doctor", "patient", etc.
+    template_type: Mapped[str] = mapped_column(String, nullable=False, default="doctor")  # "doctor", "patient", etc.
     html_template: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     layout_config: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)

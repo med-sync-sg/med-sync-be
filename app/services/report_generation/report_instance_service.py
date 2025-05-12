@@ -1,507 +1,1057 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Path, Body
+import logging
+from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy.orm import Session
-from typing import List, Optional, Dict, Any
-from fastapi.responses import StreamingResponse
-import io
+from sqlalchemy.exc import SQLAlchemyError
+from fastapi import HTTPException, status
+from datetime import datetime
 
-from app.db.local_session import DatabaseManager
-from app.models.models import User, Note, ReportInstance, ReportSection, ReportField
-from app.schemas.report.report_instance import (
-    ReportInstanceRead,
-    ReportInstanceCreate,
-    ReportInstanceUpdate,
-    ReportSectionRead,
-    ReportFieldRead
+from app.models.models import (
+    Note, 
+    Section, 
+    User,
+    ReportTemplate, 
+    ReportTemplateSectionConfig,
+    ReportInstance,
+    ReportSection,
+    ReportField,
+    SOAPCategory
 )
-from app.services.report_generation.report_instance_service import ReportInstanceService
+from app.schemas.report.report_instance import (
+    ReportInstanceCreate,
+    ReportInstanceRead,
+    ReportInstanceUpdate,
+    ReportSectionCreate,
+    ReportFieldCreate
+)
 from app.services.report_generation.report_template_service import ReportTemplateService
-from app.utils.auth_utils import get_current_user
 
-router = APIRouter()
-get_session = DatabaseManager().get_session
+logger = logging.getLogger(__name__)
 
-@router.get("/", response_model=List[ReportInstanceRead])
-async def get_report_instances(
-    note_id: Optional[int] = Query(None, description="Filter by note ID"),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session)
-):
+class ReportInstanceService:
     """
-    Get all report instances for the current user.
-    
-    Optionally filter by note_id.
+    Service for managing report instances.
+    Handles creating, retrieving, updating, and managing reports generated from notes.
     """
-    report_service = ReportInstanceService(db)
     
-    # Get reports for the current user, optionally filtered by note_id
-    reports = report_service.get_report_instances(user_id=current_user.id, note_id=note_id)
+    def __init__(self, db_session: Session):
+        """
+        Initialize with a database session
+        
+        Args:
+            db_session: SQLAlchemy session
+        """
+        self.db = db_session
+        self.template_service = ReportTemplateService(db_session)
     
-    return reports
-
-@router.get("/{report_id}", response_model=ReportInstanceRead)
-async def get_report_instance(
-    report_id: int = Path(..., description="Report instance ID"),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session)
-):
-    """
-    Get a specific report instance by ID.
+    def get_report_instances(self, user_id: Optional[int] = None, note_id: Optional[int] = None) -> List[ReportInstance]:
+        """
+        Get report instances, optionally filtered by user ID or note ID
+        
+        Args:
+            user_id: Optional user ID filter
+            note_id: Optional note ID filter
+            
+        Returns:
+            List of report instances
+        """
+        try:
+            query = self.db.query(ReportInstance)
+            
+            if user_id is not None:
+                query = query.filter(ReportInstance.user_id == user_id)
+                
+            if note_id is not None:
+                query = query.filter(ReportInstance.note_id == note_id)
+                
+            return query.all()
+            
+        except SQLAlchemyError as e:
+            logger.error(f"Error retrieving report instances: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database error occurred while retrieving report instances"
+            )
     
-    Users can only access their own reports.
-    """
-    report_service = ReportInstanceService(db)
+    def get_report_instance_by_id(self, report_id: int) -> Optional[ReportInstance]:
+        """
+        Get a report instance by ID
+        
+        Args:
+            report_id: Report instance ID
+            
+        Returns:
+            Report instance or None if not found
+        """
+        try:
+            report_instance = self.db.query(ReportInstance).filter(
+                ReportInstance.id == report_id
+            ).first()
+            
+            return report_instance
+            
+        except SQLAlchemyError as e:
+            logger.error(f"Error retrieving report instance {report_id}: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Database error occurred while retrieving report instance {report_id}"
+            )
     
-    # Get report instance
-    report = report_service.get_report_instance_by_id(report_id)
+    def create_report_instance_from_note(
+        self, note_id: int, template_id: int, user_id: int, name: str, description: Optional[str] = None
+    ) -> ReportInstance:
+        """
+        Create a new report instance from an existing note using a template
+        
+        Args:
+            note_id: Note ID
+            template_id: Template ID
+            user_id: User ID
+            name: Report name
+            description: Optional report description
+            
+        Returns:
+            Created report instance
+        """
+        try:
+            # Verify note exists
+            note = self.db.query(Note).filter(Note.id == note_id).first()
+            if not note:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Note with ID {note_id} not found"
+                )
+            
+            # Verify template exists
+            template = self.db.query(ReportTemplate).filter(ReportTemplate.id == template_id).first()
+            if not template:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Template with ID {template_id} not found"
+                )
+            
+            # Verify user exists and has permission to access note
+            if note.user_id != user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You do not have permission to access this note"
+                )
+            
+            # Create report instance
+            report_instance = ReportInstance(
+                name=name,
+                description=description,
+                user_id=user_id,
+                note_id=note_id,
+                template_id=template_id,
+                is_finalized=False
+            )
+            
+            self.db.add(report_instance)
+            self.db.flush()  # Get ID without committing
+            
+            # Get template section configs
+            section_configs = self.template_service.get_section_configs(template_id)
+            
+            # Get note sections
+            note_sections = self.db.query(Section).filter(Section.note_id == note_id).all()
+            
+            # Transform note sections into report sections based on template
+            self._transform_note_to_report_sections(
+                report_instance.id, 
+                note_sections, 
+                section_configs
+            )
+            
+            self.db.commit()
+            self.db.refresh(report_instance)
+            
+            return report_instance
+            
+        except HTTPException:
+            self.db.rollback()
+            raise
+        except SQLAlchemyError as e:
+            self.db.rollback()
+            logger.error(f"Error creating report instance: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database error occurred while creating report instance"
+            )
     
-    if not report:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Report instance with ID {report_id} not found"
-        )
+    def update_report_instance(self, report_id: int, update_data: ReportInstanceUpdate) -> ReportInstance:
+        """
+        Update a report instance
+        
+        Args:
+            report_id: Report instance ID
+            update_data: Update data
+            
+        Returns:
+            Updated report instance
+        """
+        try:
+            # Get report instance
+            report_instance = self.db.query(ReportInstance).filter(
+                ReportInstance.id == report_id
+            ).first()
+            
+            if not report_instance:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Report instance with ID {report_id} not found"
+                )
+            
+            # Verify user has permission
+            if report_instance.user_id != update_data.user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You do not have permission to update this report instance"
+                )
+            
+            # Prevent updating finalized reports
+            if report_instance.is_finalized and not update_data.is_finalized:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cannot modify a finalized report"
+                )
+            
+            # Update fields if provided
+            if update_data.name is not None:
+                report_instance.name = update_data.name
+                
+            if update_data.description is not None:
+                report_instance.description = update_data.description
+                
+            if update_data.template_id is not None:
+                # Verify template exists
+                template = self.db.query(ReportTemplate).filter(
+                    ReportTemplate.id == update_data.template_id
+                ).first()
+                
+                if not template:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Template with ID {update_data.template_id} not found"
+                    )
+                
+                report_instance.template_id = update_data.template_id
+                
+            if update_data.custom_layout is not None:
+                report_instance.custom_layout = update_data.custom_layout
+                
+            if update_data.is_finalized is not None:
+                report_instance.is_finalized = update_data.is_finalized
+            
+            self.db.commit()
+            self.db.refresh(report_instance)
+            
+            return report_instance
+            
+        except HTTPException:
+            self.db.rollback()
+            raise
+        except SQLAlchemyError as e:
+            self.db.rollback()
+            logger.error(f"Error updating report instance {report_id}: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Database error occurred while updating report instance {report_id}"
+            )
     
-    # Check access (users can only access their own reports)
-    if report.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not have permission to access this report"
-        )
+    def delete_report_instance(self, report_id: int, user_id: int) -> bool:
+        """
+        Delete a report instance
+        
+        Args:
+            report_id: Report instance ID
+            user_id: User ID (for permission check)
+            
+        Returns:
+            True if deleted, False otherwise
+        """
+        try:
+            # Get report instance
+            report_instance = self.db.query(ReportInstance).filter(
+                ReportInstance.id == report_id
+            ).first()
+            
+            if not report_instance:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Report instance with ID {report_id} not found"
+                )
+            
+            # Verify user has permission
+            if report_instance.user_id != user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You do not have permission to delete this report instance"
+                )
+            
+            # Delete report instance (cascade will delete sections and fields)
+            self.db.delete(report_instance)
+            self.db.commit()
+            
+            return True
+            
+        except HTTPException:
+            self.db.rollback()
+            raise
+        except SQLAlchemyError as e:
+            self.db.rollback()
+            logger.error(f"Error deleting report instance {report_id}: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Database error occurred while deleting report instance {report_id}"
+            )
     
-    return report
-
-@router.post("/", response_model=ReportInstanceRead, status_code=status.HTTP_201_CREATED)
-async def create_report_instance(
-    note_id: int = Body(..., embed=True),
-    template_id: int = Body(..., embed=True),
-    name: str = Body(..., embed=True),
-    description: Optional[str] = Body(None, embed=True),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session)
-):
-    """
-    Create a new report instance from a note using a template.
-    """
-    report_service = ReportInstanceService(db)
+    def _transform_note_to_report_sections(
+        self, 
+        report_instance_id: int, 
+        note_sections: List[Section], 
+        section_configs: List[ReportTemplateSectionConfig]
+    ) -> List[ReportSection]:
+        """
+        Transform note sections into report sections based on template configuration
+        
+        Args:
+            report_instance_id: Report instance ID
+            note_sections: List of note sections
+            section_configs: List of template section configurations
+            
+        Returns:
+            List of created report sections
+        """
+        report_sections = []
+        
+        # Group note sections by SOAP category
+        soap_sections: Dict[str, List[Section]] = {
+            "SUBJECTIVE": [],
+            "OBJECTIVE": [],
+            "ASSESSMENT": [],
+            "PLAN": [],
+            "OTHER": []
+        }
+        
+        for section in note_sections:
+            category = section.soap_category
+            if category in soap_sections:
+                soap_sections[category].append(section)
+            else:
+                soap_sections["OTHER"].append(section)
+        
+        # Create report sections based on template configuration
+        for config in section_configs:
+            # Get note sections for this SOAP category
+            category_sections = soap_sections.get(config.soap_category, [])
+            
+            # Skip if no sections and config is not visible
+            if not category_sections and not config.is_visible:
+                continue
+            
+            # Create report section
+            report_section = ReportSection(
+                report_instance_id=report_instance_id,
+                soap_category=config.soap_category,
+                title=config.title,
+                display_order=config.display_order,
+                is_visible=config.is_visible
+            )
+            
+            self.db.add(report_section)
+            self.db.flush()  # Get ID without committing
+            
+            # Process note sections for this category
+            for note_section in category_sections:
+                report_section.original_section_id = note_section.id
+                
+                # Transform section content to report fields
+                self._create_report_fields_from_section(
+                    report_section.id, 
+                    note_section, 
+                    config.field_mappings
+                )
+            
+            report_sections.append(report_section)
+        
+        return report_sections
     
-    # Create report instance
-    new_report = report_service.create_report_instance_from_note(
-        note_id=note_id,
-        template_id=template_id,
-        user_id=current_user.id,
-        name=name,
-        description=description
-    )
+    def _create_report_fields_from_section(
+        self, 
+        report_section_id: int, 
+        note_section: Section, 
+        field_mappings: Dict[str, Any]
+    ) -> List[ReportField]:
+        """
+        Create report fields from a note section's content
+        
+        Args:
+            report_section_id: Report section ID
+            note_section: Note section
+            field_mappings: Field mappings from template
+            
+        Returns:
+            List of created report fields
+        """
+        report_fields = []
+        display_order = 0
+        
+        # Process content from note section
+        if not note_section.content:
+            return report_fields
+            
+        for field_id, field_data in note_section.content.items():
+            # Field data can be a single field or a list of fields
+            if isinstance(field_data, list):
+                # Process list of fields
+                for i, field_item in enumerate(field_data):
+                    # Create report field
+                    report_field = self._create_single_report_field(
+                        report_section_id,
+                        field_id,
+                        field_item,
+                        display_order,
+                        field_mappings
+                    )
+                    
+                    if report_field:
+                        report_fields.append(report_field)
+                        display_order += 1
+            else:
+                # Process single field
+                report_field = self._create_single_report_field(
+                    report_section_id,
+                    field_id,
+                    field_data,
+                    display_order,
+                    field_mappings
+                )
+                
+                if report_field:
+                    report_fields.append(report_field)
+                    display_order += 1
+        
+        return report_fields
     
-    return new_report
-
-@router.put("/{report_id}", response_model=ReportInstanceRead)
-async def update_report_instance(
-    report_id: int,
-    update_data: ReportInstanceUpdate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session)
-):
-    """
-    Update an existing report instance.
+    def _create_single_report_field(
+        self, 
+        report_section_id: int,
+        field_id: str,
+        field_data: Dict[str, Any],
+        display_order: int,
+        field_mappings: Dict[str, Any]
+    ) -> Optional[ReportField]:
+        """
+        Create a single report field from note field data
+        
+        Args:
+            report_section_id: Report section ID
+            field_id: Field ID
+            field_data: Field data
+            display_order: Display order
+            field_mappings: Field mappings from template
+            
+        Returns:
+            Created report field or None if invalid
+        """
+        try:
+            # Get field properties
+            display_name = field_data.get("name", "Untitled Field")
+            
+            # Override display name if mapping exists
+            if field_id in field_mappings:
+                display_name = field_mappings[field_id]
+            
+            field_type = field_data.get("data_type", "string")
+            value = field_data.get("value")
+            
+            # Create report field
+            report_field = ReportField(
+                report_section_id=report_section_id,
+                field_id=field_id,
+                display_name=display_name,
+                field_type=field_type,
+                display_order=display_order,
+                value=value,
+                original_value=value,
+                is_visible=True
+            )
+            
+            self.db.add(report_field)
+            
+            return report_field
+            
+        except Exception as e:
+            logger.warning(f"Error creating report field: {str(e)}")
+            return None
     
-    Users can only update their own reports.
-    """
-    # Ensure user_id in the request matches the authenticated user
-    if update_data.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only update your own reports"
-        )
+    def get_report_sections(self, report_id: int) -> List[ReportSection]:
+        """
+        Get all sections for a report instance
+        
+        Args:
+            report_id: Report instance ID
+            
+        Returns:
+            List of report sections
+        """
+        try:
+            sections = self.db.query(ReportSection).filter(
+                ReportSection.report_instance_id == report_id
+            ).order_by(
+                ReportSection.display_order
+            ).all()
+            
+            return sections
+            
+        except SQLAlchemyError as e:
+            logger.error(f"Error retrieving report sections: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database error occurred while retrieving report sections"
+            )
     
-    report_service = ReportInstanceService(db)
+    def get_report_fields(self, section_id: int) -> List[ReportField]:
+        """
+        Get all fields for a report section
+        
+        Args:
+            section_id: Report section ID
+            
+        Returns:
+            List of report fields
+        """
+        try:
+            fields = self.db.query(ReportField).filter(
+                ReportField.report_section_id == section_id
+            ).order_by(
+                ReportField.display_order
+            ).all()
+            
+            return fields
+            
+        except SQLAlchemyError as e:
+            logger.error(f"Error retrieving report fields: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database error occurred while retrieving report fields"
+            )
     
-    # First verify report exists and belongs to user
-    existing_report = report_service.get_report_instance_by_id(report_id)
-    if not existing_report:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Report not found"
-        )
+    def update_section_order(self, report_id: int, user_id: int, section_orders: List[Dict[str, Any]]) -> bool:
+        """
+        Update the order of sections in a report instance
+        
+        Args:
+            report_id: Report instance ID
+            user_id: User ID (for permission check)
+            section_orders: List of section IDs and their new display orders
+            
+        Returns:
+            True if updated, False otherwise
+        """
+        try:
+            # Get report instance
+            report_instance = self.db.query(ReportInstance).filter(
+                ReportInstance.id == report_id
+            ).first()
+            
+            if not report_instance:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Report instance with ID {report_id} not found"
+                )
+            
+            # Verify user has permission
+            if report_instance.user_id != user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You do not have permission to update this report instance"
+                )
+            
+            # Prevent updating finalized reports
+            if report_instance.is_finalized:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cannot modify a finalized report"
+                )
+            
+            # Update section display orders
+            for order_data in section_orders:
+                section_id = order_data.get("id")
+                new_order = order_data.get("display_order")
+                
+                if section_id is None or new_order is None:
+                    continue
+                
+                # Get section
+                section = self.db.query(ReportSection).filter(
+                    ReportSection.id == section_id,
+                    ReportSection.report_instance_id == report_id
+                ).first()
+                
+                if section:
+                    section.display_order = new_order
+            
+            self.db.commit()
+            
+            return True
+            
+        except HTTPException:
+            self.db.rollback()
+            raise
+        except SQLAlchemyError as e:
+            self.db.rollback()
+            logger.error(f"Error updating section order: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database error occurred while updating section order"
+            )
     
-    if existing_report.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to update this report"
-        )
+    def update_field_order(self, section_id: int, user_id: int, field_orders: List[Dict[str, Any]]) -> bool:
+        """
+        Update the order of fields in a report section
+        
+        Args:
+            section_id: Report section ID
+            user_id: User ID (for permission check)
+            field_orders: List of field IDs and their new display orders
+            
+        Returns:
+            True if updated, False otherwise
+        """
+        try:
+            # Get report section
+            section = self.db.query(ReportSection).filter(
+                ReportSection.id == section_id
+            ).first()
+            
+            if not section:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Report section with ID {section_id} not found"
+                )
+            
+            # Get report instance
+            report_instance = self.db.query(ReportInstance).filter(
+                ReportInstance.id == section.report_instance_id
+            ).first()
+            
+            # Verify user has permission
+            if report_instance.user_id != user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You do not have permission to update this report section"
+                )
+            
+            # Prevent updating finalized reports
+            if report_instance.is_finalized:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cannot modify a finalized report"
+                )
+            
+            # Update field display orders
+            for order_data in field_orders:
+                field_id = order_data.get("id")
+                new_order = order_data.get("display_order")
+                
+                if field_id is None or new_order is None:
+                    continue
+                
+                # Get field
+                field = self.db.query(ReportField).filter(
+                    ReportField.id == field_id,
+                    ReportField.report_section_id == section_id
+                ).first()
+                
+                if field:
+                    field.display_order = new_order
+            
+            self.db.commit()
+            
+            return True
+            
+        except HTTPException:
+            self.db.rollback()
+            raise
+        except SQLAlchemyError as e:
+            self.db.rollback()
+            logger.error(f"Error updating field order: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database error occurred while updating field order"
+            )
     
-    # Update the report
-    updated_report = report_service.update_report_instance(report_id, update_data)
+    def update_field_value(self, field_id: int, user_id: int, new_value: Any) -> ReportField:
+        """
+        Update the value of a report field
+        
+        Args:
+            field_id: Report field ID
+            user_id: User ID (for permission check)
+            new_value: New field value
+            
+        Returns:
+            Updated report field
+        """
+        try:
+            # Get report field
+            field = self.db.query(ReportField).filter(
+                ReportField.id == field_id
+            ).first()
+            
+            if not field:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Report field with ID {field_id} not found"
+                )
+            
+            # Get report section
+            section = self.db.query(ReportSection).filter(
+                ReportSection.id == field.report_section_id
+            ).first()
+            
+            # Get report instance
+            report_instance = self.db.query(ReportInstance).filter(
+                ReportInstance.id == section.report_instance_id
+            ).first()
+            
+            # Verify user has permission
+            if report_instance.user_id != user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You do not have permission to update this report field"
+                )
+            
+            # Prevent updating finalized reports
+            if report_instance.is_finalized:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cannot modify a finalized report"
+                )
+            
+            # Update field value
+            field.value = new_value
+            
+            self.db.commit()
+            self.db.refresh(field)
+            
+            return field
+            
+        except HTTPException:
+            self.db.rollback()
+            raise
+        except SQLAlchemyError as e:
+            self.db.rollback()
+            logger.error(f"Error updating field value: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database error occurred while updating field value"
+            )
     
-    return updated_report
-
-@router.delete("/{report_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_report_instance(
-    report_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session)
-):
-    """
-    Delete a report instance.
+    def finalize_report(self, report_id: int, user_id: int) -> ReportInstance:
+        """
+        Finalize a report instance (mark as complete and ready for PDF generation)
+        
+        Args:
+            report_id: Report instance ID
+            user_id: User ID (for permission check)
+            
+        Returns:
+            Finalized report instance
+        """
+        try:
+            # Get report instance
+            report_instance = self.db.query(ReportInstance).filter(
+                ReportInstance.id == report_id
+            ).first()
+            
+            if not report_instance:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Report instance with ID {report_id} not found"
+                )
+            
+            # Verify user has permission
+            if report_instance.user_id != user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You do not have permission to finalize this report instance"
+                )
+            
+            # Set report as finalized
+            report_instance.is_finalized = True
+            
+            self.db.commit()
+            self.db.refresh(report_instance)
+            
+            return report_instance
+            
+        except HTTPException:
+            self.db.rollback()
+            raise
+        except SQLAlchemyError as e:
+            self.db.rollback()
+            logger.error(f"Error finalizing report instance {report_id}: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Database error occurred while finalizing report instance {report_id}"
+            )
     
-    Users can only delete their own reports.
-    """
-    report_service = ReportInstanceService(db)
+    def toggle_section_visibility(self, section_id: int, user_id: int, is_visible: bool) -> ReportSection:
+        """
+        Toggle visibility of a report section
+        
+        Args:
+            section_id: Report section ID
+            user_id: User ID (for permission check)
+            is_visible: New visibility state
+            
+        Returns:
+            Updated report section
+        """
+        try:
+            # Get report section
+            section = self.db.query(ReportSection).filter(
+                ReportSection.id == section_id
+            ).first()
+            
+            if not section:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Report section with ID {section_id} not found"
+                )
+            
+            # Get report instance
+            report_instance = self.db.query(ReportInstance).filter(
+                ReportInstance.id == section.report_instance_id
+            ).first()
+            
+            # Verify user has permission
+            if report_instance.user_id != user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You do not have permission to update this report section"
+                )
+            
+            # Prevent updating finalized reports
+            if report_instance.is_finalized:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cannot modify a finalized report"
+                )
+            
+            # Update section visibility
+            section.is_visible = is_visible
+            
+            self.db.commit()
+            self.db.refresh(section)
+            
+            return section
+            
+        except HTTPException:
+            self.db.rollback()
+            raise
+        except SQLAlchemyError as e:
+            self.db.rollback()
+            logger.error(f"Error updating section visibility: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database error occurred while updating section visibility"
+            )
     
-    # First verify report exists and belongs to user
-    existing_report = report_service.get_report_instance_by_id(report_id)
-    if not existing_report:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Report not found"
-        )
+    def toggle_field_visibility(self, field_id: int, user_id: int, is_visible: bool) -> ReportField:
+        """
+        Toggle visibility of a report field
+        
+        Args:
+            field_id: Report field ID
+            user_id: User ID (for permission check)
+            is_visible: New visibility state
+            
+        Returns:
+            Updated report field
+        """
+        try:
+            # Get report field
+            field = self.db.query(ReportField).filter(
+                ReportField.id == field_id
+            ).first()
+            
+            if not field:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Report field with ID {field_id} not found"
+                )
+            
+            # Get report section
+            section = self.db.query(ReportSection).filter(
+                ReportSection.id == field.report_section_id
+            ).first()
+            
+            # Get report instance
+            report_instance = self.db.query(ReportInstance).filter(
+                ReportInstance.id == section.report_instance_id
+            ).first()
+            
+            # Verify user has permission
+            if report_instance.user_id != user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You do not have permission to update this report field"
+                )
+            
+            # Prevent updating finalized reports
+            if report_instance.is_finalized:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cannot modify a finalized report"
+                )
+            
+            # Update field visibility
+            field.is_visible = is_visible
+            
+            self.db.commit()
+            self.db.refresh(field)
+            
+            return field
+            
+        except HTTPException:
+            self.db.rollback()
+            raise
+        except SQLAlchemyError as e:
+            self.db.rollback()
+            logger.error(f"Error updating field visibility: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database error occurred while updating field visibility"
+            )
     
-    if existing_report.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to delete this report"
-        )
+    def update_section_title(self, section_id: int, user_id: int, new_title: str) -> ReportSection:
+        """
+        Update the title of a report section
+        
+        Args:
+            section_id: Report section ID
+            user_id: User ID (for permission check)
+            new_title: New section title
+            
+        Returns:
+            Updated report section
+        """
+        try:
+            # Get report section
+            section = self.db.query(ReportSection).filter(
+                ReportSection.id == section_id
+            ).first()
+            
+            if not section:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Report section with ID {section_id} not found"
+                )
+            
+            # Get report instance
+            report_instance = self.db.query(ReportInstance).filter(
+                ReportInstance.id == section.report_instance_id
+            ).first()
+            
+            # Verify user has permission
+            if report_instance.user_id != user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You do not have permission to update this report section"
+                )
+            
+            # Prevent updating finalized reports
+            if report_instance.is_finalized:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cannot modify a finalized report"
+                )
+            
+            # Update section title
+            section.title = new_title
+            
+            self.db.commit()
+            self.db.refresh(section)
+            
+            return section
+            
+        except HTTPException:
+            self.db.rollback()
+            raise
+        except SQLAlchemyError as e:
+            self.db.rollback()
+            logger.error(f"Error updating section title: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database error occurred while updating section title"
+            )
     
-    # Delete the report
-    success = report_service.delete_report_instance(report_id, current_user.id)
-    
-    if not success:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to delete report"
-        )
-    
-    return None
-
-@router.get("/{report_id}/sections", response_model=List[ReportSectionRead])
-async def get_report_sections(
-    report_id: int = Path(..., description="Report instance ID"),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session)
-):
-    """
-    Get all sections for a report instance.
-    
-    Users can only access sections from their own reports.
-    """
-    report_service = ReportInstanceService(db)
-    
-    # First verify report exists and user has access
-    report = report_service.get_report_instance_by_id(report_id)
-    if not report:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Report not found"
-        )
-    
-    # Check access (users can only access their own reports)
-    if report.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not have permission to access this report"
-        )
-    
-    # Get sections
-    sections = report_service.get_report_sections(report_id)
-    
-    return sections
-
-@router.get("/sections/{section_id}/fields", response_model=List[ReportFieldRead])
-async def get_section_fields(
-    section_id: int = Path(..., description="Report section ID"),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session)
-):
-    """
-    Get all fields for a report section.
-    
-    Users can only access fields from their own reports.
-    """
-    report_service = ReportInstanceService(db)
-    
-    # First verify section exists and get its report instance
-    section = db.query(ReportSection).filter(ReportSection.id == section_id).first()
-    if not section:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Section not found"
-        )
-    
-    # Get report instance
-    report = db.query(ReportInstance).filter(ReportInstance.id == section.report_instance_id).first()
-    
-    # Check access (users can only access their own reports)
-    if report.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not have permission to access this section"
-        )
-    
-    # Get fields
-    fields = report_service.get_report_fields(section_id)
-    
-    return fields
-
-@router.put("/{report_id}/section-order")
-async def update_section_order(
-    report_id: int,
-    section_orders: List[Dict[str, Any]] = Body(...),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session)
-):
-    """
-    Update the order of sections in a report instance.
-    
-    This enables drag-and-drop rearrangement of sections.
-    """
-    report_service = ReportInstanceService(db)
-    
-    # Update section order
-    success = report_service.update_section_order(
-        report_id=report_id,
-        user_id=current_user.id,
-        section_orders=section_orders
-    )
-    
-    if not success:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to update section order"
-        )
-    
-    return {"success": True, "message": "Section order updated successfully"}
-
-@router.put("/sections/{section_id}/field-order")
-async def update_field_order(
-    section_id: int,
-    field_orders: List[Dict[str, Any]] = Body(...),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session)
-):
-    """
-    Update the order of fields in a report section.
-    
-    This enables drag-and-drop rearrangement of fields within a section.
-    """
-    report_service = ReportInstanceService(db)
-    
-    # Update field order
-    success = report_service.update_field_order(
-        section_id=section_id,
-        user_id=current_user.id,
-        field_orders=field_orders
-    )
-    
-    if not success:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to update field order"
-        )
-    
-    return {"success": True, "message": "Field order updated successfully"}
-
-@router.put("/sections/{section_id}/visibility")
-async def toggle_section_visibility(
-    section_id: int,
-    is_visible: bool = Body(..., embed=True),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session)
-):
-    """
-    Toggle visibility of a report section.
-    """
-    report_service = ReportInstanceService(db)
-    
-    # Toggle section visibility
-    section = report_service.toggle_section_visibility(
-        section_id=section_id,
-        user_id=current_user.id,
-        is_visible=is_visible
-    )
-    
-    return {"success": True, "message": f"Section visibility set to {is_visible}", "section": section}
-
-@router.put("/fields/{field_id}/visibility")
-async def toggle_field_visibility(
-    field_id: int,
-    is_visible: bool = Body(..., embed=True),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session)
-):
-    """
-    Toggle visibility of a report field.
-    """
-    report_service = ReportInstanceService(db)
-    
-    # Toggle field visibility
-    field = report_service.toggle_field_visibility(
-        field_id=field_id,
-        user_id=current_user.id,
-        is_visible=is_visible
-    )
-    
-    return {"success": True, "message": f"Field visibility set to {is_visible}", "field": field}
-
-@router.put("/sections/{section_id}/title")
-async def update_section_title(
-    section_id: int,
-    new_title: str = Body(..., embed=True),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session)
-):
-    """
-    Update the title of a report section.
-    """
-    report_service = ReportInstanceService(db)
-    
-    # Update section title
-    section = report_service.update_section_title(
-        section_id=section_id,
-        user_id=current_user.id,
-        new_title=new_title
-    )
-    
-    return {"success": True, "message": "Section title updated successfully", "section": section}
-
-@router.put("/fields/{field_id}/name")
-async def update_field_name(
-    field_id: int,
-    new_name: str = Body(..., embed=True),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session)
-):
-    """
-    Update the display name of a report field.
-    """
-    report_service = ReportInstanceService(db)
-    
-    # Update field name
-    field = report_service.update_field_name(
-        field_id=field_id,
-        user_id=current_user.id,
-        new_name=new_name
-    )
-    
-    return {"success": True, "message": "Field name updated successfully", "field": field}
-
-@router.put("/fields/{field_id}/value")
-async def update_field_value(
-    field_id: int,
-    new_value: Any = Body(..., embed=True),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session)
-):
-    """
-    Update the value of a report field.
-    """
-    report_service = ReportInstanceService(db)
-    
-    # Update field value
-    field = report_service.update_field_value(
-        field_id=field_id,
-        user_id=current_user.id,
-        new_value=new_value
-    )
-    
-    return {"success": True, "message": "Field value updated successfully", "field": field}
-
-@router.post("/{report_id}/finalize", response_model=ReportInstanceRead)
-async def finalize_report(
-    report_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session)
-):
-    """
-    Finalize a report instance (mark as complete and ready for PDF generation).
-    
-    Finalized reports cannot be modified.
-    """
-    report_service = ReportInstanceService(db)
-    
-    # Finalize report
-    report = report_service.finalize_report(
-        report_id=report_id,
-        user_id=current_user.id
-    )
-    
-    return report
-
-@router.post("/notes/{note_id}/create-report", response_model=ReportInstanceRead, status_code=status.HTTP_201_CREATED)
-async def create_report_from_note(
-    note_id: int,
-    template_id: int = Body(..., embed=True),
-    name: str = Body(..., embed=True),
-    description: Optional[str] = Body(None, embed=True),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session)
-):
-    """
-    Convenience endpoint to create a report directly from a note.
-    """
-    # First verify note exists and belongs to user
-    note = db.query(Note).filter(Note.id == note_id).first()
-    if not note:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Note not found"
-        )
-    
-    if note.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to access this note"
-        )
-    
-    # Create report using the service
-    report_service = ReportInstanceService(db)
-    report = report_service.create_report_instance_from_note(
-        note_id=note_id,
-        template_id=template_id,
-        user_id=current_user.id,
-        name=name,
-        description=description
-    )
-    
-    return report
-
-@router.post("/{report_id}/clone", response_model=ReportInstanceRead, status_code=status.HTTP_201_CREATED)
-async def clone_report(
-    report_id: int,
-    new_name: str = Body(..., embed=True),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session)
-):
-    """
-    Create a copy of an existing report instance.
-    
-    Useful for creating templates or revisions.
-    """
-    report_service = ReportInstanceService(db)
-    
-    # First verify report exists and belongs to user
-    existing_report = report_service.get_report_instance_by_id(report_id)
-    if not existing_report:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Report not found"
-        )
-    
-    if existing_report.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to clone this report"
-        )
-    
-    # Create a new report based on the existing one
-    new_report = report_service.create_report_instance_from_note(
-        note_id=existing_report.note_id,
-        template_id=existing_report.template_id,
-        user_id=current_user.id,
-        name=new_name,
-        description=f"Clone of report {report_id}: {existing_report.name}"
-    )
-    
-    # Note: This is a simple clone implementation. For a full clone with 
-    # copied customizations, we would need to add a dedicated clone method 
-    # to the service that copies all custom layouts, field values, etc.
-    
-    return new_report
+    def update_field_name(self, field_id: int, user_id: int, new_name: str) -> ReportField:
+        """
+        Update the display name of a report field
+        
+        Args:
+            field_id: Report field ID
+            user_id: User ID (for permission check)
+            new_name: New field display name
+            
+        Returns:
+            Updated report field
+        """
+        try:
+            # Get report field
+            field = self.db.query(ReportField).filter(
+                ReportField.id == field_id
+            ).first()
+            
+            if not field:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Report field with ID {field_id} not found"
+                )
+            
+            # Get report section
+            section = self.db.query(ReportSection).filter(
+                ReportSection.id == field.report_section_id
+            ).first()
+            
+            # Get report instance
+            report_instance = self.db.query(ReportInstance).filter(
+                ReportInstance.id == section.report_instance_id
+            ).first()
+            
+            # Verify user has permission
+            if report_instance.user_id != user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You do not have permission to update this report field"
+                )
+            
+            # Prevent updating finalized reports
+            if report_instance.is_finalized:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cannot modify a finalized report"
+                )
+            
+            # Update field display name
+            field.display_name = new_name
+            
+            self.db.commit()
+            self.db.refresh(field)
+            
+            return field
+            
+        except HTTPException:
+            self.db.rollback()
+            raise
+        except SQLAlchemyError as e:
+            self.db.rollback()
+            logger.error(f"Error updating field name: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database error occurred while updating field name"
+            )

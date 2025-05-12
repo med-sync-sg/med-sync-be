@@ -22,8 +22,9 @@ class ReportInstanceRead(ReportInstanceBase):
     updated_at: datetime
     sections: List["ReportSectionRead"] = []
     
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(
+        from_attributes=True
+    )
         
 class ReportInstanceUpdate(BaseAuthModel):
     name: Optional[str] = None

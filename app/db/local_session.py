@@ -48,7 +48,7 @@ class DatabaseManager:
         # Only create tables once at startup
         Base.metadata.create_all(bind=self.engine)
         
-        self._initialize_default_templates()
+        # self._initialize_default_templates()
         
     def _initialize_default_templates(self):
         """Add default report templates to the database with HTML content from template files."""
@@ -86,7 +86,7 @@ class DatabaseManager:
             existing_doctor = session.query(ReportTemplate).filter_by(
                 name='Comprehensive Clinical Documentation',
                 is_default=True,
-                report_type='doctor'
+                template_type='doctor'
             ).first()
             
             if not existing_doctor:
@@ -95,7 +95,7 @@ class DatabaseManager:
                     user_id=1,  # System user ID (adjust as needed)
                     name='Comprehensive Clinical Documentation',
                     description='Standard medical report template with complete SOAP structure for healthcare professionals',
-                    report_type='doctor',
+                    template_type='doctor',
                     is_default=True,
                     html_template=doctor_html_content,
                     template_data={
@@ -235,7 +235,7 @@ class DatabaseManager:
             existing_patient = session.query(ReportTemplate).filter_by(
                 name='Patient-Friendly Summary',
                 is_default=True,
-                report_type='patient'
+                template_type='patient'
             ).first()
             
             if not existing_patient:
@@ -244,7 +244,7 @@ class DatabaseManager:
                     user_id=1,  # System user ID (adjust as needed)
                     name='Patient-Friendly Summary',
                     description='Simplified medical report template for patient understanding with plain language explanations',
-                    report_type='patient',
+                    template_type='patient',
                     is_default=True,
                     html_template=patient_html_content,
                     template_data={
