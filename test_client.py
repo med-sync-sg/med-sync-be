@@ -511,10 +511,10 @@ class TestClient:
             # Test WebSocket (needs to run in an async context)
             # asyncio.run(self.test_websocket())
             
-            self.test_text_processing()
+            # self.test_text_processing()
             
             # self.test_diarization_with_calibration(DEFAULT_AUDIO_FILE, 1)
-            self.test_diarization_without_calibration(test_audio_file)
+            self.test_diarization_without_calibration(DEFAULT_AUDIO_FILE)
             # self.generate_test_report_doctor(user_id=2, note_id=12, template_type="doctor")
             
             # self.test_text_processing()
@@ -1122,14 +1122,6 @@ class TestClient:
         
         
         print(audio_result)
-        # # Test text processing
-        # text_result = await tester.send_text(
-        #     text="Patient reports a sore throat and fever lasting three days.",
-        #     note_id=1
-        # )
-        
-        # print(f"Text test: {'SUCCESS' if text_result['success'] else 'FAILED'}")
-        # print(f"Sections: {len(text_result.get('sections', []))}")
         
         return tester
     

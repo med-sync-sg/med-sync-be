@@ -313,6 +313,6 @@ class TranscriptionService:
         # Format as readable transcript
         lines = []
         for segment in all_segments:
-            lines.append(f"[{segment['role']}] {segment['text']}")
+            lines.append(f"{segment['role']}: {segment['text']}")
         
         return "\n".join(lines)

@@ -1,0 +1,15 @@
+{
+  "total_files": 1,
+  "successful_files": 1,
+  "failed_files": 0,
+  "total_audio_duration": 457.92,
+  "total_processing_time": 184.31889605522156,
+  "average_wer": 0.7759526938239159,
+  "average_cer": 0.4454741652913546,
+  "best_wer": 0.7759526938239159,
+  "worst_wer": 0.7759526938239159,
+  "total_words": 1522,
+  "total_correct_words": 379,
+  "timestamp": "2025-05-13 12:56:20",
+  "overall_accuracy": 24.90144546649146
+}
