@@ -338,6 +338,7 @@ class WebSocketTester:
                     # Process transcription
                     if "text" in response_data:
                         transcript = response_data["text"]
+                        logger.info(transcript)
                         received_transcriptions.append(transcript)
                         adaptation_status = response_data.get("using_adaptation", False)
                         processing_time = response_data.get("processing_time_ms", None)
@@ -520,12 +521,12 @@ class TestClient:
             # self.create_test_note()
             
             # Test WebSocket (needs to run in an async context)
-            # asyncio.run(self.test_websocket())
+            asyncio.run(self.test_websocket())
             
             # self.generate_test_report_doctor(user_id=2, note_id=12, template_type="doctor")
             
             # results = self.test_text_processing()
-            self.test_report_system(1)
+            # self.test_report_system(1)
             # self.test_adaptation_feature()
             logger.info("All tests completed.")
             return True
@@ -1011,7 +1012,7 @@ class TestClient:
             
             # Send the text to the backend for processing
             response = requests.post(
-                f"{self.app_url}/tests/text-transcript-db", 
+                f"{self.app_url}/tests/text-transcript", 
                 json=request_data, 
                 headers=headers
             )

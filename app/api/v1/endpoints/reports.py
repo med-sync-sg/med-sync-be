@@ -131,7 +131,7 @@ def format_note_for_dart(note: Note, include_section_content: bool = True) -> Di
 @router.get("/pdf-data/{note_id}")
 async def get_pdf_data(
     note_id: int = Path(..., description="ID of the note"),
-    report_type: str = Query("doctor", description="Type of report (doctor or patient)"),
+    template_type: str = Query("doctor", description="Type of report (doctor or patient)"),
     db: Session = Depends(get_session)
 ):
     """
@@ -154,8 +154,8 @@ async def get_pdf_data(
     # In a real app, you'd use a proper ReportTemplate model
     template = {
         "id": 1,
-        "name": f"{report_type.capitalize()} Report Template",
-        "reportType": report_type,
+        "name": f"{template_type.capitalize()} Report Template",
+        "reportType": template_type,
         "version": "1.0",
         "sections": {
             "subjective": {
@@ -208,7 +208,7 @@ async def get_pdf_data(
         "template": template,
         "metadata": {
             "generatedAt": datetime.now().isoformat(),
-            "reportType": report_type,
+            "reportType": template_type,
         },
         "patient": patient_info,
         "provider": provider_info

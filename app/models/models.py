@@ -331,6 +331,7 @@ class CalibrationRecording(Base):
     phrase: Mapped["CalibrationPhrase"] = relationship("CalibrationPhrase", back_populates="recordings")
     speaker_profile: Mapped[Optional["SpeakerProfile"]] = relationship("SpeakerProfile", back_populates="calibration_recordings")
     
+### REPORT GENERATION MODELS ###    
 class ReportTemplate(Base):
     __tablename__ = "report_templates"
     
