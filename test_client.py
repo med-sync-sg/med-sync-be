@@ -40,26 +40,14 @@ DEFAULT_DB_URL = "http://127.0.0.1:8002"
 DEFAULT_APP_URL = "http://127.0.0.1:8001"
 DEFAULT_AUDIO_FILE = os.path.join("test_audios", "test_30sec.wav")
 
-# SAMPLE_TRANSCRIPT = """
-# Patient: Doctor, I've had a sore throat for the past three days, and it's getting worse. It feels scratchy, and swallowing is uncomfortable.
-# Doctor: I see. Has it been painful enough to affect eating or drinking?
-# Patient: No, but I also have a mild cough and keep sneezing a lot. My nose has been running non-stop.
-# Doctor: Sounds like you're experiencing some nasal irritation. Have you noticed any thick or discolored mucus?
-# Patient: Yeah, sometimes I feel some mucus at the back of my throat.
-# Doctor: Alright. Do you feel any tightness in your chest or shortness of breath when coughing?
-# Patient: No, but I've been feeling a bit feverish since last night. I haven't checked my temperature though. My body feels tired too.
-# Doctor: Fatigue and feverishness can be common with viral infections. Any chills or sweating?
-# Patient: No.
-# Doctor: Understood. Based on your symptoms, it looks like an upper respiratory tract infection, likely viral. Let me examine your throat to confirm.
-# Doctor: I will give you acetaminophen for the fever. Take two at a time three times a day.
-# """
-
 SAMPLE_TRANSCRIPT = """
 Patient: Doctor, I've had a sore throat, and it's getting worse. It feels scratchy, and swallowing is uncomfortable.
 Doctor: I see. Has it been painful enough to affect eating or drinking?
 """
 
 DEBUG_PATH = "test_client_results"
+
+test_audio_file = os.path.join("test_audios", "day1_consultation03.wav")
 
 class WebSocketTester:
     """Helper class for testing WebSocket functionality of the application"""
@@ -521,14 +509,17 @@ class TestClient:
             self.create_test_note()
             
             # Test WebSocket (needs to run in an async context)
-            asyncio.run(self.test_websocket())
+            # asyncio.run(self.test_websocket())
             
+            self.test_text_processing()
+            
+            # self.test_diarization_with_calibration(DEFAULT_AUDIO_FILE, 1)
+            self.test_diarization_without_calibration(test_audio_file)
             # self.generate_test_report_doctor(user_id=2, note_id=12, template_type="doctor")
             
-            # results = self.test_text_processing()
-            # self.test_report_system(1)
+            # self.test_text_processing()
             # self.test_adaptation_feature()
-            logger.info("All tests completed.")
+            logger.info("All tests completed successfully!")
             return True
             
         except Exception as e:
@@ -1030,6 +1021,88 @@ class TestClient:
             
         except Exception as e:
             raise Exception(f"Text processing test error: {str(e)}")
+        
+    def upload_doctor_patient_audio(self, audio_path, doctor_id=None):
+        """
+        Test the doctor-patient diarization and transcription endpoint
+        
+        Args:
+            audio_path: Path to audio file
+            doctor_id: Optional doctor user ID for calibration
+        
+        Returns:
+            API response or None if failed
+        """
+        url = f"{DEFAULT_APP_URL}/tests/doctor-patient-transcription"
+        
+        if not os.path.exists(audio_path):
+            logger.error(f"Audio file not found: {audio_path}")
+            return None
+        
+        logger.info(f"Uploading audio file: {audio_path}")
+        start_time = time.time()
+        
+        try:
+            files = {"audio_file": open(audio_path, "rb")}
+            data = {}
+            
+            if doctor_id is not None:
+                data["doctor_id"] = str(doctor_id)
+                logger.info(f"Using doctor ID: {doctor_id}")
+            headers = {"Authorization": f"Bearer {self.token}"}
+            response = requests.post(url, headers=headers, files=files, data=data)
+            response.raise_for_status()
+            
+            processing_time = time.time() - start_time
+            result = response.json()
+            
+            logger.info(f"Processed in {processing_time:.2f} seconds")
+            logger.info(f"Diarization result: {len(result.get('doctor_segments', []))} doctor segments, "
+                       f"{len(result.get('patient_segments', []))} patient segments")
+            
+            # Print transcript excerpt
+            transcript = result.get("transcript", "")
+            if transcript:
+                excerpt = "\n".join(transcript.split("\n"))
+                logger.info(f"Transcript excerpt:\n{excerpt}...")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error uploading audio: {str(e)}")
+            return None
+        finally:
+            # Ensure the file is closed
+            if 'files' in locals():
+                for f in files.values():
+                    f.close()
+    
+    def test_diarization_with_calibration(self, audio_path, doctor_id):
+        """
+        Test diarization with doctor calibration
+        
+        Args:
+            audio_path: Path to audio file
+            doctor_id: Doctor user ID with calibration
+        
+        Returns:
+            API response or None if failed
+        """
+        logger.info(f"Testing diarization with calibration for doctor {doctor_id}")
+        return self.upload_doctor_patient_audio(audio_path, doctor_id)
+    
+    def test_diarization_without_calibration(self, audio_path):
+        """
+        Test diarization without calibration
+        
+        Args:
+            audio_path: Path to audio file
+        
+        Returns:
+            API response or None if failed
+        """
+        logger.info("Testing diarization without calibration")
+        return self.upload_doctor_patient_audio(audio_path)
     
     async def test_websocket(self):
         tester = WebSocketTester(base_url="http://localhost:8001")

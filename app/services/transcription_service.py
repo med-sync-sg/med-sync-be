@@ -1,5 +1,7 @@
 import logging
 from typing import List, Dict, Any, Optional, Tuple
+import numpy as np
+
 from app.services.audio_service import AudioService
 from app.utils.speech_processor import SpeechProcessor
 from app.utils.text_utils import clean_transcription, correct_spelling
@@ -219,3 +221,98 @@ class TranscriptionService:
         self.full_transcript = ""
         self.transcript_segments = []
         logger.info("Transcription state reset")
+        
+    def transcribe_doctor_patient(self, audio_samples: np.ndarray, 
+                                diarization_results: Dict[str, Any],
+                                doctor_id: int = None) -> Dict[str, Any]:
+        """
+        Transcribe audio with doctor-patient diarization results
+        
+        Args:
+            audio_samples: Audio data as numpy array
+            diarization_results: Results from DiarizationService
+            doctor_id: User ID of the doctor (for adaptation)
+            
+        Returns:
+            Transcription results with doctor/patient labels
+        """
+        segments = diarization_results["segments"]
+        speaker_mapping = diarization_results["speaker_mapping"]
+        sample_rate = 16000  # Default sample rate
+        
+        # Store transcriptions by role
+        doctor_segments = []
+        patient_segments = []
+        
+        # Process each segment
+        for i, (start_sec, end_sec) in enumerate(segments):
+            # Get speaker role for this segment
+            role = speaker_mapping.get(i)
+            if not role:
+                continue
+                
+            # Extract segment audio
+            start_sample = int(start_sec * sample_rate)
+            end_sample = int(end_sec * sample_rate)
+            segment_audio = audio_samples[start_sample:end_sample]
+            
+            # Use adaptation for doctor segments if doctor_id is provided
+            use_adaptation = (role == "doctor" and doctor_id is not None)
+            
+            # Transcribe segment with or without adaptation
+            if use_adaptation:
+                transcription = self.speech_processor.transcribe_with_adaptation(
+                    segment_audio, doctor_id
+                )
+            else:
+                transcription = self.speech_processor.transcribe(segment_audio)
+            
+            # Store result in appropriate list
+            segment_data = {
+                "start": start_sec,
+                "end": end_sec,
+                "text": transcription
+            }
+            
+            if role == "doctor" or role == "speaker1":
+                doctor_segments.append(segment_data)
+            else:
+                patient_segments.append(segment_data)
+        
+        # Format results
+        return {
+            "doctor_segments": doctor_segments,
+            "patient_segments": patient_segments,
+            "full_transcript": self._format_doctor_patient_transcript(doctor_segments, patient_segments)
+        }
+        
+    def _format_doctor_patient_transcript(self, doctor_segments, patient_segments):
+        """Format the transcript with doctor/patient labels"""
+        # Combine all segments
+        all_segments = []
+        
+        for segment in doctor_segments:
+            all_segments.append({
+                "role": "Doctor",
+                "start": segment["start"],
+                "end": segment["end"],
+                "text": segment["text"]
+            })
+        
+        for segment in patient_segments:
+            all_segments.append({
+                "role": "Patient",
+                "start": segment["start"],
+                "end": segment["end"],
+                "text": segment["text"]
+            })
+        
+        # Sort by start time
+        all_segments.sort(key=lambda x: x["start"])
+        
+        # Format as readable transcript
+        lines = []
+        for segment in all_segments:
+            lines.append(f"[{segment['role']}] {segment['text']}")
+        
+        return "\n".join(lines)

@@ -1,4 +1,5 @@
 from fastapi import WebSocket, WebSocketDisconnect, Depends, status
+from fastapi.websockets import WebSocketState
 from sqlalchemy.orm import Session
 import logging
 import json
@@ -16,6 +17,8 @@ from app.services.nlp.keyword_extract_service import KeywordExtractService
 from app.services.note_service import NoteService
 from app.models.models import ReportTemplate, Section
 from app.schemas.section import SectionCreate
+from app.services.diarization_service import DiarizationService
+from app.models.models import ReportTemplate
 from app.utils.speech_processor import SpeechProcessor
 from app.api.v1.endpoints.calibration import calibration_service
 
@@ -123,7 +126,7 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_ses
                 speech_processor=speech_processor
             )
             keyword_service = KeywordExtractService()
-            
+            diarization_service = DiarizationService()
             # Store services for cleanup in case of unexpected disconnection
             active_connections[connection_id] = {
                 'websocket': ws,
@@ -135,8 +138,8 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_ses
             
             # Verify adaptation is possible
             if use_adaptation and adaptation_user_id is not None:
-                status = calibration_service.get_calibration_status(adaptation_user_id, db)
-                if not status.calibration_complete:
+                calibration_status = calibration_service.get_calibration_status(adaptation_user_id, db)
+                if not calibration_status.calibration_complete:
                     use_adaptation = False
                     await ws.send_text(json.dumps({
                         "warning": "No completed voice calibration found",
@@ -180,11 +183,11 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_ses
                                 
                 # Process audio chunk if present
                 if data and "data" in data:
-                    await handle_audio_data(
+                    await handle_audio_with_diarization(
                         ws, data, db,
                         connection_id, int(user_id), int(note_id),
-                        use_adaptation, adaptation_user_id,
-                        note_service, transcription_service, keyword_service, audio_service
+                        use_adaptation, adaptation_user_id, doctor_id=user_id,
+                        note_service=note_service, transcription_service=transcription_service, keyword_service=keyword_service, diarization_service=diarization_service
                     )
                 elif data and "ping" in data:
                     logger.info("Received ping from the websocket connection.")
@@ -203,7 +206,7 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_ses
         logger.info(f"WebSocket disconnected: user_id={user_id}, note_id={note_id}")
     except Exception as e:
         logger.error(f"WebSocket error: {str(e)}")
-        if websocket.client_state == WebSocket.application_state.CONNECTED:
+        if websocket.client_state == WebSocketState.CONNECTED:
             await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
     finally:
         # Clean up will be handled by the context manager
@@ -228,6 +231,349 @@ async def send_heartbeats(connection_id: str):
     except Exception as e:
         logger.error(f"Error in heartbeat for {connection_id}: {str(e)}")
 
+
+async def handle_audio_with_diarization(
+    websocket: WebSocket,
+    data: Dict[str, Any],
+    db: Session,
+    connection_id: str,
+    user_id: int,
+    note_id: int,
+    use_adaptation: bool,
+    adaptation_user_id: Optional[int],
+    doctor_id: Optional[int],
+    note_service: NoteService,
+    transcription_service: TranscriptionService,
+    keyword_service: KeywordExtractService,
+    diarization_service: DiarizationService
+) -> None:
+    """Handle incoming audio data with diarization"""
+    try:
+        # Extract audio data
+        audio_base64 = data["data"]
+        if not audio_base64:
+            logger.info("Received end of stream signal.")
+            return
+        
+        audio_bytes = base64.b64decode(audio_base64)
+        
+        # Check for updated settings in the message
+        message_use_adaptation = data.get("use_adaptation", use_adaptation)
+        message_user_id = data.get("user_id", adaptation_user_id)
+        message_doctor_id = data.get("doctor_id", doctor_id)
+        
+        # Update settings if changed
+        if message_use_adaptation != use_adaptation or message_user_id != adaptation_user_id:
+            use_adaptation = message_use_adaptation
+            adaptation_user_id = message_user_id
+            logger.info(f"Updated settings from message: use_adaptation={use_adaptation}, user_id={adaptation_user_id}")
+        
+        if message_doctor_id != doctor_id:
+            doctor_id = message_doctor_id
+            logger.info(f"Updated doctor_id from message: {doctor_id}")
+        
+        # Process the audio with diarization
+        await process_audio_with_diarization(
+            audio_bytes,
+            user_id,
+            note_id,
+            websocket,
+            note_service,
+            transcription_service,
+            keyword_service,
+            diarization_service,
+            use_adaptation,
+            adaptation_user_id,
+            doctor_id,
+            db
+        )
+    except Exception as e:
+        logger.error(f"Error processing audio chunk with diarization: {str(e)}")
+        await websocket.send_text(json.dumps({
+            "error": f"Error processing audio: {str(e)}"
+        }))
+
+async def process_audio_with_diarization(
+    chunk_bytes: bytes, 
+    user_id: int, 
+    note_id: int, 
+    websocket: WebSocket, 
+    note_service: NoteService,
+    transcription_service: TranscriptionService,
+    keyword_service: KeywordExtractService,
+    diarization_service: DiarizationService,
+    use_adaptation: bool = False,
+    adaptation_user_id: Optional[int] = None,
+    doctor_id: Optional[int] = None,
+    db: Session = None
+) -> None:
+    """
+    Process an audio chunk with diarization
+    
+    Args:
+        chunk_bytes: Raw audio bytes
+        user_id: User ID for the session
+        note_id: Note ID for the session
+        websocket: WebSocket connection
+        note_service: Note service instance
+        transcription_service: Transcription service instance
+        keyword_service: Keyword extraction service instance
+        diarization_service: Diarization service instance
+        use_adaptation: Whether to use voice adaptation
+        adaptation_user_id: User ID for adaptation profile
+        doctor_id: User ID of the doctor for diarization
+        db: Database session
+    """
+    try:
+        audio_service = transcription_service.audio_service
+        
+        # Check buffer size before adding
+        current_size = len(audio_service.current_buffer) + len(audio_service.session_buffer)
+        if current_size + len(chunk_bytes) > MAX_BUFFER_SIZE:
+            # Buffer too large, send warning and clear oldest data
+            await websocket.send_text(json.dumps({
+                "warning": "Audio buffer too large, clearing oldest data"
+            }))
+            # Clear oldest 25% of the session buffer to make room
+            trim_size = len(audio_service.session_buffer) // 4
+            audio_service.session_buffer = audio_service.session_buffer[trim_size:]
+        
+        # Add to audio service
+        audio_service.add_chunk(chunk_bytes)
+        
+        # Check for minimum audio duration - we need more data for diarization
+        min_duration_ms = 2000  # Use 2 seconds minimum for diarization
+        if not audio_service.has_minimum_audio(min_duration_ms=min_duration_ms):
+            return  # Not enough audio yet
+        
+        # Check for silence (indicating end of utterance)
+        if not audio_service.detect_silence():
+            return  # No silence detected yet
+            
+        logger.info(f"Processing audio with diarization for user {user_id}, note {note_id}, doctor_id={doctor_id}")
+        
+        # Get audio data
+        audio_samples = audio_service.get_wave_data()
+        sample_rate = 16000  # Default sample rate
+        
+        # Perform diarization
+        diarization_start = time.time()
+        diarization_results = diarization_service.process_audio(
+            audio_samples, sample_rate, doctor_id
+        )
+        diarization_time = time.time() - diarization_start
+        # Check if diarization was successful
+        if not diarization_results or not diarization_results.get("segments"):
+            logger.warning("Diarization produced no segments")
+            # Fall back to regular processing
+            await process_audio_chunk(
+                chunk_bytes, user_id, note_id, websocket,
+                note_service, transcription_service, keyword_service,
+                use_adaptation, adaptation_user_id, db
+            )
+            return
+        
+        # Process each segment with appropriate transcription
+        segments = diarization_results.get("segments", [])
+        speaker_mapping = diarization_results.get("speaker_mapping", {})
+        
+        logger.info(f"Diarization found {len(segments)} segments with {len(speaker_mapping)} speakers")
+        
+        # Store segments by speaker role
+        doctor_segments = []
+        patient_segments = []
+        
+        # Process each segment
+        transcription_start = time.time()
+        for i, (start_sec, end_sec) in enumerate(segments):
+            # Get speaker role for this segment
+            role = speaker_mapping.get(i)
+            if not role:
+                continue
+                
+            # Extract segment audio
+            start_sample = int(start_sec * sample_rate)
+            end_sample = int(end_sec * sample_rate)
+            if start_sample >= len(audio_samples) or end_sample > len(audio_samples):
+                logger.warning(f"Segment {i} out of range: [{start_sec}-{end_sec}], samples: {len(audio_samples)}")
+                continue
+                
+            segment_audio = audio_samples[start_sample:end_sample]
+            
+            # Skip very short segments
+            if len(segment_audio) < 0.5 * sample_rate:  # Less than 0.5 seconds
+                logger.info(f"Skipping short segment {i}: {len(segment_audio)/sample_rate:.2f}s")
+                continue
+            
+            # Use adaptation for doctor segments if doctor_id is provided
+            use_segment_adaptation = False
+            segment_user_id = None
+            
+            if (role == "doctor" or role == "speaker1") and doctor_id is not None:
+                use_segment_adaptation = True
+                segment_user_id = doctor_id
+            elif use_adaptation and adaptation_user_id is not None:
+                use_segment_adaptation = True
+                segment_user_id = adaptation_user_id
+            
+            # Transcribe segment
+            try:
+                if use_segment_adaptation and segment_user_id is not None:
+                    segment_text = speech_processor.transcribe_with_adaptation(
+                        segment_audio, segment_user_id, db
+                    )
+                else:
+                    segment_text = speech_processor.transcribe(segment_audio)
+                    
+                # Skip empty transcriptions
+                if not segment_text:
+                    continue
+                    
+                # Store segment based on speaker role
+                segment_data = {
+                    "start": start_sec,
+                    "end": end_sec,
+                    "text": segment_text,
+                    "is_doctor": (role == "doctor" or role == "speaker1")
+                }
+                
+                await websocket.send_text(json.dumps({
+                    'text': segment_text,
+                    'using_adaptation': use_adaptation,
+                }))
+                
+                
+                if segment_data["is_doctor"]:
+                    doctor_segments.append(segment_data)
+                else:
+                    patient_segments.append(segment_data)
+                    
+            except Exception as trans_error:
+                logger.error(f"Error transcribing segment {i}: {str(trans_error)}")
+                continue
+        
+        transcription_time = time.time() - transcription_start
+        total_time = diarization_time + transcription_time
+        
+        # Generate transcript with speaker labels
+        full_transcript = format_diarized_transcript(doctor_segments, patient_segments)
+        
+        # Create sections from doctor's speech
+        doctor_text = " ".join([seg["text"] for seg in doctor_segments])
+        
+        # Process doctor's text through NLP pipeline if it's not empty
+        sections_json = []
+        if doctor_text:
+            try:
+                # Process text through transcription service to update its state
+                transcription_service.full_transcript = doctor_text
+                transcription_service.transcript_segments = [seg["text"] for seg in doctor_segments]
+                
+                # Extract keywords
+                keywords = transcription_service.extract_keywords()
+                
+                # Process keywords
+                keyword_service.process_and_buffer_keywords(keywords)
+                keyword_service.merge_keywords()
+                
+                # Create sections
+                sections = keyword_service.create_sections(user_id, note_id)
+                
+                # Add sections to note
+                for section in sections:
+                    # Validate section data before saving
+                    if not section.content:
+                        logger.warning(f"Skipping empty section for note {note_id}")
+                        continue
+                        
+                    # Save section to database
+                    db_section = note_service.add_section_to_note(note_id, section)
+                    if db_section:
+                        # Convert to JSON for websocket response
+                        sections_json.append({
+                            'id': db_section.id,
+                            'title': db_section.title,
+                            'content': db_section.content,
+                            'section_type': db_section.section_type,
+                            'section_description': db_section.section_description
+                        })
+                
+                logger.info(f"Created {len(sections_json)} sections from doctor's speech")
+            except Exception as nlp_error:
+                logger.error(f"Error extracting sections from doctor's speech: {str(nlp_error)}")
+        
+        # Reset buffer for next segment
+        audio_service.reset_current_buffer()
+        
+        # Send diarization results to client
+        await websocket.send_text(json.dumps({
+            'diarization': True,
+            'transcript': full_transcript,
+            'doctor_segments': doctor_segments,
+            'patient_segments': patient_segments,
+            'processing_time_ms': round(total_time * 1000, 2),
+            'diarization_time_ms': round(diarization_time * 1000, 2),
+            'transcription_time_ms': round(transcription_time * 1000, 2),
+            'doctor_speaking_time': sum(seg["end"] - seg["start"] for seg in doctor_segments),
+            'patient_speaking_time': sum(seg["end"] - seg["start"] for seg in patient_segments)
+        }))
+        
+        # Send sections to client
+        if sections_json:
+            await websocket.send_text(json.dumps({
+                'sections': sections_json
+            }))
+        
+        logger.info(f"Processed audio with diarization: doctor_segments={len(doctor_segments)}, " + 
+                    f"patient_segments={len(patient_segments)}, sections={len(sections_json)}")
+    
+    except Exception as e:
+        logger.error(f"Error processing audio with diarization: {str(e)}")
+        # Always send as a JSON string
+        await websocket.send_text(json.dumps({
+            "error": f"Error processing audio: {str(e)}"
+        }))
+
+def format_diarized_transcript(doctor_segments, patient_segments):
+    """
+    Format the transcript with speaker labels
+    
+    Args:
+        doctor_segments: List of doctor segment dictionaries
+        patient_segments: List of patient segment dictionaries
+        
+    Returns:
+        Formatted transcript string
+    """
+    # Combine all segments
+    all_segments = []
+    
+    for segment in doctor_segments:
+        all_segments.append({
+            "role": "Doctor",
+            "start": segment["start"],
+            "end": segment["end"],
+            "text": segment["text"]
+        })
+    
+    for segment in patient_segments:
+        all_segments.append({
+            "role": "Patient",
+            "start": segment["start"],
+            "end": segment["end"],
+            "text": segment["text"]
+        })
+    
+    # Sort by start time
+    all_segments.sort(key=lambda x: x["start"])
+    
+    # Format as readable transcript
+    lines = []
+    for segment in all_segments:
+        lines.append(f"[{segment['role']}] {segment['text']}")
+    
+    return "\n".join(lines)
+
 async def handle_config_update(
     websocket: WebSocket,
     config: Dict[str, Any],
@@ -245,8 +591,8 @@ async def handle_config_update(
         
         # Verify adaptation is possible
         if new_use_adaptation and new_adaptation_user_id is not None:
-            status = calibration_service.get_calibration_status(new_adaptation_user_id, db)
-            if not status.calibration_complete:
+            calibration_status = calibration_service.get_calibration_status(new_adaptation_user_id, db)
+            if not calibration_status.calibration_complete:
                 new_use_adaptation = False
                 await websocket.send_text(json.dumps({
                     "warning": "No completed voice calibration found",
@@ -257,7 +603,7 @@ async def handle_config_update(
                 await websocket.send_text(json.dumps({
                     "info": "Using voice calibration",
                     "adaptation_enabled": True,
-                    "profile_id": status.profile_id
+                    "profile_id": calibration_status.profile_id
                 }))
         
         return new_use_adaptation, new_adaptation_user_id
