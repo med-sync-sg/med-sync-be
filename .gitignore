@@ -11,5 +11,6 @@ alembic.ini
 audio.rttm
 
 /tests/test_results
+/tests/transcription/results
 
 /test_client_results

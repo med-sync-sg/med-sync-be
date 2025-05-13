@@ -20,6 +20,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'
 from app.services.transcription_service import TranscriptionService
 from app.services.audio_service import AudioService
 from app.utils.speech_processor import SpeechProcessor
+from app.services.diarization_service import DiarizationService
 
 # Configure logging
 logging.basicConfig(
@@ -305,7 +306,8 @@ def find_matching_files() -> List[Tuple[str, str]]:
 
 def process_file_pair(calculator: WERCalculator, audio_path: str, 
                      transcript_path: str, use_adaptation: bool = False, 
-                     user_id: Optional[int] = None) -> Dict[str, Any]:
+                     user_id: Optional[int] = None, use_diarization: bool = False,
+                     doctor_id: Optional[int] = None) -> Dict[str, Any]:
     """
     Process a single audio-transcript pair
     
@@ -315,6 +317,8 @@ def process_file_pair(calculator: WERCalculator, audio_path: str,
         transcript_path: Path to transcript file
         use_adaptation: Whether to use speaker adaptation
         user_id: User ID for adaptation
+        use_diarization: Whether to use speaker diarization
+        doctor_id: User ID of the doctor for diarization
         
     Returns:
         Results dictionary
@@ -332,20 +336,31 @@ def process_file_pair(calculator: WERCalculator, audio_path: str,
                 "success": False
             }
         
-        # Run comparison
-        start_time = time.time()
-        results = calculator.compare_transcriptions(
-            audio_path=audio_path,
-            reference=reference,
-            use_adaptation=use_adaptation,
-            user_id=user_id
-        )
-        processing_time = time.time() - start_time
+        # Process with or without diarization
+        if use_diarization:
+            results = process_with_diarization(
+                audio_path=audio_path,
+                reference=reference,
+                use_adaptation=use_adaptation,
+                user_id=user_id,
+                doctor_id=doctor_id
+            )
+        else:
+            # Run comparison without diarization
+            start_time = time.time()
+            results = calculator.compare_transcriptions(
+                audio_path=audio_path,
+                reference=reference,
+                use_adaptation=use_adaptation,
+                user_id=user_id
+            )
+            processing_time = time.time() - start_time
+            results["processing_time"] = processing_time
         
         # Add additional info to results
         results["transcript_file"] = transcript_path
-        results["processing_time"] = processing_time
         results["success"] = "error" not in results
+        results["diarization_used"] = use_diarization
         
         return results
         
@@ -356,8 +371,145 @@ def process_file_pair(calculator: WERCalculator, audio_path: str,
             "audio_file": audio_path,
             "transcript_file": transcript_path,
             "wer": 1.0,
+            "success": False,
+            "diarization_used": use_diarization
+        }
+
+def process_with_diarization(audio_path: str, reference: str, use_adaptation: bool = False,
+                            user_id: Optional[int] = None, doctor_id: Optional[int] = None) -> Dict[str, Any]:
+    """
+    Process audio with diarization to separate speakers
+    
+    Args:
+        audio_path: Path to audio file
+        reference: Reference transcript
+        use_adaptation: Whether to use speaker adaptation
+        user_id: User ID for adaptation
+        doctor_id: User ID of the doctor for diarization
+        
+    Returns:
+        Results dictionary with diarization metrics
+    """
+    try:
+        # Initialize services
+        diarization_service = DiarizationService()
+        transcription_service = TranscriptionService()
+        calculator = WERCalculator()
+        
+        # Load audio data
+        audio_data = calculator.load_audio(audio_path)
+        
+        # Get audio parameters
+        sample_rate = 16000  # Default sample rate
+        
+        # Timing for diarization
+        diarization_start = time.time()
+        
+        # Perform diarization
+        diarization_results = diarization_service.process_audio(
+            audio_data, sample_rate, doctor_id
+        )
+        
+        diarization_time = time.time() - diarization_start
+        
+        # Check if diarization was successful
+        if not diarization_results or not diarization_results.get("segments"):
+            logger.warning(f"Diarization failed for {audio_path}")
+            return {
+                "error": "Diarization failed",
+                "audio_file": audio_path,
+                "wer": 1.0,
+                "success": False
+            }
+        
+        # Transcription timing
+        transcription_start = time.time()
+        
+        # Transcribe with diarization results
+        transcription_result = transcription_service.transcribe_doctor_patient(
+            audio_data, diarization_results, doctor_id if use_adaptation else None
+        )
+        
+        transcription_time = time.time() - transcription_start
+        total_time = diarization_time + transcription_time
+        
+        # Calculate WER for the combined transcript
+        combined_transcript = transcription_result.get("full_transcript", "")
+        if not combined_transcript:
+            logger.warning(f"Empty transcript from diarization for {audio_path}")
+            return {
+                "error": "Empty transcript from diarization",
+                "audio_file": audio_path,
+                "wer": 1.0,
+                "success": False
+            }
+        
+        # For WER calculation, strip speaker labels
+        cleaned_transcript = clean_transcript_for_wer(combined_transcript)
+        
+        # Calculate WER
+        wer_results = calculator.calculate_wer(reference, cleaned_transcript)
+        
+        # Combine results
+        results = {
+            "audio_file": audio_path,
+            "audio_duration": len(audio_data) / sample_rate,
+            "wer": wer_results["wer"],
+            "cer": wer_results["cer"],
+            "substitutions": wer_results["substitutions"],
+            "deletions": wer_results["deletions"],
+            "insertions": wer_results["insertions"],
+            "hits": wer_results["hits"],
+            "reference_length": wer_results["reference_length"],
+            "hypothesis_length": wer_results["hypothesis_length"],
+            "processing_time": total_time,
+            "diarization_time": diarization_time,
+            "transcription_time": transcription_time,
+            "diarization_stats": {
+                "segments": len(diarization_results.get("segments", [])),
+                "doctor_segments": len(transcription_result.get("doctor_segments", [])),
+                "patient_segments": len(transcription_result.get("patient_segments", [])),
+                "doctor_speaking_time": sum(seg["end"] - seg["start"] for seg in transcription_result.get("doctor_segments", [])),
+                "patient_speaking_time": sum(seg["end"] - seg["start"] for seg in transcription_result.get("patient_segments", []))
+            },
+            "hypothesis": cleaned_transcript,
+            "reference": reference,
+            "raw_transcript": combined_transcript
+        }
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Error in diarization processing: {str(e)}")
+        return {
+            "error": str(e),
+            "audio_file": audio_path,
+            "wer": 1.0,
             "success": False
         }
+
+def clean_transcript_for_wer(transcript: str) -> str:
+    """
+    Clean diarized transcript for WER calculation
+    
+    Args:
+        transcript: Transcript with speaker labels
+        
+    Returns:
+        Cleaned transcript for WER calculation
+    """
+    import re
+    
+    # Remove speaker labels like [Doctor] or [Patient]
+    cleaned = re.sub(r'\[\w+\]', '', transcript)
+    
+    # Remove timestamps if present
+    cleaned = re.sub(r'\[\d+:\d+\]', '', cleaned)
+    
+    # Fix spacing
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    
+    return cleaned.strip()
 
 def generate_summary_report(results: List[Dict[str, Any]], output_dir: str) -> Dict[str, Any]:
     """
@@ -404,6 +556,22 @@ def generate_summary_report(results: List[Dict[str, Any]], output_dir: str) -> D
         else:
             summary["overall_accuracy"] = 0
         
+        # Add diarization metrics if any results used diarization
+        diarization_results = [r for r in successful_results if r.get("diarization_used", False)]
+        if diarization_results:
+            summary["diarization"] = {
+                "files_with_diarization": len(diarization_results),
+                "average_diarization_time": sum(r.get("diarization_time", 0) for r in diarization_results) / len(diarization_results),
+                "average_doctor_segments": sum(r.get("diarization_stats", {}).get("doctor_segments", 0) for r in diarization_results) / len(diarization_results),
+                "average_patient_segments": sum(r.get("diarization_stats", {}).get("patient_segments", 0) for r in diarization_results) / len(diarization_results),
+                "average_doctor_speaking_ratio": sum(
+                    r.get("diarization_stats", {}).get("doctor_speaking_time", 0) / 
+                    (r.get("diarization_stats", {}).get("doctor_speaking_time", 0) + 
+                     r.get("diarization_stats", {}).get("patient_speaking_time", 0.001)) 
+                    for r in diarization_results
+                ) / len(diarization_results)
+            }
+        
         # Save summary to JSON
         summary_path = os.path.join(output_dir, "summary.json")
         with open(summary_path, 'w', encoding='utf-8') as f:
@@ -421,7 +589,10 @@ def generate_summary_report(results: List[Dict[str, Any]], output_dir: str) -> D
                 "insertions": r.get("insertions", 0),
                 "correct_words": r.get("hits", 0),
                 "reference_length": r.get("reference_length", 0),
-                "duration": r.get("audio_duration", 0)
+                "duration": r.get("audio_duration", 0),
+                "diarization_used": r.get("diarization_used", False),
+                "doctor_segments": r.get("diarization_stats", {}).get("doctor_segments", 0) if r.get("diarization_used", False) else 0,
+                "patient_segments": r.get("diarization_stats", {}).get("patient_segments", 0) if r.get("diarization_used", False) else 0
             }
             for r in successful_results
         ])
@@ -464,6 +635,74 @@ def generate_summary_report(results: List[Dict[str, Any]], output_dir: str) -> D
         plt.savefig(chart_path)
         logger.info(f"Visualization saved to {chart_path}")
         
+        # If diarization was used, generate diarization visualization
+        if diarization_results:
+            plt.figure(figsize=(14, 8))
+            
+            # Filter only diarization results
+            diar_df = results_df[results_df["diarization_used"]]
+            
+            # Plot doctor vs patient segments
+            plt.subplot(1, 2, 1)
+            diar_df_sample = diar_df.head(min(10, len(diar_df)))  # Take up to 10 files
+            
+            # Create doctor/patient segment counts
+            x = np.arange(len(diar_df_sample))
+            width = 0.35
+            
+            # Plot doctor and patient segments side by side
+            plt.bar(x - width/2, diar_df_sample["doctor_segments"], width, label='Doctor Segments')
+            plt.bar(x + width/2, diar_df_sample["patient_segments"], width, label='Patient Segments')
+            
+            plt.xlabel('Audio Files')
+            plt.ylabel('Number of Segments')
+            plt.title('Speaker Diarization - Segment Counts')
+            plt.xticks(x, diar_df_sample["file"], rotation=45, ha='right')
+            plt.legend()
+            
+            # Plot speaking time ratio
+            plt.subplot(1, 2, 2)
+            
+            # Get doctor speaking time ratio for each file
+            doctor_ratios = []
+            patient_ratios = []
+            files = []
+            
+            for _, r in diar_df_sample.iterrows():
+                file = r["file"]
+                idx = next((i for i, res in enumerate(diarization_results) if os.path.basename(res.get("audio_file", "")) == file), None)
+                
+                if idx is not None:
+                    result = diarization_results[idx]
+                    doctor_time = result.get("diarization_stats", {}).get("doctor_speaking_time", 0)
+                    patient_time = result.get("diarization_stats", {}).get("patient_speaking_time", 0)
+                    total_time = doctor_time + patient_time
+                    
+                    if total_time > 0:
+                        doctor_ratio = doctor_time / total_time
+                        patient_ratio = patient_time / total_time
+                        
+                        doctor_ratios.append(doctor_ratio)
+                        patient_ratios.append(patient_ratio)
+                        files.append(file)
+            
+            # Create stacked bar chart
+            fig, ax = plt.subplots(figsize=(10, 6))
+            
+            ax.bar(files, doctor_ratios, label='Doctor')
+            ax.bar(files, patient_ratios, bottom=doctor_ratios, label='Patient')
+            
+            ax.set_ylabel('Speaking Time Ratio')
+            ax.set_title('Doctor vs Patient Speaking Time')
+            ax.set_ylim(0, 1.0)
+            plt.xticks(rotation=45, ha='right')
+            ax.legend()
+            
+            # Save diarization figure
+            diar_chart_path = os.path.join(output_dir, "diarization_stats.png")
+            plt.savefig(diar_chart_path)
+            logger.info(f"Diarization visualization saved to {diar_chart_path}")
+        
         return summary
         
     except Exception as e:
@@ -475,9 +714,12 @@ def main():
     parser = argparse.ArgumentParser(description="Test transcription accuracy across multiple files")
     parser.add_argument('--adaptation', action='store_true', help='Use speaker adaptation')
     parser.add_argument('--user_id', type=int, help='User ID for adaptation')
+    parser.add_argument('--diarization', default=True, action='store_true', help='Use speaker diarization')
+    parser.add_argument('--doctor_id', type=int, help='User ID of the doctor for diarization')
     parser.add_argument('--output_dir', default=RESULTS_DIRECTORY, help='Directory for test results')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose output')
     parser.add_argument('--limit', type=int, help='Limit the number of files to process')
+    parser.add_argument('--save_transcripts', default=True, action='store_true', help='Save raw transcripts to output directory')
     
     args = parser.parse_args()
     
@@ -510,7 +752,9 @@ def main():
             audio_path=audio_path,
             transcript_path=transcript_path,
             use_adaptation=args.adaptation,
-            user_id=args.user_id
+            user_id=args.user_id,
+            use_diarization=args.diarization,
+            doctor_id=args.doctor_id
         )
         
         all_results.append(result)
@@ -519,10 +763,24 @@ def main():
         if result.get("success", False):
             logger.info(f"WER: {result['wer']:.4f}, CER: {result['cer']:.4f}, " +
                        f"Correct words: {result['hits']}/{result['reference_length']}")
+            
+            # Save raw transcripts if requested
+            if args.save_transcripts and "raw_transcript" in result:
+                try:
+                    os.makedirs(os.path.join(args.output_dir, "transcripts"), exist_ok=True)
+                    transcript_filename = os.path.basename(audio_path).replace(".wav", "_transcript.txt")
+                    transcript_path = os.path.join(args.output_dir, "transcripts", transcript_filename)
+                    
+                    with open(transcript_path, 'w', encoding='utf-8') as f:
+                        f.write(result["raw_transcript"])
+                        
+                    logger.info(f"Saved raw transcript to {transcript_path}")
+                except Exception as e:
+                    logger.error(f"Error saving transcript: {str(e)}")
         else:
             logger.error(f"Failed: {result.get('error', 'Unknown error')}")
         break
-
+    
     # Generate summary report
     summary = generate_summary_report(all_results, args.output_dir)
     
@@ -538,6 +796,16 @@ def main():
         logger.info(f"Worst WER: {summary['worst_wer']:.4f}")
         logger.info(f"Total audio duration: {summary['total_audio_duration']:.2f} seconds")
         logger.info(f"Total processing time: {summary['total_processing_time']:.2f} seconds")
+        
+        # Print diarization summary if available
+        if "diarization" in summary:
+            logger.info("-" * 30)
+            logger.info("DIARIZATION SUMMARY:")
+            logger.info(f"Files with diarization: {summary['diarization']['files_with_diarization']}")
+            logger.info(f"Avg. doctor segments per file: {summary['diarization']['average_doctor_segments']:.1f}")
+            logger.info(f"Avg. patient segments per file: {summary['diarization']['average_patient_segments']:.1f}")
+            logger.info(f"Doctor speaking ratio: {summary['diarization']['average_doctor_speaking_ratio']*100:.1f}%")
+            
         logger.info("=" * 50)
         logger.info(f"Detailed results saved to: {args.output_dir}")
     else:

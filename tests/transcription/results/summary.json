@@ -3,13 +3,20 @@
   "successful_files": 1,
   "failed_files": 0,
   "total_audio_duration": 457.92,
-  "total_processing_time": 184.31889605522156,
-  "average_wer": 0.7759526938239159,
-  "average_cer": 0.4454741652913546,
-  "best_wer": 0.7759526938239159,
-  "worst_wer": 0.7759526938239159,
+  "total_processing_time": 29.22988486289978,
+  "average_wer": 0.6668856767411301,
+  "average_cer": 0.4369683889805764,
+  "best_wer": 0.6668856767411301,
+  "worst_wer": 0.6668856767411301,
   "total_words": 1522,
-  "total_correct_words": 379,
-  "timestamp": "2025-05-13 12:56:20",
-  "overall_accuracy": 24.90144546649146
+  "total_correct_words": 577,
+  "timestamp": "2025-05-13 13:14:18",
+  "overall_accuracy": 37.910643889618925,
+  "diarization": {
+    "files_with_diarization": 1,
+    "average_diarization_time": 21.322405338287354,
+    "average_doctor_segments": 99.0,
+    "average_patient_segments": 73.0,
+    "average_doctor_speaking_ratio": 0.5796769294491232
+  }
 }
