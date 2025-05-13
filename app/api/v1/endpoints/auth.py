@@ -88,7 +88,8 @@ def signin(form_data: Annotated[OAuth2PasswordRequestForm, Depends()], db: Sessi
     
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=access_token_expires
+        data={"sub": str(user.id)},  # Store user ID as string instead of username
+        expires_delta=access_token_expires
     )
     
     return {"user_id": user.id, "access_token": access_token, "token_type": "bearer"}

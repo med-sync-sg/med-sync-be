@@ -513,12 +513,12 @@ class TestClient:
         """Run all tests"""
         try:
             # Test database service
-            # self.test_db_connection()
-            # self.test_umls_data()
+            self.test_db_connection()
+            self.test_umls_data()
             
             # Test main application
-            # self.authenticate()
-            # self.create_test_note()
+            self.authenticate()
+            self.create_test_note()
             
             # Test WebSocket (needs to run in an async context)
             asyncio.run(self.test_websocket())
@@ -611,12 +611,6 @@ class TestClient:
         
         try:
             # Create a test user if needed
-            credentials = {
-                "username": "test_user",
-                "password": "test_password"
-            }
-            
-            # Try to sign up first (this might fail if user exists, which is OK)
             try:
                 signup_data = {
                     "username": "test_user",
@@ -624,37 +618,41 @@ class TestClient:
                     "first_name": "Test",
                     "last_name": "User",
                     "email": "test@example.com",
-                    "age": 30,
-                    "notes": []
+                    "age": 30
                 }
-                requests.post(f"{self.app_url}/auth/signup", json=signup_data)
-            except:
-                logger.info("User may already exist, proceeding to login")
+                signup_response = requests.post(f"{self.app_url}/auth/signup", json=signup_data)
+                if signup_response.status_code == 201:
+                    logger.info("Test user created successfully")
+                else:
+                    logger.info(f"User may already exist (status code: {signup_response.status_code}), proceeding to login")
+            except Exception as e:
+                logger.info(f"Error during signup (likely user already exists): {str(e)}")
             
-            # Login
-            response = requests.post(f"{self.app_url}/auth/signin", json=credentials)
+            # Login with form data to match OAuth2PasswordRequestForm expectations
+            form_data = {
+                "username": "test_user",
+                "password": "test_password"
+            }
+            
+            response = requests.post(f"{self.app_url}/auth/signin", data=form_data)
             if response.status_code != 200:
-                raise Exception(f"Authentication failed: {response.status_code}")
+                raise Exception(f"Authentication failed: {response.status_code} - {response.text}")
             
+            # Parse the response
             auth_data = response.json()
             self.token = auth_data.get("access_token")
             if not self.token:
                 raise Exception("No token received after authentication")
-            
-            # Get user ID
-            headers = {"Authorization": f"Bearer {self.token}"}
-            response = requests.get(f"{self.app_url}/users/", headers=headers)
-            if response.status_code != 200:
-                raise Exception(f"Failed to get user info: {response.status_code}")
-            
-            users = response.json()
-            if users and len(users) > 0:
-                self.user_id = users[0].get("id")
-                logger.info(f"Authentication successful! User ID: {self.user_id}")
-            else:
-                raise Exception("No user found after authentication")
+                
+            # Get user ID directly from the response
+            self.user_id = auth_data.get("user_id")
+            if not self.user_id:
+                raise Exception("No user ID received in authentication response")
+                
+            logger.info(f"Authentication successful! User ID: {self.user_id}, Token: {self.token[:10]}...")
             
         except requests.RequestException as e:
+            logger.error(f"Authentication error: {str(e)}")
             raise Exception(f"Authentication error: {str(e)}")
     
     def create_test_note(self):
@@ -672,10 +670,10 @@ class TestClient:
                 "title": f"Test Note {int(time.time())}",
                 "user_id": self.user_id,
                 "patient_id": 12345,
-                "encounter_date": "2023-04-03",
+                "encounter_date": datetime.datetime.now().isoformat(),
                 "sections": []
             }
-            response = requests.post(f"{self.app_url}/notes/create", json=note_data, headers=headers)
+            response = requests.post(f"{self.app_url}/notes", json=note_data, headers=headers)
 
             if response.status_code != 201:
                 raise Exception(f"Failed to create note: {response.status_code}")
