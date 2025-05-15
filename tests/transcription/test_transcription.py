@@ -393,9 +393,10 @@ def process_with_diarization(audio_path: str, reference: str, use_adaptation: bo
     try:
         # Initialize services
         diarization_service = DiarizationService()
-        transcription_service = TranscriptionService()
         calculator = WERCalculator()
         
+        transcription_service = TranscriptionService(speech_processor=calculator.speech_processor)
+
         # Load audio data
         audio_data = calculator.load_audio(audio_path)
         
@@ -712,7 +713,7 @@ def generate_summary_report(results: List[Dict[str, Any]], output_dir: str) -> D
 def main():
     """Main function for command-line execution"""
     parser = argparse.ArgumentParser(description="Test transcription accuracy across multiple files")
-    parser.add_argument('--adaptation', action='store_true', help='Use speaker adaptation')
+    parser.add_argument('--adaptation', default=False, action='store_true', help='Use speaker adaptation')
     parser.add_argument('--user_id', type=int, help='User ID for adaptation')
     parser.add_argument('--diarization', default=True, action='store_true', help='Use speaker diarization')
     parser.add_argument('--doctor_id', type=int, help='User ID of the doctor for diarization')
@@ -779,7 +780,7 @@ def main():
                     logger.error(f"Error saving transcript: {str(e)}")
         else:
             logger.error(f"Failed: {result.get('error', 'Unknown error')}")
-        break
+        # break
     
     # Generate summary report
     summary = generate_summary_report(all_results, args.output_dir)

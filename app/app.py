@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 import logging
 import json
 
-from app.api.v1.endpoints import auth, notes, section_templates, users, reports, tests, calibration, umls, report_templates, report_instances
+from app.api.v1.endpoints import auth, notes, section_templates, users, reports, calibration, umls, report_templates, report_instances # , tests
 from app.utils.websocket_handler import websocket_endpoint
 from app.db.neo4j_session import neo4j_session
 from contextlib import asynccontextmanager
@@ -42,7 +42,7 @@ def create_app() -> FastAPI:
     app.include_router(notes.router, prefix="/notes", tags=["note"])
     app.include_router(users.router, prefix="/users", tags=["user"])
     app.include_router(reports.router, prefix="/reports", tags=["report"])
-    app.include_router(tests.router, prefix="/tests", tags=["test"])
+    # app.include_router(tests.router, prefix="/tests", tags=["test"])
     app.include_router(calibration.router, prefix="/calibration", tags=["calibration"])
 
     # Register report template endpoints

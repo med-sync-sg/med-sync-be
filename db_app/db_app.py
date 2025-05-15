@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, Response
 from db_app.session import DataStore, DRUGS_AND_MEDICINES_TUI, PATIENT_INFORMATION_TUI, SYMPTOMS_AND_DISEASES_TUI
 from db_app.neo4j.neo4j import Neo4jInitializer
 
@@ -119,19 +119,6 @@ def get_status():
         
         # Get database schema info
         table_status = {}
-        for table in ["TextCategories", "TextCategoryEmbeddings", "ContentDictionaryJson"]:
-            try:
-                count = data_store.get_row_count(table)
-                table_status[table] = {
-                    "exists": True,
-                    "row_count": count
-                }
-            except Exception:
-                table_status[table] = {
-                    "exists": False,
-                    "row_count": 0
-                }
-        
         # Return status info
         return {
             "status": "ready",
@@ -187,7 +174,7 @@ def get_symptoms_and_diseases():
             
         # Serialize and return
         buffer = serialize_dataframe_to_feather(symptoms_df)
-        return StreamingResponse(buffer, media_type="application/octet-stream")
+        return StreamingResponse(buffer)
     
     except Exception as e:
         logger.error(f"Error processing symptoms request: {str(e)}")

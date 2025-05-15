@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session
 from app.db.local_session import DatabaseManager
 from app.models.models import SpeakerProfile
 from app.utils.voice_adaptation_utils import AdaptationTransformer, preprocess_audio_for_speaker, get_base_model_stats
+from app.utils.text_utils import extract_medical_terms, sym_spell, clean_transcription
+from app.db.data_loader import umls_df_dict
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -50,12 +52,14 @@ class SpeechProcessor:
             self.model = Wav2Vec2ForCTC.from_pretrained(model_id)
             
             # Set device (CUDA if available and requested, otherwise CPU)
-            self.device = torch.device("cuda" if torch.cuda.is_available() and use_gpu else "cpu")
-            self.model.to(self.device)
-            logger.info(f"Model loaded on {self.device}")
+            # self.device = torch.device("cuda" if torch.cuda.is_available() and use_gpu else "cpu")
+            # self.model.to(self.device)
+            # logger.info(f"Model loaded on {self.device}")
+            
+            # self.initialize_medical_dictionary()
             
             # Initialize the decoder
-            self._initialize_decoder(language_model_path)
+            self.decoder = self._create_decoder()            
             
             # Database connection and adaptation cache
             self.db_manager = DatabaseManager()
@@ -68,44 +72,191 @@ class SpeechProcessor:
             logger.error(f"Error initializing SpeechProcessor: {str(e)}")
             raise RuntimeError(f"Failed to initialize speech processor: {str(e)}")
     
-    def _initialize_decoder(self, language_model_path: Optional[str] = None):
+    
+    def _load_unigrams(self, unigrams_file, top_n=10000, min_score=-10.0):
         """
-        Initialize the CTC decoder with optional language model
+        Load unigrams from file and prepare them for decoder
         
         Args:
-            language_model_path: Optional path to KenLM language model binary
+            unigrams_file: Path to the unigrams.txt file
+            top_n: Limit to the top N words by probability
+            min_score: Minimum log probability to include
+            
+        Returns:
+            Tuple of (unigram list with scores, hotword list for boosting)
         """
+        print(f"Loading unigrams from {unigrams_file}")
+        
+        unigram_list = []  # List of (word, score) tuples
+        hotwords = []      # List of domain-specific words for boosting
+        
         try:
-            # Get vocabulary from the processor
-            vocab_dict = self.processor.tokenizer.get_vocab()
+            with open(unigrams_file, 'r', encoding='utf-8') as f:
+                # Skip header if it exists
+                first_line = f.readline().strip()
+                if first_line.startswith("word\t"):
+                    pass  # Skip header
+                else:
+                    # If no header, process the first line
+                    parts = first_line.split('\t')
+                    if len(parts) >= 2:
+                        word = parts[0].strip()
+                        score = float(parts[1])
+                        unigram_list.append((word, score))
+                        
+                        # High-probability words become hotwords for boosting
+                        if score > min_score:
+                            hotwords.append(word)
+                
+                # Process remaining lines
+                for line in f:
+                    parts = line.strip().split('\t')
+                    if len(parts) >= 2:
+                        word = parts[0].strip()
+                        score = float(parts[1])
+                        unigram_list.append((word, score))
+                        
+                        # High-probability words become hotwords for boosting
+                        if score > min_score:
+                            hotwords.append(word)
             
-            # Create ordered vocabulary list
-            vocab = [None] * len(vocab_dict)
-            for token, idx in vocab_dict.items():
-                vocab[idx] = token
+            # Sort by score (highest first) and limit to top_n
+            unigram_list.sort(key=lambda x: x[1], reverse=True)
+            if top_n:
+                unigram_list = unigram_list[:top_n]
+                
+            print(f"Loaded {len(unigram_list)} unigrams, {len(hotwords)} hotwords")
             
-            # Default path for language model if not specified
-            if language_model_path is None:
-                language_model_path = os.path.join(".", "training", "umls_corpus.binary")
+            # Print some samples
+            if unigram_list:
+                print("Sample unigrams (word, log prob):")
+                for word, score in unigram_list[:10]:
+                    print(f"  {word}: {score:.4f}")
             
-            # Build decoder with language model if available
-            if language_model_path and os.path.exists(language_model_path):
-                logger.info(f"Initializing CTC decoder with language model: {language_model_path}")
-                self.decoder = build_ctcdecoder(
-                    vocab, 
-                    kenlm_model_path=language_model_path,
-                    alpha=0.3,  # Language model weight
-                    beta=1.0    # Word insertion bonus
-                )
+        except Exception as e:
+            print(f"Error loading unigrams: {str(e)}")
+            # Return empty lists if file can't be loaded
+            return [], []
+            
+        return unigram_list, hotwords
+    
+    def _create_decoder(self):
+        # Path to language model
+        lm_path = "D:/medsync/med_sync_be/training/4-gram.binary"
+        unigram_path = "D:/medsync/med_sync_be/training/unigrams.txt"
+        unigram_texts, hotwords = self._load_unigrams(unigram_path)
+        
+        # CRITICAL FIX: Create a vocabulary list that EXACTLY matches the model's vocabulary
+        # Don't filter tokens or add/remove any - it must match the model exactly
+        
+        # Get all tokens from the tokenizer
+        vocab_dict = self.processor.tokenizer.get_vocab()
+        
+        # Sort by token ID to maintain the exact order
+        sorted_tokens = sorted(vocab_dict.items(), key=lambda x: x[1])
+        
+        # Now prepare decoder vocabulary
+        # For CTC decoding, we replace the CTC blank token (usually <pad>) with an empty string
+        # Other special tokens might need special handling
+        decoder_vocab = []
+        
+        # Find the blank token (usually <pad> or a special token)
+        blank_token = self.processor.tokenizer.pad_token
+        blank_token_id = vocab_dict.get(blank_token, None)
+        
+        # Create the decoder vocabulary with proper mapping
+        for token, idx in sorted_tokens:
+            # For the blank token, use empty string
+            if token == blank_token:
+                decoder_vocab.append("")
+            # For WordPiece tokens, replace "▁" with space
+            elif "▁" in token:
+                decoder_vocab.append(token.replace("▁", " "))
+            # Other tokens remain as is
             else:
-                logger.warning("Initializing CTC decoder without language model")
-                self.decoder = build_ctcdecoder(vocab)
+                decoder_vocab.append(token)
+        
+        print(f"Decoder vocabulary prepared with {len(decoder_vocab)} tokens (matching model)")
+        
+        # Build the decoder
+        try:
+            decoder = build_ctcdecoder(
+                decoder_vocab,
+                lm_path,
+                unigrams=unigram_texts,
+                alpha=0.7,
+                beta=1.5
+            )
+            print("Successfully created decoder with language model")
+        except Exception as e:
+            print(f"Error building decoder with LM: {str(e)}")
+            print("Falling back to decoder without language model")
+            decoder = build_ctcdecoder(decoder_vocab)
+        
+        return decoder
+
+    def initialize_medical_dictionary(self):
+        """Initialize the dictionary with additional medical terms"""
+        def create_medical_dictionary():
+            """Generate a comprehensive medical dictionary from UMLS data"""
+            
+            try:
+                # Get UMLS concepts
+                df = umls_df_dict["concepts_with_sty_def_df"]
+                logger.info(len(df))
+                logger.info(df.columns)
+                # Extract terms
+                terms = set()
+                for _, row in df.iterrows():
+                    term: str = row["STR"]
+                    
+                    term_to_add = extract_medical_terms(term)
+                    
+                    if term_to_add:
+                        for target_term in term_to_add:
+                            if len(target_term) > 2:
+                                terms.add(target_term)
+                
+                # Create dictionary directory if it doesn't exist
+                os.makedirs("app/dictionaries", exist_ok=True)
+                
+                if os.path.exists(os.path.join("app", "dictionaries", "medical_terms.txt")):
+                    logger.info("Medical terms already exist.")
+                    return
+                
+                # Write to file
+                with open(os.path.join("app", "dictionaries", "medical_terms.txt"), "w", encoding='utf-8') as f:
+                    for term in sorted(terms):
+                        f.write(f"{term}\n")
+                
+                print(f"Created medical dictionary with {len(terms)} terms")
+                
+            except Exception as e:
+                print(f"Error creating medical dictionary: {str(e)}")  
+        
+        create_medical_dictionary()
+        
+        # Add medical terms to SymSpell dictionary
+        try:
+            # Get path to medical terms dictionary
+            medical_dict_path = os.path.join("app", "dictionaries", "medical_terms.txt")
+            
+            if os.path.exists(medical_dict_path):
+                # Load medical dictionary
+                with open(medical_dict_path, 'r') as f:
+                    for line in f:
+                        term = line.strip()
+                        if term:
+                            # Add to dictionary with a decent frequency
+                            sym_spell.create_dictionary_entry(term, 1000)
+                
+                logger.info(f"Loaded medical terms dictionary from {medical_dict_path}")
+            else:
+                logger.warning(f"Medical dictionary not found at {medical_dict_path}")
                 
         except Exception as e:
-            logger.error(f"Error initializing decoder: {str(e)}")
-            # Fallback to simple decoder without language model
-            self.decoder = build_ctcdecoder(vocab if 'vocab' in locals() else [])
-    
+            logger.error(f"Error loading medical dictionary: {str(e)}")
+
     def preprocess_audio(self, audio_samples: np.ndarray, sample_rate: int = 16000) -> torch.Tensor:
         """
         Preprocess audio samples for the model
@@ -178,9 +329,7 @@ class SpeechProcessor:
             
             # Apply a simple filter based on the MFCC difference
             if len(adjusted) > 320:  # At least 20ms of audio
-                # We're simplifying here - in a production system, you would apply
-                # proper feature-space transformations and feature-to-audio conversion
-                adjusted = self.apply_simple_spectral_shaping(adjusted, scale_factors)
+                adjusted = self.apply_spectral_shaping(adjusted, scale_factors)
                 
             return adjusted
             
@@ -188,9 +337,9 @@ class SpeechProcessor:
             logger.error(f"Error preprocessing audio for speaker: {e}")
             return audio_samples
 
-    def apply_simple_spectral_shaping(audio: np.ndarray, scale_factors: np.ndarray) -> np.ndarray:
+    def apply_spectral_shaping(self, audio: np.ndarray, scale_factors: np.ndarray) -> np.ndarray:
         """
-        Apply simple spectral shaping based on scale factors
+        Apply spectral shaping to audio based on MFCC-derived scale factors
         
         Args:
             audio: Input audio samples
@@ -200,17 +349,66 @@ class SpeechProcessor:
             Shaped audio samples
         """
         import scipy.signal as signal
+        import numpy as np
         
-        # Create a simple filter based on the first few scale factors
-        # This is very simplified - real applications would use more sophisticated methods
-        factors = scale_factors[:8]  # Use first 8 factors
+        # Check for valid input
+        if len(audio) == 0:
+            return audio
         
-        # Normalize factors to create filter coefficients
-        b = factors / np.sum(factors)
-        a = [1.0]
+        if np.all(scale_factors == 0) or len(scale_factors) == 0:
+            return audio
         
-        # Apply filter
-        return signal.lfilter(b, a, audio)
+        try:
+            # For vocal tract adaptation, we want to design a filter that
+            # transforms the spectral characteristics of the audio
+            
+            # 1. Extend scale factors if needed (use full available factors)
+            if len(scale_factors) < 13:  # Typical MFCC dimension
+                # Pad with ones (neutral scaling)
+                extended_factors = np.ones(13)
+                extended_factors[:len(scale_factors)] = scale_factors
+            else:
+                extended_factors = scale_factors[:13]  # Use first 13 (covers main formants)
+            
+            # 2. Design filter based on scale factors - convert to proper filter response
+            # Use a more sophisticated filter design
+            nyquist = 0.5 * 16000  # Assuming 16kHz sample rate
+            
+            # Map MFCC scale factors to frequency bands
+            # This mapping is approximate - maps each MFCC bin to corresponding frequency range
+            freq_points = np.linspace(0, nyquist, len(extended_factors) + 2)[1:-1]
+            gains_db = 20 * np.log10(extended_factors)  # Convert to dB
+            
+            # Constrain extreme values to avoid instability
+            gains_db = np.clip(gains_db, -20, 20)
+            
+            # 3. Create filter using frequency sampling method
+            filter_order = min(int(len(audio) / 8), 512)  # Adaptive filter order based on audio length
+            filter_order = max(filter_order, 31)  # Minimum order for good resolution
+            filter_order = filter_order + 1 if filter_order % 2 == 0 else filter_order  # Make odd
+            
+            # Use firwin2 for more precise frequency response
+            b = signal.firwin2(filter_order, 
+                            np.concatenate(([0], freq_points, [nyquist])) / nyquist, 
+                            np.concatenate(([gains_db[0]], gains_db, [gains_db[-1]])),
+                            fs=16000)
+            
+            # 4. Apply filter
+            padded_audio = np.pad(audio, (filter_order//2, filter_order//2), mode='edge')
+            filtered_audio = signal.lfilter(b, [1.0], padded_audio)
+            
+            # Remove padding
+            filtered_audio = filtered_audio[filter_order//2:filter_order//2 + len(audio)]
+            
+            # 5. Normalize output to match input level
+            if np.max(np.abs(audio)) > 0:
+                filtered_audio = filtered_audio * (np.max(np.abs(audio)) / np.max(np.abs(filtered_audio)))
+            
+            return filtered_audio
+            
+        except Exception as e:
+            logger.warning(f"Error in spectral shaping: {str(e)}. Returning original audio.")
+            return audio
 
     def extract_mfcc_features(samples: np.ndarray, sr: int = 16000) -> np.ndarray:
         """
@@ -235,6 +433,51 @@ class SpeechProcessor:
         )
         
         return mfccs
+    
+    def _post_process_transcription(self, text: str) -> str:
+        """
+        Post-process transcription to ensure only valid words
+        
+        Args:
+            text: Raw transcription text
+            
+        Returns:
+            Processed text with only valid words
+        """
+        from symspellpy import Verbosity
+        
+        # First apply basic cleaning
+        text = clean_transcription(text)
+        
+        # Split into words
+        words = text.split()
+        corrected_words = []
+        
+        # Process each word
+        for word in words:            
+            # Skip empty words after cleaning
+            if not word:
+                continue
+
+            # Try to correct with SymSpell
+            suggestions = sym_spell.lookup(word, Verbosity.CLOSEST, max_edit_distance=2)
+            if suggestions:
+                # Use the closest suggestion
+                corrected_words.append(suggestions[0].term)
+            else:
+                # If word is in English dictionary, keep it
+                if sym_spell.lookup(word, Verbosity.TOP, max_edit_distance=2):
+                    corrected_words.append(word)
+                # Otherwise, it's likely nonsense, so skip it
+                else:
+                    corrected_words.append(word)
+        
+        # Join back to text
+        corrected_text = ' '.join(corrected_words)
+        
+        # Return empty string if nothing valid was found
+        return corrected_text if corrected_words else ""
+    
     def transcribe(self, audio_samples: np.ndarray, sample_rate: int = 16000) -> str:
         """
         Standard transcription without speaker adaptation
@@ -252,21 +495,34 @@ class SpeechProcessor:
                 logger.warning("Empty audio provided for transcription")
                 return ""
             
-            # Preprocess audio
-            input_values = self.preprocess_audio(audio_samples, sample_rate)
+            # Process the audio with the standard processor
+            inputs = self.processor(
+                audio_samples, 
+                sampling_rate=sample_rate, 
+                return_tensors="pt"
+            )
             
-            # Run model inference
+            # Run inference
             with torch.no_grad():
-                logits = self.model(input_values).logits
+                logits = self.model(inputs.input_values).logits
             
-            # Move logits to CPU and convert to numpy for decoder
-            logits_np = logits.squeeze(0).cpu().numpy()
+            # Convert logits to log probabilities
+            log_probs = torch.log_softmax(logits, dim=-1)
             
-            # Decode with beam search
-            transcription = self.decoder.decode(logits_np)
+            # Get log probabilities as numpy array (time, vocab_size)
+            log_probs_np = log_probs[0].cpu().numpy()
+            
+            # Use the decoder to get the transcription
+            # If alpha or beta are provided, they override the default values
+            # decoder_kwargs = {"beam_width": 100}
+            # if alpha is not None:
+            #     decoder_kwargs["alpha"] = alpha
+            # if beta is not None:
+            #     decoder_kwargs["beta"] = beta
+                
+            transcription = self.decoder.decode(log_probs_np, beam_width=50)
             
             return transcription.lower()
-            
         except Exception as e:
             logger.error(f"Transcription error: {str(e)}")
             return ""

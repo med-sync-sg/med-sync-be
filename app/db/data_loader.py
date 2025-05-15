@@ -1,15 +1,9 @@
-import json
 import requests
 from os import environ
 from pyarrow.feather import read_feather
 from io import BytesIO
-import copy
-import numpy as np
-from sentence_transformers import SentenceTransformer
-from sqlalchemy import create_engine, text, inspect
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from Levenshtein import ratio
-from app.utils.nlp.nlp_utils import embed_text, DEFAULT_MODEL
 
 # Set up database connection (adjust DATABASE_URL as needed)
 # Database settings for PostgreSQL
@@ -35,6 +29,16 @@ umls_df_dict: dict = {
 }
 
 # Load UMLS concepts_with_sty_def data from the data loader URL
-concepts_with_sty_def = BytesIO(requests.get(f"{DATA_LOADER_URL}/umls-data/symptoms-and-diseases").content)
-umls_df_dict["concepts_with_sty_def_df"] = read_feather(concepts_with_sty_def)
-concepts_with_sty_def.close()
+response = requests.get(f"{DATA_LOADER_URL}/umls-data/symptoms-and-diseases", stream=True)
+response.raise_for_status()  # This will raise an exception for HTTP errors
+
+# Create a BytesIO buffer to capture the streaming response
+buffer = BytesIO()
+for chunk in response.iter_content(chunk_size=8192):  # Process in 8KB chunks
+    buffer.write(chunk)
+buffer.seek(0)  # Reset position to beginning of buffer
+
+# Now read the complete data into your DataFrame
+umls_df_dict["concepts_with_sty_def_df"] = read_feather(buffer)
+
+buffer.close()
