@@ -138,7 +138,8 @@ class KeywordExtractService:
             # Convert to section
             section = convert_to_section_create(section_data)
             sections.append(section)
-
+        self.clear()
+        
         return (found_templates, sections)
             
 

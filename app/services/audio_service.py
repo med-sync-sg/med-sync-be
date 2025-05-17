@@ -15,7 +15,7 @@ class AudioService:
     _lock = Lock()  # Thread safety for singleton pattern
     
     # Constants for buffer management
-    MAX_BUFFER_SIZE = 1024 * 1024 * 10  # 10MB max buffer size
+    MAX_BUFFER_SIZE = 1024 * 1024 * 5 # 5 MB max buffer size
     DEFAULT_SAMPLE_RATE = 16000  # 16kHz default sample rate
     MINIMUM_DURATION_MS = 1000  # 1 second minimum for processing
     

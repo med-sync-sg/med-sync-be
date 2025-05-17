@@ -594,9 +594,11 @@ def process_with_diarization(audio_path: str, reference: str, use_adaptation: bo
                 "success": False
             }
         
+        # For WER calculation, strip speaker labels
+        cleaned_transcript = clean_transcript_for_wer(combined_transcript)
         
         # Calculate WER
-        wer_results = calculator.calculate_wer(reference, combined_transcript)
+        wer_results = calculator.calculate_wer(reference, cleaned_transcript)
         
         # Combine results
         results = {
@@ -620,7 +622,7 @@ def process_with_diarization(audio_path: str, reference: str, use_adaptation: bo
                 "doctor_speaking_time": sum(seg["end"] - seg["start"] for seg in transcription_result.get("doctor_segments", [])),
                 "patient_speaking_time": sum(seg["end"] - seg["start"] for seg in transcription_result.get("patient_segments", []))
             },
-            "hypothesis": combined_transcript,
+            "hypothesis": cleaned_transcript,
             "reference": reference,
             "raw_transcript": combined_transcript
         }
@@ -635,6 +637,29 @@ def process_with_diarization(audio_path: str, reference: str, use_adaptation: bo
             "wer": 1.0,
             "success": False
         }
+
+def clean_transcript_for_wer(transcript: str) -> str:
+    """
+    Clean diarized transcript for WER calculation
+    
+    Args:
+        transcript: Transcript with speaker labels
+        
+    Returns:
+        Cleaned transcript for WER calculation
+    """
+    import re
+    
+    # Remove speaker labels like [Doctor] or [Patient]
+    cleaned = re.sub(r'\[\w+\]', '', transcript)
+    
+    # Remove timestamps if present
+    cleaned = re.sub(r'\[\d+:\d+\]', '', cleaned)
+    
+    # Fix spacing
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    
+    return cleaned.strip()
 
 def generate_summary_report(results: List[Dict[str, Any]], output_dir: str) -> Dict[str, Any]:
     """

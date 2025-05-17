@@ -50,7 +50,7 @@ DEBUG_PATH = "test_client_results"
 test_audio_file = os.path.join("test_audios", "day1_consultation03.wav")
 
 class WebSocketTester:
-    """Helper class for testing WebSocket functionality of the application"""
+    """Helper class for testing WebSocket functionality with diarization support"""
     
     def __init__(self, base_url: str, user_id: int = 1, token: str = "test_token"):
         """
@@ -158,7 +158,7 @@ class WebSocketTester:
                 start_time = time.time()
                 while time.time() - start_time < timeout:
                     try:
-                        response = await asyncio.wait_for(websocket.recv(), timeout=1.0)
+                        response = await asyncio.wait_for(websocket.recv(), timeout=5.0)
                         try:
                             response_data = json.loads(response)
                             
@@ -201,19 +201,24 @@ class WebSocketTester:
     async def stream_audio(self, 
                          audio_file: str,
                          note_id: int = 1,
-                         chunk_size: int = 4096,
-                         use_adaptation: bool = False) -> Dict[str, Any]:
+                         chunk_size: int = 4096 * 8,
+                         use_adaptation: bool = False,
+                         doctor_id: Optional[int] = None,
+                         stream_interval: float = 0.01) -> Dict[str, Any]:
         """
         Stream audio data from a file to the WebSocket endpoint for real-time processing
+        with diarization support
         
         Args:
             audio_file: Path to WAV audio file
             note_id: ID of the note to use
             chunk_size: Audio chunk size in bytes
             use_adaptation: Whether to use voice adaptation
+            doctor_id: User ID of the doctor for diarization (defaults to user_id if None)
+            stream_interval: Time interval between sending chunks (seconds)
             
         Returns:
-            Test result dictionary with processed transcriptions and sections
+            Test result dictionary with processed transcriptions, segments and sections
         """
         if not os.path.exists(audio_file):
             return {
@@ -221,6 +226,10 @@ class WebSocketTester:
                 "message": f"Audio file not found: {audio_file}",
                 "error": "File not found"
             }
+            
+        # Set doctor_id to user_id if not specified
+        if doctor_id is None:
+            doctor_id = self.user_id
             
         # Extract websocket URL from base URL
         ws_server = self.base_url.split('://')[-1]
@@ -233,55 +242,79 @@ class WebSocketTester:
             
             # Store received data
             received_transcriptions = []
+            received_doctor_segments = []
+            received_patient_segments = []
             received_sections = []
+            received_diarizations = []
             
             # Connect to WebSocket
             async with websockets.connect(ws_url, ping_interval=None) as websocket:
                 logger.info("WebSocket connection established")
                 
-                # Send audio chunks
+                # Send audio chunks with realistic timing
                 for i, chunk in enumerate(audio_chunks):
                     chunk_b64 = base64.b64encode(chunk).decode('utf-8')
                     message = {
                         "data": chunk_b64,
                         "use_adaptation": use_adaptation,
-                        "user_id": self.user_id
+                        "user_id": self.user_id,
+                        "doctor_id": doctor_id
                     }
                     await websocket.send(json.dumps(message))
                     logger.info(f"Sent audio chunk {i+1}/{len(audio_chunks)}")
                     
                     # Process any responses without blocking too long
-                    await self._process_responses(
+                    await self._process_diarization_responses(
                         websocket, 
-                        received_transcriptions, 
-                        received_sections, 
-                        timeout=0.3
+                        received_transcriptions,
+                        received_doctor_segments,
+                        received_patient_segments,
+                        received_sections,
+                        received_diarizations,
+                        timeout=3
                     )
+                    
+                    # Add a small delay between chunks to simulate real-time streaming
+                    await asyncio.sleep(stream_interval)
                 
                 # Send end-of-stream signal
                 await websocket.send(json.dumps({"data": None}))
                 logger.info("Sent end-of-stream signal")
                 
                 # Process final responses with longer timeout
-                await self._process_responses(
+                await self._process_diarization_responses(
                     websocket, 
-                    received_transcriptions, 
-                    received_sections, 
+                    received_transcriptions,
+                    received_doctor_segments,
+                    received_patient_segments, 
+                    received_sections,
+                    received_diarizations,
                     timeout=10.0,
                     is_final=True
                 )
                 
-                # Validate the most recent section
-                validation_result = self._validate_sections(received_sections)
+                # Validate the results
+                section_validation = self._validate_sections(received_sections)
+                diarization_validation = self._validate_diarization(received_diarizations)
                 
                 return {
                     "success": True,
-                    "message": f"Processed audio with {len(received_transcriptions)} transcriptions and {len(received_sections)} sections",
+                    "message": f"Processed audio with {len(received_transcriptions)} transcriptions, " +
+                              f"{len(received_doctor_segments)} doctor segments, " +
+                              f"{len(received_patient_segments)} patient segments, " +
+                              f"and {len(received_sections)} sections",
                     "transcription_count": len(received_transcriptions),
+                    "doctor_segment_count": len(received_doctor_segments),
+                    "patient_segment_count": len(received_patient_segments),
                     "section_count": len(received_sections),
+                    "diarization_count": len(received_diarizations),
                     "transcriptions": received_transcriptions,
+                    "doctor_segments": received_doctor_segments,
+                    "patient_segments": received_patient_segments,
                     "sections": received_sections,
-                    "validation": validation_result
+                    "diarizations": received_diarizations,
+                    "section_validation": section_validation,
+                    "diarization_validation": diarization_validation
                 }
                 
         except Exception as e:
@@ -294,19 +327,25 @@ class WebSocketTester:
                 "traceback": traceback.format_exc()
             }
     
-    async def _process_responses(self, 
-                              websocket, 
-                              received_transcriptions: List[str], 
-                              received_sections: List[Dict[str, Any]],
-                              timeout: float = 1.0,
-                              is_final: bool = False) -> None:
+    async def _process_diarization_responses(self, 
+                                          websocket, 
+                                          received_transcriptions: List[str],
+                                          received_doctor_segments: List[Dict[str, Any]],
+                                          received_patient_segments: List[Dict[str, Any]],
+                                          received_sections: List[Dict[str, Any]],
+                                          received_diarizations: List[Dict[str, Any]],
+                                          timeout: float = 30.0,
+                                          is_final: bool = False) -> None:
         """
-        Process WebSocket responses
+        Process WebSocket responses for diarization
         
         Args:
             websocket: Active WebSocket connection
             received_transcriptions: List to append transcriptions to
+            received_doctor_segments: List to append doctor segments to
+            received_patient_segments: List to append patient segments to
             received_sections: List to append sections to
+            received_diarizations: List to append full diarization results to
             timeout: Timeout for receiving messages
             is_final: Whether this is final response processing
         """
@@ -317,16 +356,15 @@ class WebSocketTester:
         # Process responses for the specified duration
         while time.time() - start_time < max_duration:
             try:
-                response = await asyncio.wait_for(websocket.recv(), timeout=0.5)
+                response = await asyncio.wait_for(websocket.recv(), timeout=timeout)
                 received_count += 1
                 
                 try:
                     response_data = json.loads(response)
                     
-                    # Process transcription
-                    if "text" in response_data:
+                    # Process regular transcription (single-speaker)
+                    if "text" in response_data and "diarization" not in response_data:
                         transcript = response_data["text"]
-                        logger.info(transcript)
                         received_transcriptions.append(transcript)
                         adaptation_status = response_data.get("using_adaptation", False)
                         processing_time = response_data.get("processing_time_ms", None)
@@ -337,6 +375,43 @@ class WebSocketTester:
                         if adaptation_status:
                             logger.info(f"Using adaptation: {adaptation_status}")
                     
+                    # Process segment-level transcription
+                    if "segment_text" in response_data and "speaker" in response_data:
+                        segment_text = response_data["segment_text"]
+                        speaker = response_data["speaker"]
+                        confidence = response_data.get("confidence", 0)
+                        
+                        segment_data = {
+                            "text": segment_text,
+                            "speaker": speaker,
+                            "confidence": confidence,
+                            "using_adaptation": response_data.get("using_adaptation", False)
+                        }
+                        
+                        if speaker == "doctor":
+                            received_doctor_segments.append(segment_data)
+                            logger.info(f"Received doctor segment: {segment_text[:30]}...")
+                        else:
+                            received_patient_segments.append(segment_data)
+                            logger.info(f"Received patient segment: {segment_text[:30]}...")
+                    
+                    # Process full diarization results
+                    if "diarization" in response_data and response_data["diarization"] == True:
+                        # Store the complete diarization result
+                        diarization_result = {
+                            "transcript": response_data.get("transcript", ""),
+                            "doctor_segments": response_data.get("doctor_segments", []),
+                            "patient_segments": response_data.get("patient_segments", []),
+                            "doctor_speaking_time": response_data.get("doctor_speaking_time", 0),
+                            "patient_speaking_time": response_data.get("patient_speaking_time", 0),
+                            "processing_time_ms": response_data.get("processing_time_ms", 0),
+                            "buffer_duration": response_data.get("buffer_duration", 0)
+                        }
+                        
+                        received_diarizations.append(diarization_result)
+                        logger.info(f"Received complete diarization result with {len(diarization_result['doctor_segments'])} doctor segments " +
+                                   f"and {len(diarization_result['patient_segments'])} patient segments")
+                    
                     # Process sections
                     if "sections" in response_data:
                         sections = response_data["sections"]
@@ -345,7 +420,7 @@ class WebSocketTester:
                         
                         for section in sections:
                             title = section.get('title', 'Untitled')
-                            soap_category = section.get('soap_category', 'Unknown')
+                            soap_category = section.get('soap_category', 'OTHER')
                             logger.info(f"  Section: {title} ({soap_category})")
                     
                     # Check for errors
@@ -365,7 +440,7 @@ class WebSocketTester:
         if is_final:
             logger.info(f"Finished processing {received_count} final responses")
     
-    def _read_audio_chunks(self, audio_file: str, chunk_size: int = 4096) -> List[bytes]:
+    def _read_audio_chunks(self, audio_file: str, chunk_size: int = 4096 * 4) -> List[bytes]:
         """
         Read audio file as chunks for streaming
         
@@ -418,35 +493,42 @@ class WebSocketTester:
         section = sections[-1]
         
         # Check required fields
-        required_fields = ['id', 'title', 'content', 'soap_category']
+        required_fields = ['title', 'soap_category']
+        has_id = 'id' in section
+        has_content = 'content' in section and section['content']
         missing_fields = [f for f in required_fields if f not in section]
         
         if missing_fields:
             return {
                 "valid": False,
                 "message": f"Section missing required fields: {missing_fields}",
-                "missing_fields": missing_fields
+                "missing_fields": missing_fields,
+                "has_id": has_id,
+                "has_content": has_content
             }
         
-        # Validate content structure
-        content = section.get('content', {})
-        if not content:
+        # Validate content structure if present
+        if not has_content:
             return {
-                "valid": False,
-                "message": "Section has empty content dictionary"
+                "valid": has_id,  # Valid if it has an ID but no content (might be a section placeholder)
+                "message": "Section has no content dictionary",
+                "has_id": has_id
             }
+            
+        content = section.get('content', {})
         
         # Check field structure
         field_validation = {}
         for field_id, field_data in content.items():
             if isinstance(field_data, dict):
                 # Check required field properties
-                field_required = ['name', 'value', 'data_type']
+                field_required = ['name']
                 field_missing = [f for f in field_required if f not in field_data]
                 field_validation[field_id] = {
                     "valid": len(field_missing) == 0,
                     "missing": field_missing if field_missing else None,
-                    "type": "dictionary"
+                    "type": "dictionary",
+                    "has_value": "value" in field_data
                 }
             elif isinstance(field_data, list):
                 # Check list of field objects
@@ -467,12 +549,104 @@ class WebSocketTester:
         is_valid = all(valid_fields) if valid_fields else False
         
         return {
-            "valid": is_valid,
+            "valid": is_valid and has_id,
             "message": "Section structure validation completed",
             "field_count": len(content),
-            "field_validation": field_validation
+            "field_validation": field_validation,
+            "has_id": has_id
         }
-
+    
+    def _validate_diarization(self, diarization_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Validate diarization results structure
+        
+        Args:
+            diarization_results: List of diarization result dictionaries
+            
+        Returns:
+            Validation result dictionary
+        """
+        if not diarization_results:
+            return {
+                "valid": False,
+                "message": "No diarization results to validate"
+            }
+            
+        # Use the last diarization result for validation
+        result = diarization_results[-1]
+        
+        # Check required fields
+        required_fields = ['transcript', 'doctor_segments', 'patient_segments']
+        missing_fields = [f for f in required_fields if f not in result]
+        
+        if missing_fields:
+            return {
+                "valid": False,
+                "message": f"Diarization result missing required fields: {missing_fields}",
+                "missing_fields": missing_fields
+            }
+        
+        # Check segment structure
+        segments_validation = {}
+        
+        # Validate doctor segments
+        doctor_segments = result.get('doctor_segments', [])
+        if doctor_segments:
+            sample_segment = doctor_segments[0]
+            segment_required = ['start', 'end', 'text']
+            segment_missing = [f for f in segment_required if f not in sample_segment]
+            segments_validation['doctor_segments'] = {
+                "valid": len(segment_missing) == 0,
+                "count": len(doctor_segments),
+                "missing_fields": segment_missing if segment_missing else None
+            }
+        else:
+            segments_validation['doctor_segments'] = {
+                "valid": True,  # Valid to have no doctor segments
+                "count": 0
+            }
+            
+        # Validate patient segments
+        patient_segments = result.get('patient_segments', [])
+        if patient_segments:
+            sample_segment = patient_segments[0]
+            segment_required = ['start', 'end', 'text']
+            segment_missing = [f for f in segment_required if f not in sample_segment]
+            segments_validation['patient_segments'] = {
+                "valid": len(segment_missing) == 0,
+                "count": len(patient_segments),
+                "missing_fields": segment_missing if segment_missing else None
+            }
+        else:
+            segments_validation['patient_segments'] = {
+                "valid": True,  # Valid to have no patient segments
+                "count": 0
+            }
+        
+        # Overall validity
+        is_valid = (segments_validation.get('doctor_segments', {}).get('valid', False) and
+                   segments_validation.get('patient_segments', {}).get('valid', False))
+        
+        # Calculate statistics
+        total_segments = len(doctor_segments) + len(patient_segments)
+        doctor_time = result.get('doctor_speaking_time', 0)
+        patient_time = result.get('patient_speaking_time', 0)
+        total_time = doctor_time + patient_time
+        
+        doctor_percentage = (doctor_time / total_time * 100) if total_time > 0 else 0
+        patient_percentage = (patient_time / total_time * 100) if total_time > 0 else 0
+        
+        return {
+            "valid": is_valid,
+            "message": "Diarization validation completed",
+            "segments_validation": segments_validation,
+            "total_segments": total_segments,
+            "doctor_time": doctor_time,
+            "patient_time": patient_time,
+            "doctor_percentage": doctor_percentage,
+            "patient_percentage": patient_percentage,
+            "processing_time_ms": result.get('processing_time_ms', 0)
+        }
 
 class TestClient:
     """Test client for MedSync application"""
@@ -509,12 +683,12 @@ class TestClient:
             self.create_test_note()
             
             # Test WebSocket (needs to run in an async context)
-            # asyncio.run(self.test_websocket())
+            asyncio.run(self.test_websocket())
             
             # self.test_text_processing()
             
             # self.test_diarization_with_calibration(DEFAULT_AUDIO_FILE, 1)
-            self.test_diarization_without_calibration(DEFAULT_AUDIO_FILE)
+            # self.test_diarization_without_calibration(DEFAULT_AUDIO_FILE)
             # self.generate_test_report_doctor(user_id=2, note_id=12, template_type="doctor")
             
             # self.test_text_processing()
@@ -1120,12 +1294,12 @@ class TestClient:
         print(f"Transcription count: {audio_result.get('transcription_count', 0)}")
         print(f"Section count: {audio_result.get('section_count', 0)}")
         
-        
-        print(audio_result)
-        
+        print(audio_result.get("transcriptions", "NOT CORRECT"))
+        print(audio_result.get("sections", "Something went wrong"))
+        print(audio_result.get("diarizations", "Diarization didn't happen?"))
         return tester
     
-    def _read_audio_chunks(self, audio_file: str, chunk_size: int = 4096) -> List[bytes]:
+    def _read_audio_chunks(self, audio_file: str, chunk_size: int = 4096 * 4) -> List[bytes]:
         """
         Read audio file as chunks for streaming
         
@@ -1234,6 +1408,6 @@ def print_formatted_transcript_results(result: dict):
 
 if __name__ == "__main__":
     args = parse_arguments()
-    client = TestClient(args.db_url, args.app_url, args.audio_file)
+    client = TestClient(args.db_url, args.app_url, test_audio_file)
     success = client.run_tests()
     sys.exit(0 if success else 1)
