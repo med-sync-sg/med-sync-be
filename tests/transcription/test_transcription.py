@@ -10,15 +10,16 @@ import time
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from typing import List, Dict, Tuple, Optional, Any
-import requests
 from jiwer import wer, cer
-import Levenshtein
-
+import re
+import numpy as np
+from sklearn.metrics import classification_report, confusion_matrix
+import difflib
+from typing import List, Tuple, Dict
 # Add parent directory to path to import app modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
 from app.services.transcription_service import TranscriptionService
-from app.services.audio_service import AudioService
 from app.utils.speech_processor import SpeechProcessor
 from app.services.diarization_service import DiarizationService
 
@@ -35,21 +36,179 @@ class WERCalculator:
     Calculator for Word Error Rate between transcriptions
     """
     
-    def __init__(self, api_url: Optional[str] = None):
+    def __init__(self):
         """
         Initialize the WER calculator
         
         Args:
             api_url: Optional URL to the transcription API
         """
-        self.api_url = api_url
+        self.speaker_labels = ["Doctor", "Patient"]
+        self.transcription_service = TranscriptionService()
+        self.speech_processor = SpeechProcessor()
         
-        # Initialize services directly if no API URL provided
-        if not api_url:
-            self.transcription_service = TranscriptionService()
-            self.audio_service = AudioService()
-            self.speech_processor = SpeechProcessor()
         
+    def extract_segments(self, transcript: str) -> List[Tuple[str, str]]:
+        """
+        Extract speaker segments from a transcript.
+        
+        Args:
+            transcript: Full transcript text with speaker labels
+            
+        Returns:
+            List of (speaker, content) tuples
+        """
+        # Pattern to match "Speaker: content" followed by either another speaker or end of string
+        pattern = r'([\w\s]+?):\s*(.*?)(?=(?:[\w\s]+?:|$))'
+        
+        # Find all matches
+        matches = re.findall(pattern, transcript, re.DOTALL)
+        
+        # Process matches to clean up speaker labels and content
+        segments = []
+        for speaker, content in matches:
+            speaker = speaker.strip()
+            content = content.strip()
+            if speaker and content:  # Only include non-empty segments
+                segments.append((speaker, content))
+                
+        return segments
+    
+    def align_segments(self, pred_segments: List[Tuple[str, str]], 
+                      ref_segments: List[Tuple[str, str]]) -> List[Tuple[str, str, str, str]]:
+        """
+        Align predicted segments with reference segments based on content similarity.
+        
+        Args:
+            pred_segments: List of (speaker, content) tuples from predicted transcript
+            ref_segments: List of (speaker, content) tuples from reference transcript
+            
+        Returns:
+            List of (pred_speaker, pred_content, ref_speaker, ref_content) aligned tuples
+        """
+        aligned_segments = []
+        
+        # Handle case where number of segments differ
+        if len(pred_segments) != len(ref_segments):
+            # Simple case: if segment counts are close, align sequentially
+            if abs(len(pred_segments) - len(ref_segments)) <= 2:
+                # Align up to the minimum length
+                min_len = min(len(pred_segments), len(ref_segments))
+                for i in range(min_len):
+                    pred_speaker, pred_content = pred_segments[i]
+                    ref_speaker, ref_content = ref_segments[i]
+                    aligned_segments.append((pred_speaker, pred_content, ref_speaker, ref_content))
+                
+                # Handle any remaining segments
+                if len(pred_segments) > min_len:
+                    for i in range(min_len, len(pred_segments)):
+                        pred_speaker, pred_content = pred_segments[i]
+                        aligned_segments.append((pred_speaker, pred_content, "MISSING", ""))
+                elif len(ref_segments) > min_len:
+                    for i in range(min_len, len(ref_segments)):
+                        ref_speaker, ref_content = ref_segments[i]
+                        aligned_segments.append(("MISSING", "", ref_speaker, ref_content))
+            else:
+                # Complex case: use sequence matching to find the best alignment
+                pred_contents = [content for _, content in pred_segments]
+                ref_contents = [content for _, content in ref_segments]
+                
+                # Use difflib to find best matching sequence
+                matcher = difflib.SequenceMatcher(None, pred_contents, ref_contents)
+                
+                # Get matching blocks
+                for i, j, n in matcher.get_matching_blocks():
+                    if n > 0:  # Skip the last block which is always (len1, len2, 0)
+                        for k in range(n):
+                            if i+k < len(pred_segments) and j+k < len(ref_segments):
+                                pred_speaker, pred_content = pred_segments[i+k]
+                                ref_speaker, ref_content = ref_segments[j+k]
+                                aligned_segments.append((pred_speaker, pred_content, ref_speaker, ref_content))
+        else:
+            # Simple case: same number of segments, align sequentially
+            for i in range(len(pred_segments)):
+                pred_speaker, pred_content = pred_segments[i]
+                ref_speaker, ref_content = ref_segments[i]
+                aligned_segments.append((pred_speaker, pred_content, ref_speaker, ref_content))
+        
+        return aligned_segments
+    
+    def calculate_metrics(self, aligned_segments: List[Tuple[str, str, str, str]]) -> Dict:
+        """
+        Calculate diarization metrics based on aligned segments.
+        
+        Args:
+            aligned_segments: List of (pred_speaker, pred_content, ref_speaker, ref_content) tuples
+            
+        Returns:
+            Dictionary of metrics including accuracy, confusion matrix, etc.
+        """
+        # Extract speaker labels for comparison
+        y_pred = []
+        y_true = []
+        
+        for pred_speaker, _, ref_speaker, _ in aligned_segments:
+            if pred_speaker != "MISSING" and ref_speaker != "MISSING":
+                y_pred.append(pred_speaker)
+                y_true.append(ref_speaker)
+        
+        # If no valid comparisons, return empty metrics
+        if not y_pred:
+            return {
+                "accuracy": 0.0,
+                "confusion_matrix": np.zeros((len(self.speaker_labels), len(self.speaker_labels))),
+                "report": "",
+                "segment_count": 0,
+                "matched_count": 0
+            }
+        
+        # Calculate basic accuracy
+        correct = sum(1 for p, r in zip(y_pred, y_true) if p == r)
+        accuracy = correct / len(y_pred) if y_pred else 0
+        
+        # Generate confusion matrix
+        labels = sorted(set(y_pred + y_true))
+        conf_matrix = confusion_matrix(y_true, y_pred, labels=labels)
+        
+        # Generate classification report
+        report = classification_report(y_true, y_pred, labels=labels, output_dict=True)
+        
+        return {
+            "accuracy": accuracy,
+            "confusion_matrix": conf_matrix,
+            "labels": labels,
+            "report": report,
+            "segment_count": len(y_pred),
+            "matched_count": correct
+        }
+    
+    def evaluate_transcript_pair(self, pred_transcript: str, ref_transcript: str) -> Dict:
+        """
+        Evaluate diarization accuracy for a pair of transcripts.
+        
+        Args:
+            pred_transcript: Predicted transcript with speaker labels
+            ref_transcript: Reference transcript with speaker labels
+            
+        Returns:
+            Dictionary of metrics
+        """
+        # Extract segments
+        pred_segments = self.extract_segments(pred_transcript)
+        ref_segments = self.extract_segments(ref_transcript)
+        
+        # Align segments
+        aligned_segments = self.align_segments(pred_segments, ref_segments)
+        
+        # Calculate metrics
+        metrics = self.calculate_metrics(aligned_segments)
+        
+        # Add segment counts
+        metrics["pred_segment_count"] = len(pred_segments)
+        metrics["ref_segment_count"] = len(ref_segments)
+        metrics["aligned_segment_count"] = len(aligned_segments)
+        
+        return metrics
     def load_audio(self, audio_path: str) -> np.ndarray:
         """
         Load audio data from a file
@@ -225,6 +384,7 @@ class WERCalculator:
             results = self.calculate_wer(reference, transcription)
             
             # Add file information
+            results["raw_transcript"] = transcription
             results["audio_file"] = audio_path
             results["audio_duration"] = len(audio_data) / sample_rate
             results["use_adaptation"] = use_adaptation
@@ -337,31 +497,22 @@ def process_file_pair(calculator: WERCalculator, audio_path: str,
             }
         
         # Process with or without diarization
-        if use_diarization:
-            results = process_with_diarization(
-                audio_path=audio_path,
-                reference=reference,
-                use_adaptation=use_adaptation,
-                user_id=user_id,
-                doctor_id=doctor_id
-            )
-        else:
-            # Run comparison without diarization
-            start_time = time.time()
-            results = calculator.compare_transcriptions(
-                audio_path=audio_path,
-                reference=reference,
-                use_adaptation=use_adaptation,
-                user_id=user_id
-            )
-            processing_time = time.time() - start_time
-            results["processing_time"] = processing_time
+        results = process_with_diarization(
+            audio_path=audio_path,
+            reference=reference,
+            use_adaptation=use_adaptation,
+            user_id=user_id,
+            doctor_id=doctor_id
+        )
+
+        
+        metrics = calculator.evaluate_transcript_pair(results["raw_transcript"], reference)
         
         # Add additional info to results
         results["transcript_file"] = transcript_path
         results["success"] = "error" not in results
         results["diarization_used"] = use_diarization
-        
+        results["diarization"] = metrics
         return results
         
     except Exception as e:
@@ -394,8 +545,6 @@ def process_with_diarization(audio_path: str, reference: str, use_adaptation: bo
         # Initialize services
         diarization_service = DiarizationService()
         calculator = WERCalculator()
-        
-        transcription_service = TranscriptionService(speech_processor=calculator.speech_processor)
 
         # Load audio data
         audio_data = calculator.load_audio(audio_path)
@@ -427,7 +576,7 @@ def process_with_diarization(audio_path: str, reference: str, use_adaptation: bo
         transcription_start = time.time()
         
         # Transcribe with diarization results
-        transcription_result = transcription_service.transcribe_doctor_patient(
+        transcription_result = calculator.transcription_service.transcribe_doctor_patient(
             audio_data, diarization_results, doctor_id if use_adaptation else None
         )
         
@@ -445,11 +594,9 @@ def process_with_diarization(audio_path: str, reference: str, use_adaptation: bo
                 "success": False
             }
         
-        # For WER calculation, strip speaker labels
-        cleaned_transcript = clean_transcript_for_wer(combined_transcript)
         
         # Calculate WER
-        wer_results = calculator.calculate_wer(reference, cleaned_transcript)
+        wer_results = calculator.calculate_wer(reference, combined_transcript)
         
         # Combine results
         results = {
@@ -473,7 +620,7 @@ def process_with_diarization(audio_path: str, reference: str, use_adaptation: bo
                 "doctor_speaking_time": sum(seg["end"] - seg["start"] for seg in transcription_result.get("doctor_segments", [])),
                 "patient_speaking_time": sum(seg["end"] - seg["start"] for seg in transcription_result.get("patient_segments", []))
             },
-            "hypothesis": cleaned_transcript,
+            "hypothesis": combined_transcript,
             "reference": reference,
             "raw_transcript": combined_transcript
         }
@@ -488,29 +635,6 @@ def process_with_diarization(audio_path: str, reference: str, use_adaptation: bo
             "wer": 1.0,
             "success": False
         }
-
-def clean_transcript_for_wer(transcript: str) -> str:
-    """
-    Clean diarized transcript for WER calculation
-    
-    Args:
-        transcript: Transcript with speaker labels
-        
-    Returns:
-        Cleaned transcript for WER calculation
-    """
-    import re
-    
-    # Remove speaker labels like [Doctor] or [Patient]
-    cleaned = re.sub(r'\[\w+\]', '', transcript)
-    
-    # Remove timestamps if present
-    cleaned = re.sub(r'\[\d+:\d+\]', '', cleaned)
-    
-    # Fix spacing
-    cleaned = re.sub(r'\s+', ' ', cleaned)
-    
-    return cleaned.strip()
 
 def generate_summary_report(results: List[Dict[str, Any]], output_dir: str) -> Dict[str, Any]:
     """
@@ -764,7 +888,6 @@ def main():
         if result.get("success", False):
             logger.info(f"WER: {result['wer']:.4f}, CER: {result['cer']:.4f}, " +
                        f"Correct words: {result['hits']}/{result['reference_length']}")
-            
             # Save raw transcripts if requested
             if args.save_transcripts and "raw_transcript" in result:
                 try:
@@ -780,7 +903,7 @@ def main():
                     logger.error(f"Error saving transcript: {str(e)}")
         else:
             logger.error(f"Failed: {result.get('error', 'Unknown error')}")
-        # break
+        break
     
     # Generate summary report
     summary = generate_summary_report(all_results, args.output_dir)

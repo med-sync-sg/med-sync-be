@@ -6,7 +6,7 @@ import pickle
 import time
 
 from typing import Optional, Dict, Any, Tuple
-from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
+from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor, WhisperProcessor, WhisperForConditionalGeneration
 from pyctcdecode import build_ctcdecoder
 from sqlalchemy.orm import Session
 
@@ -15,6 +15,36 @@ from app.models.models import SpeakerProfile
 from app.utils.voice_adaptation_utils import AdaptationTransformer, preprocess_audio_for_speaker, get_base_model_stats
 from app.utils.text_utils import extract_medical_terms, sym_spell, clean_transcription
 from app.db.data_loader import umls_df_dict
+
+def adjust_pauses_for_hf_pipeline_output(pipeline_output, split_threshold=0.12):
+    """
+    Adjust pause timings by distributing pauses up to the threshold evenly between adjacent words.
+    """
+
+    adjusted_chunks = pipeline_output["chunks"].copy()
+
+    for i in range(len(adjusted_chunks) - 1):
+        current_chunk = adjusted_chunks[i]
+        next_chunk = adjusted_chunks[i + 1]
+
+        current_start, current_end = current_chunk["timestamp"]
+        next_start, next_end = next_chunk["timestamp"]
+        pause_duration = next_start - current_end
+
+        if pause_duration > 0:
+            if pause_duration > split_threshold:
+                distribute = split_threshold / 2
+            else:
+                distribute = pause_duration / 2
+
+            # Adjust current chunk end time
+            adjusted_chunks[i]["timestamp"] = (current_start, current_end + distribute)
+
+            # Adjust next chunk start time
+            adjusted_chunks[i + 1]["timestamp"] = (next_start - distribute, next_end)
+    pipeline_output["chunks"] = adjusted_chunks
+
+    return pipeline_output
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -31,7 +61,7 @@ class SpeechProcessor:
     5. Profile caching for performance
     """
     
-    def __init__(self, model_id: str = "facebook/wav2vec2-base-960h", 
+    def __init__(self, model_id: str = "openai/whisper-small",
                  use_gpu: bool = True,
                  language_model_path: Optional[str] = None):
         """
@@ -45,21 +75,15 @@ class SpeechProcessor:
         try:
             logger.info(f"Initializing SpeechProcessor with model {model_id}")
             
-            # Initialize tokenizer/processor
-            self.processor = Wav2Vec2Processor.from_pretrained(model_id)
-            
+            self.processor = WhisperProcessor.from_pretrained("openai/whisper-small")
+            self.model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-small")
+                        
             # Initialize model
-            self.model = Wav2Vec2ForCTC.from_pretrained(model_id)
+            # self.model = Wav2Vec2ForCTC.from_pretrained(model_id)
             
-            # Set device (CUDA if available and requested, otherwise CPU)
-            # self.device = torch.device("cuda" if torch.cuda.is_available() and use_gpu else "cpu")
-            # self.model.to(self.device)
-            # logger.info(f"Model loaded on {self.device}")
             
-            # self.initialize_medical_dictionary()
-            
-            # Initialize the decoder
-            self.decoder = self._create_decoder()            
+            # Initialize the decoder with character vocabulary
+            # self._create_decoder()
             
             # Database connection and adaptation cache
             self.db_manager = DatabaseManager()
@@ -150,48 +174,34 @@ class SpeechProcessor:
         # Don't filter tokens or add/remove any - it must match the model exactly
         
         # Get all tokens from the tokenizer
-        vocab_dict = self.processor.tokenizer.get_vocab()
+        vocab = self.model.config.vocab_list if hasattr(self.model.config, 'vocab_list') else None
         
-        # Sort by token ID to maintain the exact order
-        sorted_tokens = sorted(vocab_dict.items(), key=lambda x: x[1])
+        # If vocab_list not available, create from alphabet
+        # if not vocab:
+        #     # Standard English alphabet plus special tokens
+        #     alphabet = list(string.ascii_lowercase + " '")
+        #     blank_token = self.model.config.pad_token if hasattr(self.model.config, 'pad_token') else "<pad>"
+        #     vocab = [blank_token] + alphabet
+        #     logger.info(f"Created vocabulary from standard alphabet with {len(vocab)} tokens")
+                
         
-        # Now prepare decoder vocabulary
-        # For CTC decoding, we replace the CTC blank token (usually <pad>) with an empty string
-        # Other special tokens might need special handling
-        decoder_vocab = []
-        
-        # Find the blank token (usually <pad> or a special token)
-        blank_token = self.processor.tokenizer.pad_token
-        blank_token_id = vocab_dict.get(blank_token, None)
-        
-        # Create the decoder vocabulary with proper mapping
-        for token, idx in sorted_tokens:
-            # For the blank token, use empty string
-            if token == blank_token:
-                decoder_vocab.append("")
-            # For WordPiece tokens, replace "▁" with space
-            elif "▁" in token:
-                decoder_vocab.append(token.replace("▁", " "))
-            # Other tokens remain as is
-            else:
-                decoder_vocab.append(token)
-        
-        print(f"Decoder vocabulary prepared with {len(decoder_vocab)} tokens (matching model)")
+        # print(f"Decoder vocabulary prepared with {len(decoder_vocab)} tokens (matching model)")
         
         # Build the decoder
         try:
             decoder = build_ctcdecoder(
-                decoder_vocab,
-                lm_path,
+                vocab,
+                kenlm_model_path=lm_path,
                 unigrams=unigram_texts,
-                alpha=0.7,
-                beta=1.5
+                alpha=1.0,
+                beta=1.5,
+                lm_score_boundary=True
             )
             print("Successfully created decoder with language model")
         except Exception as e:
             print(f"Error building decoder with LM: {str(e)}")
             print("Falling back to decoder without language model")
-            decoder = build_ctcdecoder(decoder_vocab)
+            decoder = build_ctcdecoder(vocab)
         
         return decoder
 
@@ -282,6 +292,32 @@ class SpeechProcessor:
         
         # Move to the correct device
         return inputs.to(self.device)
+    
+    def transcribe(self, audio_samples: np.ndarray, sample_rate: int = 16000) -> str:
+        """
+        Standard transcription without speaker adaptation
+        
+        Args:
+            audio_samples: Normalized audio samples (float32 [-1.0, 1.0])
+            sample_rate: Sample rate of the audio
+            
+        Returns:
+            Transcribed text as string
+        """
+        try:
+            # Check if audio is empty
+            if len(audio_samples) == 0:
+                logger.warning("Empty audio provided for transcription")
+                return ""
+            
+            input_features = self.processor(audio_samples, sampling_rate=16000, return_tensors="pt").input_features
+            predicted_ids = self.model.generate(input_features, language='en', task='transcribe')
+            transcription = self.processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
+            return transcription
+        except Exception as e:
+            logger.error(f"Transcription error: {str(e)}")
+            return ""
+        
     
     def preprocess_audio_for_speaker(self, audio_samples: np.ndarray, speaker_profile: Dict[str, Any]) -> np.ndarray:
         """
@@ -477,55 +513,6 @@ class SpeechProcessor:
         
         # Return empty string if nothing valid was found
         return corrected_text if corrected_words else ""
-    
-    def transcribe(self, audio_samples: np.ndarray, sample_rate: int = 16000) -> str:
-        """
-        Standard transcription without speaker adaptation
-        
-        Args:
-            audio_samples: Normalized audio samples (float32 [-1.0, 1.0])
-            sample_rate: Sample rate of the audio
-            
-        Returns:
-            Transcribed text as string
-        """
-        try:
-            # Check if audio is empty
-            if len(audio_samples) == 0:
-                logger.warning("Empty audio provided for transcription")
-                return ""
-            
-            # Process the audio with the standard processor
-            inputs = self.processor(
-                audio_samples, 
-                sampling_rate=sample_rate, 
-                return_tensors="pt"
-            )
-            
-            # Run inference
-            with torch.no_grad():
-                logits = self.model(inputs.input_values).logits
-            
-            # Convert logits to log probabilities
-            log_probs = torch.log_softmax(logits, dim=-1)
-            
-            # Get log probabilities as numpy array (time, vocab_size)
-            log_probs_np = log_probs[0].cpu().numpy()
-            
-            # Use the decoder to get the transcription
-            # If alpha or beta are provided, they override the default values
-            # decoder_kwargs = {"beam_width": 100}
-            # if alpha is not None:
-            #     decoder_kwargs["alpha"] = alpha
-            # if beta is not None:
-            #     decoder_kwargs["beta"] = beta
-                
-            transcription = self.decoder.decode(log_probs_np, beam_width=50)
-            
-            return transcription.lower()
-        except Exception as e:
-            logger.error(f"Transcription error: {str(e)}")
-            return ""
     
     def transcribe_with_adaptation(self, audio_samples: np.ndarray, user_id: int, 
                               db: Optional[Session] = None, sample_rate: int = 16000) -> str:

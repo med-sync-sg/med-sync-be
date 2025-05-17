@@ -83,7 +83,8 @@ class TranscriptionService:
                 return False
                 
             # Process transcription text
-            result = self._process_transcription_text(transcription)
+            # result = self._process_transcription_text(transcription)
+            result = transcription
             if result:
                 # Reset buffer for next segment
                 self.audio_service.reset_current_buffer()
@@ -173,54 +174,6 @@ class TranscriptionService:
         self.full_transcript = ""
         self.transcript_segments = []
         logger.info("Transcription state reset")
-    
-    def generate_transcript_with_timestamps(self, 
-                                           user_id: Optional[int] = None,
-                                           db_session = None) -> Dict[str, Any]:
-        """
-        Generate a transcript with word-level timestamps using the current audio buffer
-        
-        Args:
-            user_id: Optional user ID for adaptation
-            db_session: Optional database session
-            
-        Returns:
-            Dictionary with transcript text and timestamps
-        """
-        try:
-            # Get audio data
-            audio_samples = self.audio_service.get_wave_data(use_session_buffer=True)
-            
-            # Generate transcript with timestamps
-            if user_id is not None and db_session is not None:
-                # Use adaptation if user ID provided
-                result = self.speech_processor.transcribe_with_timestamps(
-                    audio_samples,
-                    user_id=user_id,
-                    db=db_session
-                )
-            else:
-                # Standard transcription
-                result = self.speech_processor.transcribe_with_timestamps(
-                    audio_samples
-                )
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error generating timestamp transcript: {str(e)}")
-            return {
-                "text": "",
-                "timestamps": [],
-                "words": [],
-                "error": str(e)
-            }
-            
-    def reset(self) -> None:
-        """Reset transcription state"""
-        self.full_transcript = ""
-        self.transcript_segments = []
-        logger.info("Transcription state reset")
         
     def transcribe_doctor_patient(self, audio_samples: np.ndarray, 
                                 diarization_results: Dict[str, Any],
@@ -273,7 +226,7 @@ class TranscriptionService:
                 "end": end_sec,
                 "text": transcription
             }
-            
+                        
             if role == "doctor" or role == "speaker1":
                 doctor_segments.append(segment_data)
             else:
