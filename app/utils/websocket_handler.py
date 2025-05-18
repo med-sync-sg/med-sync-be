@@ -103,6 +103,7 @@ async def managed_websocket_connection(websocket: WebSocket, connection_id: str)
             
             # Remove from active connections
             del active_connections[connection_id]
+            websocket.close(reason="Successfully closed websocket")
             logger.info(f"WebSocket resources cleaned up for {connection_id}")
 
 async def process_audio_with_transcription_first(
@@ -282,8 +283,7 @@ async def process_transcription_for_sections(
         note_service: Note service instance
     """
     try:
-        from app.utils.nlp.spacy_utils import process_text
-        
+        logger.info("Extracting keywords from the transcript...")
         # Update transcription service state
         transcription_service.full_transcript = (
             transcription_service.full_transcript + " " + transcription_text
@@ -300,6 +300,8 @@ async def process_transcription_for_sections(
             # Process keywords
             keyword_service.process_and_buffer_keywords(keywords)
             
+            logger.info("Creating sections from keywords...")
+
             # Create sections from keywords
             templates, sections = keyword_service.create_section_from_keywords()
             
