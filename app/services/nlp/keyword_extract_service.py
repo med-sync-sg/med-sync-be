@@ -1,6 +1,7 @@
 import logging
 import copy
-from typing import List, Dict, Any, Tuple
+import re
+from typing import List, Dict, Any, Tuple, Set
 from sqlalchemy.orm import Session
 
 from app.utils.nlp.spacy_utils import find_medical_modifiers
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 class KeywordExtractService:
     """
     Service for extracting and processing medical keywords from text.
-    Manages keyword extraction, classification, and template mapping.
+    Manages keyword extraction, classification, and template mapping with consolidation.
     """
     
     def __init__(self):
@@ -59,6 +60,384 @@ class KeywordExtractService:
             
         logger.debug(f"Added {len(new_keywords)} keywords to buffer (total: {len(self.buffer_keywords)})")
     
+    def consolidate_keywords(self) -> None:
+        """
+        Consolidate keywords in buffer to reduce redundancy and merge related information
+        
+        This implements the three-stage consolidation approach:
+        1. Within-keyword consolidation (clean each keyword dict internally)
+        2. Cross-keyword consolidation (merge similar keywords)
+        3. Final cleanup
+        """
+        if not self.buffer_keywords:
+            return
+            
+        logger.info(f"Starting consolidation of {len(self.buffer_keywords)} keywords")
+        
+        # Stage 1: Clean each keyword dictionary internally
+        for i, keyword_dict in enumerate(self.buffer_keywords):
+            self.buffer_keywords[i] = self._consolidate_within_keyword(keyword_dict)
+        
+        # Stage 2: Merge similar keywords across dictionaries
+        self.buffer_keywords = self._merge_similar_keywords(self.buffer_keywords)
+        
+        # Stage 3: Final cleanup - remove any remaining duplicates
+        self.buffer_keywords = self._final_cleanup(self.buffer_keywords)
+        
+        logger.info(f"Consolidation complete, {len(self.buffer_keywords)} keywords remaining")
+    
+    def _consolidate_within_keyword(self, keyword_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Consolidate terms within a single keyword dictionary
+        
+        Args:
+            keyword_dict: Single keyword dictionary
+            
+        Returns:
+            Consolidated keyword dictionary
+        """
+        result = copy.deepcopy(keyword_dict)
+        
+        # Clean each category individually
+        categories = ['temporal', 'locations', 'quantities', 'modifiers']
+        for category in categories:
+            if category in result and isinstance(result[category], list):
+                result[category] = self._clean_category_terms(result[category])
+        
+        # Remove cross-category redundancy (e.g., remove "severe" from modifiers if main term is "severe headache")
+        result = self._remove_cross_category_redundancy(result)
+        
+        return result
+    
+    def _clean_category_terms(self, terms_list: List[str]) -> List[str]:
+        """
+        Clean terms within a single category (remove duplicates, substrings, word-subsets)
+        
+        Args:
+            terms_list: List of terms in a category
+            
+        Returns:
+            Cleaned list of terms
+        """
+        if not terms_list:
+            return []
+        
+        # Step 1: Remove exact duplicates (case-insensitive)
+        unique_terms = []
+        seen_terms = set()
+        for term in terms_list:
+            normalized = self._normalize_term(term)
+            if normalized not in seen_terms:
+                unique_terms.append(term)
+                seen_terms.add(normalized)
+        
+        # Step 2: Remove substring relationships
+        filtered_terms = []
+        for i, term1 in enumerate(unique_terms):
+            is_subset = False
+            for j, term2 in enumerate(unique_terms):
+                if i != j and self._is_substring(term1, term2):
+                    # term1 is a substring of term2, so term2 is more comprehensive
+                    is_subset = True
+                    break
+            if not is_subset:
+                filtered_terms.append(term1)
+        
+        # Step 3: Remove word-subset relationships
+        final_terms = []
+        for i, term1 in enumerate(filtered_terms):
+            is_word_subset = False
+            for j, term2 in enumerate(filtered_terms):
+                if i != j and self._is_word_subset(term1, term2):
+                    # All words in term1 appear in term2, keep term2
+                    is_word_subset = True
+                    break
+            if not is_word_subset:
+                final_terms.append(term1)
+        
+        # Sort by priority (longer, more descriptive terms first)
+        final_terms.sort(key=self._calculate_term_priority, reverse=True)
+        
+        return final_terms
+    
+    def _remove_cross_category_redundancy(self, keyword_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Remove redundancy between main term and other categories
+        
+        Args:
+            keyword_dict: Keyword dictionary
+            
+        Returns:
+            Dictionary with cross-category redundancy removed
+        """
+        result = copy.deepcopy(keyword_dict)
+        main_term = result.get('term', '').lower()
+        
+        if not main_term:
+            return result
+        
+        # Split main term into words for comparison
+        main_words = set(self._normalize_term(main_term).split())
+        
+        # Clean each category
+        categories = ['temporal', 'locations', 'quantities', 'modifiers']
+        for category in categories:
+            if category in result and isinstance(result[category], list):
+                cleaned_category = []
+                for term in result[category]:
+                    term_words = set(self._normalize_term(term).split())
+                    
+                    # Skip if all words already appear in main term
+                    if not term_words.issubset(main_words):
+                        cleaned_category.append(term)
+                    else:
+                        logger.debug(f"Removed redundant {category} term '{term}' (already in main term '{main_term}')")
+                
+                result[category] = cleaned_category
+        
+        return result
+    
+    def _merge_similar_keywords(self, keywords_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Merge keyword dictionaries with similar main terms
+        
+        Args:
+            keywords_list: List of keyword dictionaries
+            
+        Returns:
+            List with similar keywords merged
+        """
+        if len(keywords_list) <= 1:
+            return keywords_list
+        
+        # Group keywords by similarity
+        groups = self._group_keywords_by_similarity(keywords_list)
+        
+        # Merge each group
+        merged_keywords = []
+        for group in groups:
+            if len(group) == 1:
+                merged_keywords.append(group[0])
+            else:
+                merged_keyword = self._merge_keyword_group(group)
+                merged_keywords.append(merged_keyword)
+        
+        return merged_keywords
+    
+    def _group_keywords_by_similarity(self, keywords_list: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+        """
+        Group keywords with similar main terms
+        
+        Args:
+            keywords_list: List of keyword dictionaries
+            
+        Returns:
+            List of groups (each group is a list of similar keywords)
+        """
+        groups = []
+        used_indices = set()
+        
+        for i, keyword1 in enumerate(keywords_list):
+            if i in used_indices:
+                continue
+                
+            # Start a new group with this keyword
+            group = [keyword1]
+            used_indices.add(i)
+            
+            # Find similar keywords
+            term1 = keyword1.get('term', '')
+            for j, keyword2 in enumerate(keywords_list):
+                if j in used_indices:
+                    continue
+                    
+                term2 = keyword2.get('term', '')
+                if self._terms_are_similar(term1, term2):
+                    group.append(keyword2)
+                    used_indices.add(j)
+            
+            groups.append(group)
+        
+        return groups
+    
+    def _merge_keyword_group(self, group: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Merge a group of similar keywords into one
+        
+        Args:
+            group: List of similar keyword dictionaries
+            
+        Returns:
+            Merged keyword dictionary
+        """
+        if not group:
+            return {}
+        
+        if len(group) == 1:
+            return group[0]
+        
+        # Choose the best main term (most comprehensive)
+        best_term = max((kw.get('term', '') for kw in group), key=self._calculate_term_priority)
+        
+        # Merge all categories
+        merged = {'term': best_term}
+        categories = ['temporal', 'locations', 'quantities', 'modifiers']
+        
+        for category in categories:
+            all_terms = []
+            for keyword in group:
+                if category in keyword and isinstance(keyword[category], list):
+                    all_terms.extend(keyword[category])
+            
+            # Clean the merged category
+            merged[category] = self._clean_category_terms(all_terms)
+        
+        return merged
+    
+    def _final_cleanup(self, keywords_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Final cleanup pass to remove any remaining duplicates
+        
+        Args:
+            keywords_list: List of keyword dictionaries
+            
+        Returns:
+            Final cleaned list
+        """
+        # Remove keyword dictionaries with identical main terms
+        seen_terms = set()
+        final_keywords = []
+        
+        for keyword in keywords_list:
+            term = self._normalize_term(keyword.get('term', ''))
+            if term and term not in seen_terms:
+                final_keywords.append(keyword)
+                seen_terms.add(term)
+        
+        return final_keywords
+    
+    def _normalize_term(self, term: str) -> str:
+        """
+        Normalize a term for comparison (lowercase, remove extra spaces)
+        
+        Args:
+            term: Term to normalize
+            
+        Returns:
+            Normalized term
+        """
+        if not term or not isinstance(term, str):
+            return ""
+        
+        # Convert to lowercase and remove extra whitespace
+        normalized = re.sub(r'\s+', ' ', term.lower().strip())
+        return normalized
+    
+    def _is_substring(self, term1: str, term2: str) -> bool:
+        """
+        Check if term1 is a substring of term2
+        
+        Args:
+            term1: First term
+            term2: Second term
+            
+        Returns:
+            True if term1 is contained in term2
+        """
+        norm1 = self._normalize_term(term1)
+        norm2 = self._normalize_term(term2)
+        
+        if not norm1 or not norm2 or norm1 == norm2:
+            return False
+        
+        return norm1 in norm2
+    
+    def _is_word_subset(self, term1: str, term2: str) -> bool:
+        """
+        Check if all words in term1 appear in term2
+        
+        Args:
+            term1: First term
+            term2: Second term
+            
+        Returns:
+            True if all words in term1 appear in term2
+        """
+        words1 = set(self._normalize_term(term1).split())
+        words2 = set(self._normalize_term(term2).split())
+        
+        if not words1 or not words2 or words1 == words2:
+            return False
+        
+        return words1.issubset(words2)
+    
+    def _terms_are_similar(self, term1: str, term2: str) -> bool:
+        """
+        Check if two main terms are similar enough to be merged
+        
+        Args:
+            term1: First term
+            term2: Second term
+            
+        Returns:
+            True if terms should be merged
+        """
+        if not term1 or not term2:
+            return False
+        
+        # Check for substring relationship
+        if self._is_substring(term1, term2) or self._is_substring(term2, term1):
+            return True
+        
+        # Check for word overlap
+        words1 = set(self._normalize_term(term1).split())
+        words2 = set(self._normalize_term(term2).split())
+        
+        # If one is a subset of the other, they're similar
+        if words1.issubset(words2) or words2.issubset(words1):
+            return True
+        
+        # Check for significant word overlap (at least 50% overlap)
+        intersection = words1.intersection(words2)
+        union = words1.union(words2)
+        
+        if len(union) > 0:
+            overlap_ratio = len(intersection) / len(union)
+            return overlap_ratio >= 0.5
+        
+        return False
+    
+    def _calculate_term_priority(self, term: str) -> int:
+        """
+        Calculate priority score for a term (higher score = higher priority)
+        
+        Args:
+            term: Term to score
+            
+        Returns:
+            Priority score
+        """
+        if not term:
+            return 0
+        
+        # Base score from word count (more words = more descriptive)
+        word_count = len(term.split())
+        score = word_count * 10
+        
+        # Bonus for medical-sounding terms
+        medical_indicators = ['pain', 'ache', 'syndrome', 'disease', 'disorder', 'condition', 'symptoms']
+        for indicator in medical_indicators:
+            if indicator in term.lower():
+                score += 5
+        
+        # Bonus for descriptive adjectives
+        descriptive_words = ['severe', 'acute', 'chronic', 'mild', 'sharp', 'dull', 'throbbing']
+        for word in descriptive_words:
+            if word in term.lower():
+                score += 3
+        
+        return score
+    
     def create_section_from_keywords(self) -> Tuple[list, List[SectionCreate]]:
         """
         Create sections based on keyword dictionaries by finding and populating templates
@@ -66,6 +445,9 @@ class KeywordExtractService:
         Returns:
             Tuple of (templates, sections)
         """
+        # First consolidate keywords to reduce redundancy
+        self.consolidate_keywords()
+        
         sections = []
         found_templates = []
         
@@ -138,6 +520,7 @@ class KeywordExtractService:
             # Convert to section
             section = convert_to_section_create(section_data)
             sections.append(section)
+        
         self.clear()
         
         return (found_templates, sections)
