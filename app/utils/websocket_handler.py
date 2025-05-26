@@ -13,13 +13,10 @@ import traceback
 from app.db.local_session import DatabaseManager
 from app.services.audio_service import AudioService
 from app.services.transcription_service import TranscriptionService
+from app.utils.speech_processor import SpeechProcessor, TranscriptionConfig
 from app.services.nlp.keyword_extract_service import KeywordExtractService
 from app.services.note_service import NoteService
-from app.models.models import ReportTemplate, Section
-from app.schemas.section import SectionCreate
 from app.services.diarization_service import DiarizationService
-from app.models.models import ReportTemplate
-from app.utils.speech_processor import SpeechProcessor
 from app.utils.nlp.spacy_utils import process_text
 from app.api.v1.endpoints.calibration import calibration_service
 import datetime
@@ -107,21 +104,19 @@ async def managed_websocket_connection(websocket: WebSocket, connection_id: str)
             logger.info(f"WebSocket resources cleaned up for {connection_id}")
 
 async def process_audio_with_transcription_first(
-    chunk_bytes: bytes, 
-    user_id: int, 
-    note_id: int, 
-    websocket: WebSocket, 
+    chunk_bytes: bytes,
+    user_id: int,
+    note_id: int,
+    websocket: WebSocket,
     note_service: NoteService,
     transcription_service: TranscriptionService,
     keyword_service: KeywordExtractService,
-    diarization_service: DiarizationService,
     use_adaptation: bool = False,
     adaptation_user_id: Optional[int] = None,
-    doctor_id: Optional[int] = None,
     db: Session = None
 ) -> None:
     """
-    Process an audio chunk with transcription-first approach, then diarization when possible
+    Process audio chunk with immediate transcription (refactored version)
     
     Args:
         chunk_bytes: Raw audio bytes
@@ -131,137 +126,245 @@ async def process_audio_with_transcription_first(
         note_service: Note service instance
         transcription_service: Transcription service instance
         keyword_service: Keyword extraction service instance
-        diarization_service: Diarization service instance
         use_adaptation: Whether to use voice adaptation
         adaptation_user_id: User ID for adaptation profile
-        doctor_id: User ID of the doctor for diarization
         db: Database session
     """
     try:
-        # Check buffer size before adding
-        if chunk_bytes == None:
+        # Add chunk to audio service
+        if not transcription_service.audio_service.add_chunk(chunk_bytes):
+            logger.warning("Audio buffer full")
             return
-
-        # Add to audio service
-        transcription_service.audio_service.add_chunk(chunk_bytes)
         
-        # Function to serialize NumPy types for JSON
-        def serialize_for_json(obj):
-            if isinstance(obj, np.integer):
-                return int(obj)
-            elif isinstance(obj, np.floating):
-                return float(obj)
-            elif isinstance(obj, np.ndarray):
-                return obj.tolist()
-            elif isinstance(obj, datetime.datetime):
-                return obj.isoformat()
-            elif isinstance(obj, set):
-                return list(obj)
-            return obj
-
-        # Step 1: Always perform immediate transcription
-        min_transcription_duration_ms = 1000  # 1 second minimum for transcription
-        if transcription_service.audio_service.has_minimum_audio(min_duration_ms=min_transcription_duration_ms):
-            # Check for silence to know when to process
-            if transcription_service.audio_service.detect_silence():
-                logger.info(f"Processing immediate transcription for user {user_id}")
-                
-                # Get current audio data for transcription
-                current_audio = transcription_service.audio_service.get_wave_data()
-                
-                # Perform transcription with or without adaptation
-                transcription_start = time.time()
-                if use_adaptation and adaptation_user_id is not None:
-                    transcription_text = transcription_service.speech_processor.transcribe_with_adaptation(
-                        current_audio, adaptation_user_id, db
-                    )
-                    logger.info(f"Used speaker adaptation for user {adaptation_user_id}")
-                else:
-                    transcription_text = transcription_service.speech_processor.transcribe(current_audio)
-                    logger.info("Used standard transcription")
-                
-                transcription_time = time.time() - transcription_start
-                
-                # Send immediate transcription result
-                if transcription_text:
-                    await websocket.send_text(json.dumps({
-                        'text': transcription_text,
-                        'speaker': 'unknown',  # Will be updated by diarization if successful
-                        'processing_time_ms': round(transcription_time * 1000, 2),
-                        'using_adaptation': use_adaptation,
-                        'type': 'immediate_transcription'
-                    }, default=serialize_for_json))
-                    
-                    # Process transcription for keywords and sections
-                    await process_transcription_for_sections(
-                        transcription_text, 
-                        note_id, 
-                        websocket, 
-                        transcription_service, 
-                        keyword_service, 
-                        note_service
-                    )
-                
-                # Reset current buffer after processing
-                transcription_service.audio_service.reset_current_buffer()
-
-        # Step 2: Attempt diarization if there's enough accumulated audio
-        min_diarization_duration_ms = 3000  # 3 seconds minimum for diarization
-        session_audio = transcription_service.audio_service.get_wave_data(use_session_buffer=True)
-        session_duration_ms = len(session_audio) / transcription_service.audio_service.DEFAULT_SAMPLE_RATE * 1000
+        # Check for minimum audio and silence
+        if not transcription_service.audio_service.has_minimum_audio():
+            return
         
-        if session_duration_ms >= min_diarization_duration_ms:
-            # Only process diarization at intervals to avoid excessive processing
-            current_time = time.time()
-            if current_time - diarization_service.last_diarization_time > diarization_service.diarization_interval_seconds:
-                logger.info(f"Attempting diarization with {session_duration_ms:.1f}ms of audio")
-                
-                # Process diarization
-                diarization_start = time.time()
-                diarization_results = diarization_service.diarize_buffered_audio(doctor_id)
-                diarization_time = time.time() - diarization_start
-                
-                # Update last processing time
-                diarization_service.last_diarization_time = current_time
-                
-                # Check diarization results
-                status = diarization_results.get("status", "failed")
-                if status == "success":
-                    logger.info("Diarization successful, processing segments")
-                    
-                    # Process diarization results
-                    await process_diarization_results(
-                        diarization_results, 
-                        transcription_service, 
-                        websocket, 
-                        note_service, 
-                        keyword_service,
-                        note_id,
-                        use_adaptation,
-                        adaptation_user_id,
-                        doctor_id,
-                        db,
-                        diarization_time
-                    )
-                else:
-                    logger.info(f"Diarization not successful (status: {status}), continuing with transcription-only approach")
-                    
-                    # Send status update to client
-                    await websocket.send_text(json.dumps({
-                        'diarization_status': status,
-                        'message': 'Using transcription-only mode',
-                        'buffer_duration_ms': session_duration_ms
-                    }, default=serialize_for_json))
-        else:
-            logger.debug(f"Not enough audio for diarization yet ({session_duration_ms:.1f}ms < {min_diarization_duration_ms}ms)")
+        if not transcription_service.audio_service.detect_silence():
+            return
+        
+        logger.info(f"Processing immediate transcription for user {user_id}")
+        
+        # Process audio segment - returns JSON-serializable dict
+        segment_data = transcription_service.process_audio_segment(
+            user_id=user_id,
+            note_id=note_id,
+            use_adaptation=use_adaptation,
+            adaptation_user_id=adaptation_user_id,
+            db_session=db,
+            return_timing=True
+        )
+        
+        if not segment_data:
+            return
+        
+        # Send immediate transcription result
+        transcription_response = {
+            'text': segment_data['text'],
+            'start_time': segment_data['start_time'],
+            'end_time': segment_data['end_time'],
+            'confidence': segment_data.get('confidence', 1.0),
+            'using_adaptation': use_adaptation,
+            'words': segment_data.get('words', []),  # Include word timing
+            'speaker': "unknown"
+        }
+        
+        await websocket.send_text(json.dumps(transcription_response))
+        
+        # Extract keywords with timing
+        keywords = transcription_service.extract_keywords(use_word_timing=True)
+        
+        if keywords:
+            # Process keywords
+            keyword_service.process_and_buffer_keywords(keywords)
             
+            # Create sections from keywords
+            templates, sections = keyword_service.create_section_from_keywords()
+            
+            # Add sections to note
+            sections_data = []
+            for section in sections:
+                db_section = note_service.add_section_to_note(note_id, section)
+                if db_section:
+                    sections_data.append({
+                        'id': db_section.id,
+                        'title': db_section.title,
+                        'template_id': db_section.template_id,
+                        'soap_category': db_section.soap_category,
+                        'content': db_section.content
+                    })
+            
+            # Send sections update
+            if sections_data:
+                await websocket.send_text(json.dumps({
+                    'sections': sections_data
+                }))
+            
+            # Send keywords with timing
+            keywords_response = []
+            for keyword in keywords[:10]:  # Limit to first 10 for performance
+                keyword_data = {
+                    'term': keyword.get('term', ''),
+                    'semantic_type': keyword.get('semantic_type', ''),
+                    'modifiers': keyword.get('modifiers', [])
+                }
+                
+                # Add timing if available
+                if 'start_time' in keyword:
+                    keyword_data['start_time'] = keyword['start_time']
+                    keyword_data['end_time'] = keyword.get('end_time', keyword['start_time'])
+                    keyword_data['confidence'] = keyword.get('confidence', 1.0)
+                
+                keywords_response.append(keyword_data)
+            
+            if keywords_response:
+                await websocket.send_text(json.dumps({
+                    'keywords': keywords_response
+                }))
+        
+        # Send statistics
+        stats = transcription_service.get_statistics()
+        await websocket.send_text(json.dumps({
+            'statistics': {
+                'total_words': stats['total_words'],
+                'words_per_minute': round(stats['words_per_minute'], 1),
+                'average_confidence': round(stats['average_confidence'], 2),
+                'duration': round(stats['total_duration'], 2)
+            }
+        }))
+        
     except Exception as e:
         logger.error(f"Error processing audio: {str(e)}")
-        logger.error(traceback.format_exc())
         await websocket.send_text(json.dumps({
             "error": f"Error processing audio: {str(e)}"
         }))
 
+# Initialize services with proper configuration
+def initialize_transcription_services(use_onnx: bool = False) -> Tuple[TranscriptionService, KeywordExtractService]:
+    """
+    Initialize all required services for transcription
+    
+    Args:
+        use_onnx: Whether to use ONNX backend (if available)
+        
+    Returns:
+        Tuple of (transcription_service, keyword_service)
+    """
+    # Configure transcription
+    config = TranscriptionConfig(
+        backend="whisper_onnx" if use_onnx else "whisper_transformers",
+        model_size="small",
+        language="en",
+        enable_word_timing=True,
+        enable_medical_postprocessing=True,
+        confidence_threshold=0.7
+    )
+    
+    # Create services
+    speech_processor = SpeechProcessor(config)
+    audio_service = AudioService()
+    transcription_service = TranscriptionService(
+        audio_service=audio_service,
+        speech_processor=speech_processor,
+        config=config
+    )
+    keyword_service = KeywordExtractService()
+    
+    return transcription_service, keyword_service
+
+# Example WebSocket endpoint with refactored services
+async def websocket_endpoint_refactored(websocket: WebSocket, db: Session):
+    """Refactored WebSocket endpoint"""
+    # Get parameters
+    params = websocket.query_params
+    user_id = int(params.get("user_id", 0))
+    note_id = int(params.get("note_id", 0))
+    use_adaptation = params.get("use_adaptation", "false").lower() == "true"
+    doctor_id = int(params.get("doctor_id", user_id)) if params.get("doctor_id") else user_id
+    
+    # Initialize services
+    transcription_service, keyword_service = initialize_transcription_services(use_onnx=True)
+    note_service = NoteService(db)
+    
+    try:
+        await websocket.accept()
+        
+        # Send initialization message
+        await websocket.send_text(json.dumps({
+            "status": "connected",
+            "word_timing_enabled": True,
+            "medical_postprocessing": True
+        }))
+        
+        while True:
+            # Receive message
+            raw_data = await websocket.receive_text()
+            data = json.loads(raw_data)
+            
+            if "data" in data:
+                # Process audio chunk
+                audio_bytes = base64.b64decode(data["data"])
+                
+                await process_audio_with_transcription_first(
+                    audio_bytes,
+                    user_id,
+                    note_id,
+                    websocket,
+                    note_service,
+                    transcription_service,
+                    keyword_service,
+                    use_adaptation,
+                    doctor_id if use_adaptation else None,
+                    db
+                )
+            
+            elif "command" in data:
+                # Handle commands
+                command = data["command"]
+                
+                if command == "get_transcript":
+                    # Get full transcript with timing
+                    transcript_data = transcription_service.get_current_transcript(include_timing=True)
+                    await websocket.send_text(json.dumps({
+                        "transcript": transcript_data
+                    }))
+                
+                elif command == "export":
+                    # Export transcript
+                    format = data.get("format", "json")
+                    export_data = transcription_service.export_transcript(format)
+                    await websocket.send_text(json.dumps({
+                        "export": export_data,
+                        "format": format
+                    }))
+                
+                elif command == "reset":
+                    # Reset transcription
+                    transcription_service.reset()
+                    await websocket.send_text(json.dumps({
+                        "status": "reset"
+                    }))
+    
+    except Exception as e:
+        logger.error(f"WebSocket error: {str(e)}")
+    finally:
+        # Cleanup
+        transcription_service.reset()
+        keyword_service.clear()
+
+# Utility function to format word timing for display
+def format_word_timing(words: list) -> str:
+    """Format word timing data for display"""
+    lines = []
+    for word_data in words:
+        start = word_data.get('start_time', 0)
+        end = word_data.get('end_time', 0)
+        conf = word_data.get('confidence', 1.0)
+        word = word_data.get('word', '')
+        
+        lines.append(f"{start:.2f}-{end:.2f}s: {word} (conf: {conf:.2f})")
+    
+    return "\n".join(lines)
 
 async def process_transcription_for_sections(
     transcription_text: str,
@@ -676,10 +779,8 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_ses
                         note_service=note_service,
                         transcription_service=transcription_service,
                         keyword_service=keyword_service,
-                        diarization_service=diarization_service,
                         use_adaptation=use_adaptation,
                         adaptation_user_id=adaptation_user_id,
-                        doctor_id=doctor_id,
                         db=db
                     )
                     

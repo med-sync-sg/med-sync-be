@@ -556,8 +556,8 @@ def process_with_diarization(audio_path: str, reference: str, use_adaptation: bo
         diarization_start = time.time()
         
         # Perform diarization
-        diarization_results = diarization_service.process_audio(
-            audio_data, sample_rate, doctor_id
+        diarization_results = diarization_service.diarize_buffered_audio(
+            doctor_id
         )
         
         diarization_time = time.time() - diarization_start

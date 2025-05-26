@@ -2,533 +2,535 @@ import numpy as np
 import os
 import torch
 import logging
-import pickle
 import time
+from typing import Optional, Dict, Any, List, Tuple, Union
+from dataclasses import dataclass, field
+from abc import ABC, abstractmethod
+import json
 
-from typing import Optional, Dict, Any, Tuple
-from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor, WhisperProcessor, WhisperForConditionalGeneration
-from pyctcdecode import build_ctcdecoder
+from transformers import WhisperProcessor, WhisperForConditionalGeneration
 from sqlalchemy.orm import Session
 
 from app.db.local_session import DatabaseManager
 from app.models.models import SpeakerProfile
 from app.utils.voice_adaptation_utils import AdaptationTransformer, preprocess_audio_for_speaker, get_base_model_stats
-from app.utils.text_utils import extract_medical_terms, sym_spell, clean_transcription
-from app.db.data_loader import umls_df_dict
-
-def adjust_pauses_for_hf_pipeline_output(pipeline_output, split_threshold=0.12):
-    """
-    Adjust pause timings by distributing pauses up to the threshold evenly between adjacent words.
-    """
-
-    adjusted_chunks = pipeline_output["chunks"].copy()
-
-    for i in range(len(adjusted_chunks) - 1):
-        current_chunk = adjusted_chunks[i]
-        next_chunk = adjusted_chunks[i + 1]
-
-        current_start, current_end = current_chunk["timestamp"]
-        next_start, next_end = next_chunk["timestamp"]
-        pause_duration = next_start - current_end
-
-        if pause_duration > 0:
-            if pause_duration > split_threshold:
-                distribute = split_threshold / 2
-            else:
-                distribute = pause_duration / 2
-
-            # Adjust current chunk end time
-            adjusted_chunks[i]["timestamp"] = (current_start, current_end + distribute)
-
-            # Adjust next chunk start time
-            adjusted_chunks[i + 1]["timestamp"] = (next_start - distribute, next_end)
-    pipeline_output["chunks"] = adjusted_chunks
-
-    return pipeline_output
+from app.utils.text_utils import sym_spell, clean_transcription
 
 # Configure logger
 logger = logging.getLogger(__name__)
 
-class SpeechProcessor:
-    """
-    Unified speech processor with standard and adaptive transcription capabilities.
-    
-    This class handles:
-    1. Model initialization and configuration
-    2. Audio preprocessing
-    3. Standard transcription
-    4. Speaker-adapted transcription using database profiles
-    5. Profile caching for performance
-    """
-    
-    def __init__(self, model_id: str = "openai/whisper-small",
-                 use_gpu: bool = True,
-                 language_model_path: Optional[str] = None):
-        """
-        Initialize the speech processor with the specified model
-        
-        Args:
-            model_id: HuggingFace model ID for Wav2Vec2
-            use_gpu: Whether to use GPU if available
-            language_model_path: Optional path to a KenLM language model binary
-        """
-        try:
-            logger.info(f"Initializing SpeechProcessor with model {model_id}")
-            
-            self.processor = WhisperProcessor.from_pretrained("openai/whisper-small")
-            self.model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-small")
-                        
-            # Initialize model
-            # self.model = Wav2Vec2ForCTC.from_pretrained(model_id)
-            
-            
-            # Initialize the decoder with character vocabulary
-            # self._create_decoder()
-            
-            # Database connection and adaptation cache
-            self.db_manager = DatabaseManager()
-            self.adaptation_cache = {}  # Cache transformers by user_id
-            self.profile_cache = {}     # Cache profiles by user_id
-            self.profile_cache_ttl = 300  # Cache TTL in seconds
-            self.profile_cache_timestamps = {}  # When profiles were cached
-            
-        except Exception as e:
-            logger.error(f"Error initializing SpeechProcessor: {str(e)}")
-            raise RuntimeError(f"Failed to initialize speech processor: {str(e)}")
-    
-    
-    def _load_unigrams(self, unigrams_file, top_n=10000, min_score=-10.0):
-        """
-        Load unigrams from file and prepare them for decoder
-        
-        Args:
-            unigrams_file: Path to the unigrams.txt file
-            top_n: Limit to the top N words by probability
-            min_score: Minimum log probability to include
-            
-        Returns:
-            Tuple of (unigram list with scores, hotword list for boosting)
-        """
-        print(f"Loading unigrams from {unigrams_file}")
-        
-        unigram_list = []  # List of (word, score) tuples
-        hotwords = []      # List of domain-specific words for boosting
-        
-        try:
-            with open(unigrams_file, 'r', encoding='utf-8') as f:
-                # Skip header if it exists
-                first_line = f.readline().strip()
-                if first_line.startswith("word\t"):
-                    pass  # Skip header
-                else:
-                    # If no header, process the first line
-                    parts = first_line.split('\t')
-                    if len(parts) >= 2:
-                        word = parts[0].strip()
-                        score = float(parts[1])
-                        unigram_list.append((word, score))
-                        
-                        # High-probability words become hotwords for boosting
-                        if score > min_score:
-                            hotwords.append(word)
-                
-                # Process remaining lines
-                for line in f:
-                    parts = line.strip().split('\t')
-                    if len(parts) >= 2:
-                        word = parts[0].strip()
-                        score = float(parts[1])
-                        unigram_list.append((word, score))
-                        
-                        # High-probability words become hotwords for boosting
-                        if score > min_score:
-                            hotwords.append(word)
-            
-            # Sort by score (highest first) and limit to top_n
-            unigram_list.sort(key=lambda x: x[1], reverse=True)
-            if top_n:
-                unigram_list = unigram_list[:top_n]
-                
-            print(f"Loaded {len(unigram_list)} unigrams, {len(hotwords)} hotwords")
-            
-            # Print some samples
-            if unigram_list:
-                print("Sample unigrams (word, log prob):")
-                for word, score in unigram_list[:10]:
-                    print(f"  {word}: {score:.4f}")
-            
-        except Exception as e:
-            print(f"Error loading unigrams: {str(e)}")
-            # Return empty lists if file can't be loaded
-            return [], []
-            
-        return unigram_list, hotwords
-    
-    def _create_decoder(self):
-        # Path to language model
-        lm_path = "D:/medsync/med_sync_be/training/4-gram.binary"
-        unigram_path = "D:/medsync/med_sync_be/training/unigrams.txt"
-        unigram_texts, hotwords = self._load_unigrams(unigram_path)
-        
-        # CRITICAL FIX: Create a vocabulary list that EXACTLY matches the model's vocabulary
-        # Don't filter tokens or add/remove any - it must match the model exactly
-        
-        # Get all tokens from the tokenizer
-        vocab = self.model.config.vocab_list if hasattr(self.model.config, 'vocab_list') else None
-        
-        # If vocab_list not available, create from alphabet
-        # if not vocab:
-        #     # Standard English alphabet plus special tokens
-        #     alphabet = list(string.ascii_lowercase + " '")
-        #     blank_token = self.model.config.pad_token if hasattr(self.model.config, 'pad_token') else "<pad>"
-        #     vocab = [blank_token] + alphabet
-        #     logger.info(f"Created vocabulary from standard alphabet with {len(vocab)} tokens")
-                
-        
-        # print(f"Decoder vocabulary prepared with {len(decoder_vocab)} tokens (matching model)")
-        
-        # Build the decoder
-        try:
-            decoder = build_ctcdecoder(
-                vocab,
-                kenlm_model_path=lm_path,
-                unigrams=unigram_texts,
-                alpha=1.0,
-                beta=1.5,
-                lm_score_boundary=True
-            )
-            print("Successfully created decoder with language model")
-        except Exception as e:
-            print(f"Error building decoder with LM: {str(e)}")
-            print("Falling back to decoder without language model")
-            decoder = build_ctcdecoder(vocab)
-        
-        return decoder
+# Data models for transcription results
+@dataclass
+class WordTiming:
+    """Represents a single word with timing information"""
+    word: str
+    start_time: float
+    end_time: float
+    confidence: float = 1.0
+    speaker_id: Optional[str] = None
 
-    def initialize_medical_dictionary(self):
-        """Initialize the dictionary with additional medical terms"""
-        def create_medical_dictionary():
-            """Generate a comprehensive medical dictionary from UMLS data"""
-            
-            try:
-                # Get UMLS concepts
-                df = umls_df_dict["concepts_with_sty_def_df"]
-                logger.info(len(df))
-                logger.info(df.columns)
-                # Extract terms
-                terms = set()
-                for _, row in df.iterrows():
-                    term: str = row["STR"]
-                    
-                    term_to_add = extract_medical_terms(term)
-                    
-                    if term_to_add:
-                        for target_term in term_to_add:
-                            if len(target_term) > 2:
-                                terms.add(target_term)
-                
-                # Create dictionary directory if it doesn't exist
-                os.makedirs("app/dictionaries", exist_ok=True)
-                
-                if os.path.exists(os.path.join("app", "dictionaries", "medical_terms.txt")):
-                    logger.info("Medical terms already exist.")
-                    return
-                
-                # Write to file
-                with open(os.path.join("app", "dictionaries", "medical_terms.txt"), "w", encoding='utf-8') as f:
-                    for term in sorted(terms):
-                        f.write(f"{term}\n")
-                
-                print(f"Created medical dictionary with {len(terms)} terms")
-                
-            except Exception as e:
-                print(f"Error creating medical dictionary: {str(e)}")  
-        
-        create_medical_dictionary()
-        
-        # Add medical terms to SymSpell dictionary
-        try:
-            # Get path to medical terms dictionary
-            medical_dict_path = os.path.join("app", "dictionaries", "medical_terms.txt")
-            
-            if os.path.exists(medical_dict_path):
-                # Load medical dictionary
-                with open(medical_dict_path, 'r') as f:
-                    for line in f:
-                        term = line.strip()
-                        if term:
-                            # Add to dictionary with a decent frequency
-                            sym_spell.create_dictionary_entry(term, 1000)
-                
-                logger.info(f"Loaded medical terms dictionary from {medical_dict_path}")
-            else:
-                logger.warning(f"Medical dictionary not found at {medical_dict_path}")
-                
-        except Exception as e:
-            logger.error(f"Error loading medical dictionary: {str(e)}")
+@dataclass
+class TranscriptionSegment:
+    """Represents a segment of transcription"""
+    text: str
+    start_time: float
+    end_time: float
+    words: List[WordTiming] = field(default_factory=list)
+    speaker_id: Optional[str] = None
+    confidence: float = 1.0
 
-    def preprocess_audio(self, audio_samples: np.ndarray, sample_rate: int = 16000) -> torch.Tensor:
-        """
-        Preprocess audio samples for the model
-        
-        Args:
-            audio_samples: Normalized audio samples (float32 [-1.0, 1.0])
-            sample_rate: Sample rate of the audio
-            
-        Returns:
-            Tensor of processed input values
-        """
-        # Check if audio is empty
-        if len(audio_samples) == 0:
-            logger.warning("Empty audio provided for preprocessing")
-            return torch.zeros((1, 0), device=self.device)
-        
-        # Process audio with the Wav2Vec2 processor
-        inputs = self.processor(
-            audio_samples, 
-            sampling_rate=sample_rate, 
-            return_tensors="pt"
-        ).input_values
-        
-        # Move to the correct device
-        return inputs.to(self.device)
+@dataclass
+class TranscriptionResult:
+    """Complete transcription result with all metadata"""
+    text: str
+    words: List[WordTiming] = field(default_factory=list)
+    segments: List[TranscriptionSegment] = field(default_factory=list)
+    language: str = "en"
+    duration: float = 0.0
+    confidence: float = 1.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class TranscriptionConfig:
+    """Configuration for transcription"""
+    backend: str = "whisper_transformers"  # or "whisper_onnx"
+    model_size: str = "small"
+    language: str = "en"
+    task: str = "transcribe"
+    enable_speaker_adaptation: bool = True
+    enable_medical_postprocessing: bool = True
+    enable_word_timing: bool = True
+    confidence_threshold: float = 0.7
+    use_gpu: bool = True
+    beam_size: int = 5
+    temperature: float = 0.0
+    compression_ratio_threshold: float = 2.4
+    no_speech_threshold: float = 0.6
+
+# Abstract base class for transcription backends
+class TranscriptionBackend(ABC):
+    """Abstract base class for transcription backends"""
     
-    def transcribe(self, audio_samples: np.ndarray, sample_rate: int = 16000) -> str:
-        """
-        Standard transcription without speaker adaptation
+    @abstractmethod
+    def transcribe(self, audio_samples: np.ndarray, sample_rate: int = 16000) -> TranscriptionResult:
+        """Transcribe audio and return structured result"""
+        pass
+    
+    @abstractmethod
+    def transcribe_with_timing(self, audio_samples: np.ndarray, sample_rate: int = 16000) -> TranscriptionResult:
+        """Transcribe audio with word-level timing"""
+        pass
+    
+    @abstractmethod
+    def get_model_info(self) -> Dict[str, Any]:
+        """Get information about the loaded model"""
+        pass
+
+class WhisperTransformersBackend(TranscriptionBackend):
+    """Whisper backend using HuggingFace Transformers"""
+    
+    def __init__(self, config: TranscriptionConfig):
+        self.config = config
+        self.device = "cuda" if torch.cuda.is_available() and config.use_gpu else "cpu"
         
-        Args:
-            audio_samples: Normalized audio samples (float32 [-1.0, 1.0])
-            sample_rate: Sample rate of the audio
-            
-        Returns:
-            Transcribed text as string
-        """
+        # Load model and processor
+        model_id = f"openai/whisper-{config.model_size}"
+        logger.info(f"Loading Whisper model: {model_id} on {self.device}")
+        
+        self.processor = WhisperProcessor.from_pretrained(model_id)
+        self.model = WhisperForConditionalGeneration.from_pretrained(model_id)
+        self.model.to(self.device)
+        
+        # Set model to eval mode
+        self.model.eval()
+        
+    def transcribe(self, audio_samples: np.ndarray, sample_rate: int = 16000) -> TranscriptionResult:
+        """Basic transcription without timing"""
         try:
-            # Check if audio is empty
             if len(audio_samples) == 0:
-                logger.warning("Empty audio provided for transcription")
-                return ""
+                return TranscriptionResult(text="", duration=0.0)
             
-            input_features = self.processor(audio_samples, sampling_rate=16000, return_tensors="pt").input_features
-            predicted_ids = self.model.generate(input_features, language='en', task='transcribe')
-            transcription = self.processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
-            return transcription
+            # Process audio
+            inputs = self.processor(
+                audio_samples, 
+                sampling_rate=sample_rate, 
+                return_tensors="pt"
+            ).input_features.to(self.device)
+            
+            # Generate transcription
+            with torch.no_grad():
+                generated_ids = self.model.generate(
+                    inputs,
+                    language=self.config.language,
+                    task=self.config.task,
+                    num_beams=self.config.beam_size,
+                    temperature=self.config.temperature
+                )
+            
+            # Decode
+            transcription = self.processor.batch_decode(
+                generated_ids, 
+                skip_special_tokens=True
+            )[0]
+            
+            # Calculate duration
+            duration = len(audio_samples) / sample_rate
+            
+            return TranscriptionResult(
+                text=transcription.strip(),
+                duration=duration,
+                language=self.config.language
+            )
+            
         except Exception as e:
             logger.error(f"Transcription error: {str(e)}")
-            return ""
-        
+            return TranscriptionResult(text="", duration=0.0)
     
-    def preprocess_audio_for_speaker(self, audio_samples: np.ndarray, speaker_profile: Dict[str, Any]) -> np.ndarray:
-        """
-        Preprocess audio with speaker-specific settings
-        
-        Args:
-            audio_samples: Raw audio samples
-            speaker_profile: Speaker profile from calibration
-            
-        Returns:
-            Processed audio samples
-        """
+    def transcribe_with_timing(self, audio_samples: np.ndarray, sample_rate: int = 16000) -> TranscriptionResult:
+        """Direct approach using Whisper's token timestamps"""
         try:
-            # Extract mean vector and covariance matrix
-            mean_vector = speaker_profile.get('mean_vector')
-            covariance_matrix = speaker_profile.get('covariance_matrix')
+            if len(audio_samples) == 0:
+                return TranscriptionResult(text="", duration=0.0)
             
-            if mean_vector is None or covariance_matrix is None:
-                logger.warning("Missing required statistics in speaker profile")
-                return audio_samples
+            # Process audio
+            inputs = self.processor(
+                audio_samples, 
+                sampling_rate=sample_rate, 
+                return_tensors="pt"
+            ).input_features.to(self.device)
             
-            # Volume normalization - consistent input level is important
-            if np.max(np.abs(audio_samples)) > 0:
-                normalized = audio_samples / np.max(np.abs(audio_samples)) * 0.9
-            else:
-                normalized = audio_samples
-                
-            # Extract MFCC features from the audio
-            mfccs = self.extract_mfcc_features(normalized, sr=16000)
+            # Generate with specific timestamp configuration
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    inputs,
+                    return_dict_in_generate=True,
+                    output_scores=True,
+                    return_timestamps=True
+                )
             
-            # Apply CMVN normalization using speaker statistics
-            # This aligns the feature distribution with the speaker's profile
-            base_stats = get_base_model_stats()
-            base_mean = base_stats.get('mean_vector')
-            base_std = np.sqrt(np.diag(base_stats.get('covariance_matrix')))
-            speaker_std = np.sqrt(np.diag(covariance_matrix))
+            # Decode and extract timestamps
+            transcription = self.processor.decode(outputs.sequences[0], skip_special_tokens=False)
             
-            # Calculate scaling factors
-            scale_factors = speaker_std / (base_std + 1e-10)
+            # Parse timestamps from the transcription
+            words_with_timing = self._parse_whisper_timestamps(transcription, outputs, audio_samples, sample_rate)
             
-            # Adjust audio based on feature comparison (simplified frequency warping)
-            # This is a basic approach - more sophisticated methods would implement 
-            # vocal tract length normalization or similar techniques
-            adjusted = normalized.copy()
-            
-            # Apply a simple filter based on the MFCC difference
-            if len(adjusted) > 320:  # At least 20ms of audio
-                adjusted = self.apply_spectral_shaping(adjusted, scale_factors)
-                
-            return adjusted
+            return TranscriptionResult(
+                text=transcription,
+                words=words_with_timing,
+                duration=len(audio_samples) / sample_rate
+            )
             
         except Exception as e:
-            logger.error(f"Error preprocessing audio for speaker: {e}")
-            return audio_samples
+            logger.error(f"Error in direct timestamp approach: {str(e)}")
+            return self.transcribe(audio_samples, sample_rate)
 
-    def apply_spectral_shaping(self, audio: np.ndarray, scale_factors: np.ndarray) -> np.ndarray:
-        """
-        Apply spectral shaping to audio based on MFCC-derived scale factors
+    def _parse_whisper_timestamps(self, transcription: str, outputs, audio_samples: np.ndarray, sample_rate: int) -> List[WordTiming]:
+        """Parse Whisper's timestamp tokens to extract word timings"""
+        # Whisper uses special tokens like <|0.00|> for timestamps
+        import re
         
-        Args:
-            audio: Input audio samples
-            scale_factors: Scaling factors derived from MFCC comparison
-            
-        Returns:
-            Shaped audio samples
-        """
-        import scipy.signal as signal
-        import numpy as np
+        words = []
+        pattern = r'<\|(\d+\.\d+)\|>([^<]+)'
+        matches = re.findall(pattern, transcription)
         
-        # Check for valid input
-        if len(audio) == 0:
-            return audio
-        
-        if np.all(scale_factors == 0) or len(scale_factors) == 0:
-            return audio
-        
-        try:
-            # For vocal tract adaptation, we want to design a filter that
-            # transforms the spectral characteristics of the audio
-            
-            # 1. Extend scale factors if needed (use full available factors)
-            if len(scale_factors) < 13:  # Typical MFCC dimension
-                # Pad with ones (neutral scaling)
-                extended_factors = np.ones(13)
-                extended_factors[:len(scale_factors)] = scale_factors
+        for i, (timestamp, text) in enumerate(matches):
+            start_time = float(timestamp)
+            # Estimate end time based on next timestamp or audio duration
+            if i < len(matches) - 1:
+                end_time = float(matches[i + 1][0])
             else:
-                extended_factors = scale_factors[:13]  # Use first 13 (covers main formants)
+                end_time = len(audio_samples) / sample_rate
             
-            # 2. Design filter based on scale factors - convert to proper filter response
-            # Use a more sophisticated filter design
-            nyquist = 0.5 * 16000  # Assuming 16kHz sample rate
+            # Split text into words
+            word_list = text.strip().split()
+            if word_list:
+                # Distribute time evenly among words
+                word_duration = (end_time - start_time) / len(word_list)
+                for j, word in enumerate(word_list):
+                    words.append(WordTiming(
+                        word=word,
+                        start_time=start_time + j * word_duration,
+                        end_time=start_time + (j + 1) * word_duration,
+                        confidence=1.0
+                    ))
+        
+        return words
+    
+    def _process_pipeline_output(self, pipeline_output: Dict[str, Any], audio_samples: np.ndarray, sample_rate: int) -> TranscriptionResult:
+        """Process pipeline output to extract word timing"""
+        text = pipeline_output.get("text", "")
+        chunks = pipeline_output.get("chunks", [])
+        
+        words = []
+        segments = []
+        
+        if chunks:
+            # Process chunks into words
+            for chunk in chunks:
+                word_text = chunk.get("text", "").strip()
+                if not word_text:
+                    continue
+                    
+                timestamp = chunk.get("timestamp")
+                if timestamp and isinstance(timestamp, (list, tuple)) and len(timestamp) >= 2:
+                    start_time = float(timestamp[0]) if timestamp[0] is not None else 0.0
+                    end_time = float(timestamp[1]) if timestamp[1] is not None else start_time + 0.1
+                else:
+                    # No timing info, estimate based on position
+                    start_time = 0.0
+                    end_time = 0.1
+                
+                word = WordTiming(
+                    word=word_text,
+                    start_time=start_time,
+                    end_time=end_time,
+                    confidence=1.0  # Pipeline doesn't provide confidence
+                )
+                words.append(word)
             
-            # Map MFCC scale factors to frequency bands
-            # This mapping is approximate - maps each MFCC bin to corresponding frequency range
-            freq_points = np.linspace(0, nyquist, len(extended_factors) + 2)[1:-1]
-            gains_db = 20 * np.log10(extended_factors)  # Convert to dB
+            # Create a single segment for the whole transcription
+            if words:
+                segment = TranscriptionSegment(
+                    text=text,
+                    start_time=words[0].start_time,
+                    end_time=words[-1].end_time,
+                    words=words
+                )
+                segments.append(segment)
+        
+        return TranscriptionResult(
+            text=text,
+            words=words,
+            segments=segments,
+            duration=len(audio_samples) / sample_rate,
+            language=self.config.language
+        )
+    
+    def _process_whisper_output(self, outputs: Dict[str, Any], audio_samples: np.ndarray, sample_rate: int) -> TranscriptionResult:
+        """Process Whisper output to extract word timing"""
+        # This is a simplified version - in practice, you'd need to parse
+        # Whisper's token timestamps and map them to words
+        
+        if isinstance(outputs, str):
+            # Simple output without timing
+            return TranscriptionResult(
+                text=outputs.strip(),
+                duration=len(audio_samples) / sample_rate
+            )
+        
+        # Extract text and timing information
+        text = outputs.get("text", "")
+        segments = outputs.get("segments", [])
+        
+        words = []
+        transcription_segments = []
+        
+        for segment in segments:
+            segment_text = segment.get("text", "")
+            start_time = segment.get("start", 0.0)
+            end_time = segment.get("end", 0.0)
             
-            # Constrain extreme values to avoid instability
-            gains_db = np.clip(gains_db, -20, 20)
+            # Extract words from segment
+            segment_words = []
+            if "words" in segment:
+                for word_info in segment["words"]:
+                    word = WordTiming(
+                        word=word_info["word"],
+                        start_time=word_info["start"],
+                        end_time=word_info["end"],
+                        confidence=word_info.get("probability", 1.0)
+                    )
+                    words.append(word)
+                    segment_words.append(word)
             
-            # 3. Create filter using frequency sampling method
-            filter_order = min(int(len(audio) / 8), 512)  # Adaptive filter order based on audio length
-            filter_order = max(filter_order, 31)  # Minimum order for good resolution
-            filter_order = filter_order + 1 if filter_order % 2 == 0 else filter_order  # Make odd
-            
-            # Use firwin2 for more precise frequency response
-            b = signal.firwin2(filter_order, 
-                            np.concatenate(([0], freq_points, [nyquist])) / nyquist, 
-                            np.concatenate(([gains_db[0]], gains_db, [gains_db[-1]])),
-                            fs=16000)
-            
-            # 4. Apply filter
-            padded_audio = np.pad(audio, (filter_order//2, filter_order//2), mode='edge')
-            filtered_audio = signal.lfilter(b, [1.0], padded_audio)
-            
-            # Remove padding
-            filtered_audio = filtered_audio[filter_order//2:filter_order//2 + len(audio)]
-            
-            # 5. Normalize output to match input level
-            if np.max(np.abs(audio)) > 0:
-                filtered_audio = filtered_audio * (np.max(np.abs(audio)) / np.max(np.abs(filtered_audio)))
-            
-            return filtered_audio
-            
-        except Exception as e:
-            logger.warning(f"Error in spectral shaping: {str(e)}. Returning original audio.")
-            return audio
+            transcription_segment = TranscriptionSegment(
+                text=segment_text,
+                start_time=start_time,
+                end_time=end_time,
+                words=segment_words
+            )
+            transcription_segments.append(transcription_segment)
+        
+        return TranscriptionResult(
+            text=text,
+            words=words,
+            segments=transcription_segments,
+            duration=len(audio_samples) / sample_rate,
+            language=self.config.language
+        )
+    
+    def get_model_info(self) -> Dict[str, Any]:
+        """Get model information"""
+        return {
+            "backend": "whisper_transformers",
+            "model_size": self.config.model_size,
+            "device": self.device,
+            "language": self.config.language
+        }
 
-    def extract_mfcc_features(samples: np.ndarray, sr: int = 16000) -> np.ndarray:
-        """
-        Extract MFCC features from audio samples
+class WhisperONNXBackend(TranscriptionBackend):
+    """Whisper backend using ONNX Runtime for improved performance"""
+    
+    def __init__(self, config: TranscriptionConfig):
+        self.config = config
         
-        Args:
-            samples: Audio samples
-            sr: Sample rate
-            
-        Returns:
-            MFCC features
-        """
-        import librosa
+        # Import ONNX runtime
+        try:
+            import onnxruntime as ort
+            self.ort = ort
+        except ImportError:
+            raise ImportError("Please install onnxruntime: pip install onnxruntime-gpu")
         
-        # Extract MFCC features
-        mfccs = librosa.feature.mfcc(
-            y=samples, 
-            sr=sr, 
-            n_mfcc=13,
-            hop_length=int(sr * 0.01),  # 10ms hop
-            n_fft=int(sr * 0.025)       # 25ms window
+        # Load ONNX model
+        self._load_onnx_model()
+        
+    def _load_onnx_model(self):
+        """Load ONNX model and create inference session"""
+        # Model paths - these would need to be configured
+        model_path = f"models/whisper-{self.config.model_size}.onnx"
+        
+        # Create inference session
+        providers = ['CUDAExecutionProvider'] if self.config.use_gpu else ['CPUExecutionProvider']
+        
+        session_options = self.ort.SessionOptions()
+        session_options.graph_optimization_level = self.ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        
+        self.session = self.ort.InferenceSession(
+            model_path,
+            sess_options=session_options,
+            providers=providers
         )
         
-        return mfccs
+        # Load processor for preprocessing
+        model_id = f"openai/whisper-{self.config.model_size}"
+        from transformers import WhisperProcessor
+        self.processor = WhisperProcessor.from_pretrained(model_id)
+        
+    def transcribe(self, audio_samples: np.ndarray, sample_rate: int = 16000) -> TranscriptionResult:
+        """Transcribe using ONNX"""
+        # Preprocess audio
+        inputs = self.processor(
+            audio_samples,
+            sampling_rate=sample_rate,
+            return_tensors="np"
+        )
+        
+        # Run inference
+        outputs = self.session.run(
+            None,
+            {self.session.get_inputs()[0].name: inputs.input_features}
+        )
+        
+        # Process outputs
+        # This is simplified - actual implementation would need proper decoding
+        text = self._decode_outputs(outputs)
+        
+        return TranscriptionResult(
+            text=text,
+            duration=len(audio_samples) / sample_rate,
+            language=self.config.language
+        )
     
-    def _post_process_transcription(self, text: str) -> str:
-        """
-        Post-process transcription to ensure only valid words
+    def transcribe_with_timing(self, audio_samples: np.ndarray, sample_rate: int = 16000) -> TranscriptionResult:
+        """ONNX transcription with timing - would need custom implementation"""
+        # For now, fallback to regular transcription
+        return self.transcribe(audio_samples, sample_rate)
+    
+    def _decode_outputs(self, outputs):
+        """Decode ONNX outputs to text"""
+        # Simplified - actual implementation would use beam search
+        return "ONNX transcription output"
+    
+    def get_model_info(self) -> Dict[str, Any]:
+        """Get model information"""
+        return {
+            "backend": "whisper_onnx",
+            "model_size": self.config.model_size,
+            "providers": self.session.get_providers()
+        }
+
+class MedicalPostProcessor:
+    """Post-processor for medical transcriptions"""
+    
+    def __init__(self, enable_spell_check: bool = True):
+        self.enable_spell_check = enable_spell_check
         
-        Args:
-            text: Raw transcription text
-            
-        Returns:
-            Processed text with only valid words
-        """
-        from symspellpy import Verbosity
-        
-        # First apply basic cleaning
-        text = clean_transcription(text)
-        
-        # Split into words
-        words = text.split()
-        corrected_words = []
+    def process(self, result: TranscriptionResult) -> TranscriptionResult:
+        """Process transcription result for medical accuracy"""
+        # Process the main text
+        processed_text = self._process_text(result.text)
         
         # Process each word
-        for word in words:            
-            # Skip empty words after cleaning
-            if not word:
-                continue
-
-            # Try to correct with SymSpell
-            suggestions = sym_spell.lookup(word, Verbosity.CLOSEST, max_edit_distance=2)
-            if suggestions:
-                # Use the closest suggestion
-                corrected_words.append(suggestions[0].term)
-            else:
-                # If word is in English dictionary, keep it
-                if sym_spell.lookup(word, Verbosity.TOP, max_edit_distance=2):
-                    corrected_words.append(word)
-                # Otherwise, it's likely nonsense, so skip it
-                else:
-                    corrected_words.append(word)
+        processed_words = []
+        for word in result.words:
+            processed_word = self._process_word(word)
+            processed_words.append(processed_word)
         
-        # Join back to text
-        corrected_text = ' '.join(corrected_words)
+        # Update result
+        result.text = processed_text
+        result.words = processed_words
         
-        # Return empty string if nothing valid was found
-        return corrected_text if corrected_words else ""
+        return result
     
-    def transcribe_with_adaptation(self, audio_samples: np.ndarray, user_id: int, 
-                              db: Optional[Session] = None, sample_rate: int = 16000) -> str:
+    def _process_text(self, text: str) -> str:
+        """Process complete text"""
+        if not text:
+            return text
+            
+        # Clean transcription
+        text = clean_transcription(text)
+        
+        # Medical spell checking could go here
+        # For now, keep it simple
+        
+        return text
+    
+    def _process_word(self, word: WordTiming) -> WordTiming:
+        """Process individual word"""
+        # Could apply medical dictionary validation here
+        # For now, just clean the word
+        word.word = word.word.strip()
+        return word
+
+class SpeechProcessor:
+    """
+    Refactored speech processor with pluggable backends and medical focus
+    """
+    
+    def __init__(self, config: Optional[TranscriptionConfig] = None):
+        """Initialize with configuration"""
+        self.config = config or TranscriptionConfig()
+        
+        # Initialize backend
+        self._init_backend()
+        
+        # Initialize medical post-processor
+        self.medical_processor = MedicalPostProcessor(
+            enable_spell_check=self.config.enable_medical_postprocessing
+        )
+        
+        # Database and caching
+        self.db_manager = DatabaseManager()
+        self.adaptation_cache = {}
+        self.profile_cache = {}
+        self.profile_cache_ttl = 300
+        self.profile_cache_timestamps = {}
+        
+        logger.info(f"SpeechProcessor initialized with backend: {self.config.backend}")
+    
+    def _init_backend(self):
+        """Initialize the transcription backend"""
+        if self.config.backend == "whisper_onnx":
+            try:
+                self.backend = WhisperONNXBackend(self.config)
+            except ImportError:
+                logger.warning("ONNX not available, falling back to transformers")
+                self.config.backend = "whisper_transformers"
+                self.backend = WhisperTransformersBackend(self.config)
+        else:
+            self.backend = WhisperTransformersBackend(self.config)
+    
+    def transcribe(self, audio_samples: np.ndarray, sample_rate: int = 16000, 
+                   with_timing: bool = None) -> Union[str, TranscriptionResult]:
         """
-        Transcribe audio using speaker adaptation from database
+        Transcribe audio - returns string for backward compatibility
         
         Args:
-            audio_samples: Normalized audio samples (float32 [-1.0, 1.0])
-            user_id: User ID for speaker adaptation profile
-            db: Optional database session (will create one if not provided)
-            sample_rate: Sample rate of the audio
+            audio_samples: Audio samples
+            sample_rate: Sample rate
+            with_timing: Whether to include word timing
             
         Returns:
-            Transcribed text with speaker adaptation applied
+            String transcription or TranscriptionResult if with_timing=True
         """
-        # Create database session if not provided
+        # Determine if we need timing
+        if with_timing is None:
+            with_timing = self.config.enable_word_timing
+        
+        # Transcribe
+        if with_timing:
+            result = self.backend.transcribe_with_timing(audio_samples, sample_rate)
+        else:
+            result = self.backend.transcribe(audio_samples, sample_rate)
+        
+        # Post-process if enabled
+        if self.config.enable_medical_postprocessing:
+            result = self.medical_processor.process(result)
+        
+        # Return string for backward compatibility when timing not requested
+        if not with_timing:
+            return result.text
+        
+        return result
+    
+    def transcribe_with_adaptation(self, audio_samples: np.ndarray, user_id: int,
+                                   db: Optional[Session] = None, sample_rate: int = 16000,
+                                   with_timing: bool = None) -> Union[str, TranscriptionResult]:
+        """
+        Transcribe with speaker adaptation
+        
+        Returns string for backward compatibility, TranscriptionResult if with_timing=True
+        """
         session_created = False
         if db is None:
             db = next(self.db_manager.get_session())
@@ -539,305 +541,79 @@ class SpeechProcessor:
             profile = self._get_speaker_profile(user_id, db)
             
             if profile is None:
-                logger.warning(f"No speaker profile found for user {user_id}, using standard transcription")
-                return self.transcribe(audio_samples, sample_rate)
+                logger.warning(f"No speaker profile found for user {user_id}")
+                return self.transcribe(audio_samples, sample_rate, with_timing)
             
             # Apply speaker-specific preprocessing
             processed_audio = preprocess_audio_for_speaker(audio_samples, profile)
             
-            # Get adaptation transformer
-            transformer = self._get_adaptation_transformer(user_id, profile)
+            # Transcribe
+            result = self.transcribe(processed_audio, sample_rate, with_timing)
             
-            # Preprocess audio for model
-            input_values = self.preprocess_audio(processed_audio, sample_rate)
-            
-            # Apply feature-space adaptation if transformer exists
-            if transformer:
-                # Run model inference with transformation
-                with torch.no_grad():
-                    # Get the features from the model's feature extractor
-                    features = self.model.wav2vec2.feature_extractor(input_values)
-                    
-                    # In a complete implementation, you would apply the transformer to these features
-                    # For now, use the standard features since we've preprocessed the audio
-                    
-                    # Continue with the model pipeline
-                    logits = self.model(input_values).logits
-                    
-                # Move logits to CPU and convert to numpy for decoder
-                logits_np = logits.squeeze(0).cpu().numpy()
-                
-                # Apply language model decoding with adaptation biases
-                # Custom bias to improve recognition of medical terms if relevant
-                medical_bias = 1.2  # Slight bias for medical terms
-                
-                # Decode with these settings
-                transcription = self.decoder.decode(logits_np)
-                
-            else:
-                # Fallback to standard transcription with preprocessed audio
-                transcription = self.transcribe(processed_audio, sample_rate)
+            # Add adaptation metadata
+            if isinstance(result, TranscriptionResult):
+                result.metadata["speaker_adapted"] = True
+                result.metadata["user_id"] = user_id
             
             logger.info(f"Applied speaker adaptation for user {user_id}")
-            return transcription
+            return result
             
         except Exception as e:
-            logger.error(f"Error in adaptive transcription for user {user_id}: {str(e)}")
-            # Fallback to standard transcription on error
-            return self.transcribe(audio_samples, sample_rate)
+            logger.error(f"Error in adaptive transcription: {str(e)}")
+            return self.transcribe(audio_samples, sample_rate, with_timing)
             
         finally:
-            # Close session if we created it
             if session_created and db is not None:
                 db.close()
     
     def _get_speaker_profile(self, user_id: int, db: Session) -> Optional[Dict[str, Any]]:
-        """
-        Get speaker profile from database or cache
-        
-        Args:
-            user_id: User ID
-            db: Database session
-            
-        Returns:
-            Speaker profile dictionary or None if not found
-        """
+        """Get speaker profile from database or cache"""
         current_time = time.time()
         
         # Check cache first
         if user_id in self.profile_cache:
             cache_time = self.profile_cache_timestamps.get(user_id, 0)
             if current_time - cache_time < self.profile_cache_ttl:
-                logger.debug(f"Using cached profile for user {user_id}")
                 return self.profile_cache[user_id]
         
         try:
-            # Get active profile from database
+            # Get from database
             profile = db.query(SpeakerProfile)\
                 .filter(SpeakerProfile.user_id == user_id, SpeakerProfile.is_active == True)\
                 .first()
             
             if not profile:
-                logger.warning(f"No active speaker profile found for user {user_id}")
                 return None
-                
-            # Get profile dictionary
+            
             profile_dict = profile.get_profile_dict()
             
-            # If VTLN warping factor is not present, estimate it
-            if 'vtln_warp_factor' not in profile_dict and 'mean_vector' in profile_dict:
-                # Get base model stats
-                base_stats = get_base_model_stats()
-                base_mean = base_stats.get('mean_vector')
-                
-                if base_mean is not None and len(base_mean) == len(profile_dict['mean_vector']):
-                    # Estimate VTLN warping factor
-                    start_idx = 1
-                    end_idx = min(6, len(profile_dict['mean_vector']))
-                    
-                    if end_idx > start_idx:
-                        speaker_spectral_mean = np.mean(profile_dict['mean_vector'][start_idx:end_idx])
-                        base_spectral_mean = np.mean(base_mean[start_idx:end_idx])
-                        
-                        if abs(base_spectral_mean) > 1e-6:  # Avoid division by zero
-                            ratio = base_spectral_mean / speaker_spectral_mean
-                            vtln_warp_factor = max(0.8, min(1.2, ratio))
-                            profile_dict['vtln_warp_factor'] = vtln_warp_factor
-                            logger.info(f"Estimated VTLN warp factor for user {user_id}: {vtln_warp_factor}")
-            
-            # Cache the profile
+            # Cache it
             self.profile_cache[user_id] = profile_dict
             self.profile_cache_timestamps[user_id] = current_time
             
             return profile_dict
-                
+            
         except Exception as e:
-            logger.error(f"Error getting speaker profile for user {user_id}: {str(e)}")
+            logger.error(f"Error getting speaker profile: {str(e)}")
             return None
-
-    def _get_adaptation_transformer(self, user_id: int, profile: Dict[str, Any]) -> Optional[AdaptationTransformer]:
-        """
-        Get or create adaptation transformer for a user
-        
-        Args:
-            user_id: User ID
-            profile: Speaker profile dictionary
-            
-        Returns:
-            AdaptationTransformer or None if creation fails
-        """
-        # Check cache first
-        if user_id in self.adaptation_cache:
-            return self.adaptation_cache[user_id]
-            
-        try:
-            # Extract mean vector and covariance matrix
-            mean_vector = profile.get("mean_vector")
-            covariance_matrix = profile.get("covariance_matrix")
-            
-            if mean_vector is None or covariance_matrix is None:
-                logger.warning(f"Invalid profile data for user {user_id}")
-                return None
-                
-            # Create transformer
-            transformer = AdaptationTransformer(mean_vector, covariance_matrix)
-            
-            # Estimate transform from base model
-            base_stats = get_base_model_stats()
-            transformer.estimate_transform(base_stats)
-            
-            # Cache for future use
-            self.adaptation_cache[user_id] = transformer
-            
-            # Log successful creation
-            logger.info(f"Created adaptation transformer for user {user_id} " + 
-                        f"with feature dimension {len(mean_vector)}")
-            
-            return transformer
-            
-        except Exception as e:
-            logger.error(f"Error creating adaptation transformer for user {user_id}: {str(e)}")
-            return None
-    
-    def clear_cache(self, user_id: Optional[int] = None):
-        """
-        Clear cache for a specific user or all users
-        
-        Args:
-            user_id: Specific user ID to clear, or None to clear all
-        """
-        if user_id is not None:
-            # Clear specific user
-            if user_id in self.adaptation_cache:
-                del self.adaptation_cache[user_id]
-            if user_id in self.profile_cache:
-                del self.profile_cache[user_id]
-            if user_id in self.profile_cache_timestamps:
-                del self.profile_cache_timestamps[user_id]
-            logger.info(f"Cleared cache for user {user_id}")
-        else:
-            # Clear all caches
-            self.adaptation_cache.clear()
-            self.profile_cache.clear()
-            self.profile_cache_timestamps.clear()
-            logger.info("Cleared all caches")
-    
-    def transcribe_with_adaptation(self, audio_samples: np.ndarray, user_id: int, 
-                                db: Optional[Session] = None, sample_rate: int = 16000) -> str:
-        """
-        Transcribe audio using speaker adaptation from database
-        
-        Args:
-            audio_samples: Normalized audio samples (float32 [-1.0, 1.0])
-            user_id: User ID for speaker adaptation profile
-            db: Optional database session (will create one if not provided)
-            sample_rate: Sample rate of the audio
-            
-        Returns:
-            Transcribed text with speaker adaptation applied
-        """
-        # Create database session if not provided
-        session_created = False
-        if db is None:
-            db = next(self.db_manager.get_session())
-            session_created = True
-        
-        try:
-            # Get speaker profile
-            profile = self._get_speaker_profile(user_id, db)
-            
-            if profile is None:
-                logger.warning(f"No speaker profile found for user {user_id}, using standard transcription")
-                return self.transcribe(audio_samples, sample_rate)
-            
-            # Get adaptation transformer
-            transformer = self._get_adaptation_transformer(user_id, profile)
-            
-            # Check if we should apply VTLN directly to audio
-            vtln_warp_factor = None
-            if transformer:
-                vtln_warp_factor = transformer.get_vtln_warp_factor()
-                
-            # Apply speaker-specific preprocessing (including VTLN)
-            processed_audio = preprocess_audio_for_speaker(audio_samples, profile)
-            
-            # Apply additional feature-space adaptation
-            if transformer:
-                # Preprocess audio for model
-                input_values = self.preprocess_audio(processed_audio, sample_rate)
-                
-                # Run model inference with transformation
-                with torch.no_grad():
-                    # Get the features from the model's feature extractor
-                    features = self.model.wav2vec2.feature_extractor(input_values)
-                    
-                    # Apply feature-space transformation
-                    features_np = features.cpu().numpy()
-                    transformed_features = transformer.transform_features(features_np)
-                    
-                    # Convert back to tensor on the correct device
-                    if hasattr(torch, 'as_tensor'):  # PyTorch 1.5+
-                        transformed_features = torch.as_tensor(
-                            transformed_features, 
-                            device=features.device, 
-                            dtype=features.dtype
-                        )
-                    else:
-                        transformed_features = torch.tensor(
-                            transformed_features, 
-                            device=features.device, 
-                            dtype=features.dtype
-                        )
-                    
-                    # Continue with the model pipeline
-                    # Many models don't have a way to inject modified features directly,
-                    # so we may need to continue with the standard pipeline
-                    logits = self.model(input_values).logits
-                    
-                # Move logits to CPU and convert to numpy for decoder
-                logits_np = logits.squeeze(0).cpu().numpy()
-                
-                # Apply language model decoding with medical terminology biasing
-                # For medical terminology, we can apply a slight bias to improve recognition
-                from app.utils.constants import SYMPTOMS_AND_DISEASES_TUI
-                
-                # This is a placeholder - a more complete implementation would 
-                # use the decoder's biasing capabilities if available
-                medical_bias = 1.2  # Slight bias for medical terms
-                
-                # Decode with these settings
-                transcription = self.decoder.decode(logits_np)
-                
-            else:
-                # Fallback to standard transcription with preprocessed audio
-                transcription = self.transcribe(processed_audio, sample_rate)
-            
-            logger.info(f"Applied speaker adaptation for user {user_id}")
-            return transcription
-            
-        except Exception as e:
-            logger.error(f"Error in adaptive transcription for user {user_id}: {str(e)}")
-            # Fallback to standard transcription on error
-            return self.transcribe(audio_samples, sample_rate)
-            
-        finally:
-            # Close session if we created it
-            if session_created and db is not None:
-                db.close()
     
     def get_model_info(self) -> Dict[str, Any]:
-        """
-        Get information about the loaded model
-        
-        Returns:
-            Dictionary with model information
-        """
-        return {
-            "model_id": self.model.config._name_or_path,
-            "device": str(self.device),
-            "vocab_size": len(self.processor.tokenizer.get_vocab()),
-            "has_language_model": hasattr(self.decoder, "kenlm_model"),
-            "model_parameters": sum(p.numel() for p in self.model.parameters()),
-            "adaptation_cache_size": len(self.adaptation_cache),
+        """Get model information"""
+        info = self.backend.get_model_info()
+        info.update({
+            "medical_postprocessing": self.config.enable_medical_postprocessing,
+            "speaker_adaptation_enabled": self.config.enable_speaker_adaptation,
             "profile_cache_size": len(self.profile_cache)
-        }
+        })
+        return info
+    
+    def clear_cache(self, user_id: Optional[int] = None):
+        """Clear cache for a specific user or all users"""
+        if user_id is not None:
+            self.profile_cache.pop(user_id, None)
+            self.profile_cache_timestamps.pop(user_id, None)
+            self.adaptation_cache.pop(user_id, None)
+        else:
+            self.profile_cache.clear()
+            self.profile_cache_timestamps.clear()
+            self.adaptation_cache.clear()
