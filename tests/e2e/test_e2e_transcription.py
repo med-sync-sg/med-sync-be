@@ -9,14 +9,22 @@ import numpy as np
 # Import your app modules
 from app.utils.speech_processor import SpeechProcessor
 
+# Import the new transcription evaluation utilities
+from tests.utils.transcription_utils import (
+    evaluate_transcription,
+    extract_text_from_result,
+    merge_streaming_results,
+    create_reference_mapping
+)
+
 @pytest.mark.e2e
 @pytest.mark.requires_audio
 class TestCompleteAudioTranscriptionWorkflow:
     """End-to-end tests for complete audio transcription workflow"""
     
     def test_complete_audio_to_text_pipeline(self, consultation_audio_data, transcription_service, 
-                                           debug_dir):
-        """Test complete pipeline from audio file to final transcription"""
+                                           debug_dir, test_audio_dir):
+        """Test complete pipeline from audio file to final transcription with WER evaluation"""
         audio_data = consultation_audio_data["audio_data"]
         sample_rate = consultation_audio_data["sample_rate"]
         file_path = consultation_audio_data["file_path"]
@@ -35,14 +43,14 @@ class TestCompleteAudioTranscriptionWorkflow:
         processing_time = time.time() - start_time
         audio_duration = len(audio_data) / sample_rate
         
-        # Validate result exists and has content
-        if hasattr(result, 'text'):
-            transcription_text = result.text
-            word_count = len(result.words) if hasattr(result, 'words') else 0
+        # Extract transcription text and metrics
+        transcription_text = extract_text_from_result(result)
+        
+        if hasattr(result, 'words'):
+            word_count = len(result.words) if result.words else len(transcription_text.split())
             confidence = result.confidence
         else:
-            transcription_text = result
-            word_count = len(result.split())
+            word_count = len(transcription_text.split())
             confidence = 1.0
         
         # Basic validation
@@ -51,7 +59,31 @@ class TestCompleteAudioTranscriptionWorkflow:
         # Performance validation
         real_time_factor = processing_time / audio_duration
         
-        # Save results for debugging
+        # WER evaluation (if reference available)
+        wer_results = None
+        reference_dir = test_audio_dir / "references"
+        
+        if reference_dir.exists():
+            try:
+                # Try to find reference file for this audio
+                reference_mapping = create_reference_mapping(reference_dir, [file_path])
+                
+                if file_path.name in reference_mapping:
+                    reference_text = reference_mapping[file_path.name]
+                    wer_results = evaluate_transcription(
+                        hypothesis_result=result,
+                        reference_text=reference_text,
+                        merge_segments=False
+                    )
+                    print(f"WER: {wer_results['wer']:.2f}%, Accuracy: {wer_results['accuracy']:.2f}%")
+                else:
+                    print(f"No reference found for {file_path.name}")
+            except Exception as e:
+                print(f"WER calculation failed: {e}")
+        else:
+            print(f"Reference directory not found: {reference_dir}")
+        
+        # Prepare result data
         result_data = {
             "input_file": str(file_path),
             "audio_duration_seconds": audio_duration,
@@ -62,6 +94,19 @@ class TestCompleteAudioTranscriptionWorkflow:
             "confidence": confidence,
             "timestamp": time.time()
         }
+        
+        # Add WER results if available
+        if wer_results:
+            result_data["wer_evaluation"] = {
+                "wer": wer_results["wer"],
+                "accuracy": wer_results["accuracy"],
+                "substitutions": wer_results["substitutions"],
+                "deletions": wer_results["deletions"],
+                "insertions": wer_results["insertions"],
+                "total_errors": wer_results["total_errors"],
+                "reference_words": wer_results["reference_words"],
+                "hypothesis_words": wer_results["hypothesis_words"]
+            }
         
         # Save to debug directory
         result_file = debug_dir / f"e2e_transcription_{file_path.stem}.json"
@@ -74,31 +119,32 @@ class TestCompleteAudioTranscriptionWorkflow:
         print(f"Processing time: {processing_time:.2f}s ({real_time_factor:.2f}x)")
         print(f"Words: {word_count}")
         print(f"Confidence: {confidence:.3f}")
+        if wer_results:
+            print(f"WER: {wer_results['wer']:.2f}%")
+            print(f"Accuracy: {wer_results['accuracy']:.2f}%")
         print(f"Transcription: {transcription_text[:100]}...")
     
     def test_streaming_workflow_simulation(self, streaming_audio_chunks, transcription_service,
-                                         debug_dir, audio_loader):
-        """Test streaming workflow with chunked audio processing"""
+                                         debug_dir, consultation_audio_data, 
+                                         test_transcript_dir):
+        """Test streaming workflow with chunked audio processing and WER evaluation"""
         transcription_service.reset()
         
         streaming_results = []
         total_processing_time = 0
         
         # Simulate streaming by processing chunks sequentially
-        for i, chunk in enumerate(streaming_audio_chunks):  # Limit for test speed
+        for i, chunk in enumerate(streaming_audio_chunks):
             chunk_start_time = time.time()
             
-            # Convert chunk to PCM bytes
-            pcm_bytes = audio_loader.audio_to_pcm_bytes(chunk)
-            
             # Add to audio service
-            success = transcription_service.audio_service.add_chunk(pcm_bytes)
+            success = transcription_service.audio_service.add_chunk(chunk)
             
             segment_result = transcription_service.process_audio_segment(
                 user_id=1,
                 note_id=1,
                 use_adaptation=False,
-                return_timing=True
+                return_timing=False
             )
             
             if segment_result is not None:
@@ -131,15 +177,68 @@ class TestCompleteAudioTranscriptionWorkflow:
         # Get final transcript
         final_transcript = transcription_service.get_current_transcript(include_timing=True)
         
-        # Save streaming results
+        # Merge streaming results for WER calculation
+        merged_transcript = merge_streaming_results(streaming_results)
+        
+        # WER evaluation (if reference available)
+        wer_results = None
+        reference_dir = test_transcript_dir
+        consultation_file_path = consultation_audio_data["file_path"]
+        
+        if reference_dir.exists():
+            try:
+                # Try to find reference file for the consultation audio
+                reference_mapping = create_reference_mapping(reference_dir, [consultation_file_path])
+                
+                if consultation_file_path.name in reference_mapping:
+                    reference_text = reference_mapping[consultation_file_path.name]
+                    
+                    # Evaluate the merged streaming result
+                    wer_results = evaluate_transcription(
+                        hypothesis_result=streaming_results,
+                        reference_text=reference_text,
+                        merge_segments=True
+                    )
+                    
+                    print(f"Streaming WER: {wer_results['wer']:.2f}%, Accuracy: {wer_results['accuracy']:.2f}%")
+                else:
+                    print(f"No reference found for {consultation_file_path.name}")
+            except Exception as e:
+                print(f"Streaming WER calculation failed: {e}")
+        else:
+            print(f"Reference directory not found: {reference_dir}")
+        
+        # Prepare streaming data
         streaming_data = {
             "total_chunks_processed": len(streaming_results),
             "total_processing_time": total_processing_time,
+            "merged_transcript": {
+                "text": merged_transcript["text"],
+                "confidence": merged_transcript["confidence"],
+                "duration": merged_transcript["duration"],
+                "segment_count": merged_transcript["segment_count"]
+            },
             "segments": streaming_results,
             "final_transcript": final_transcript,
             "timestamp": time.time()
         }
         
+        # Add WER results if available
+        if wer_results:
+            streaming_data["wer_evaluation"] = {
+                "wer": wer_results["wer"],
+                "accuracy": wer_results["accuracy"],
+                "substitutions": wer_results["substitutions"],
+                "deletions": wer_results["deletions"],
+                "insertions": wer_results["insertions"],
+                "total_errors": wer_results["total_errors"],
+                "reference_words": wer_results["reference_words"],
+                "hypothesis_words": wer_results["hypothesis_words"],
+                "reference_text": wer_results["reference_text"],
+                "hypothesis_text": wer_results["hypothesis_text"]
+            }
+        
+        # Save streaming results
         result_file = debug_dir / "e2e_streaming_workflow.json"
         with open(result_file, 'w') as f:
             json.dump(streaming_data, f, indent=2)
@@ -148,6 +247,11 @@ class TestCompleteAudioTranscriptionWorkflow:
         print(f"Segments processed: {len(streaming_results)}")
         print(f"Total processing time: {total_processing_time:.2f}s")
         print(f"Final transcript length: {len(final_transcript['text'])} characters")
+        print(f"Merged transcript length: {len(merged_transcript['text'])} characters")
+        if wer_results:
+            print(f"WER: {wer_results['wer']:.2f}%")
+            print(f"Accuracy: {wer_results['accuracy']:.2f}%")
+            print(f"Errors: {wer_results['total_errors']} out of {wer_results['reference_words']} words")
     
     def test_audio_quality_impact_on_transcription(self, multiple_audio_files, transcription_service,
                                                  debug_dir):

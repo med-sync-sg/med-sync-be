@@ -21,7 +21,8 @@ TEST_CONFIG = {
     "DEFAULT_APP_URL": "http://127.0.0.1:8001", 
     "DEFAULT_AUDIO_FILE": os.path.join("test_audios", "test_30sec.wav"),
     "DEBUG_PATH": "test_client_results",
-    "TEST_AUDIO_FILE": os.path.join("test_audios", "day1_consultation03.wav")
+    "TEST_AUDIO_FILE": os.path.join("test_audios", "day1_consultation03.wav"),
+    "TEST_TRANSCRIPT_FILE": "D:\\medsync\\primock57\\output\\joined_transcripts\\day1_consultation03.txt"
 }
 
 SAMPLE_TRANSCRIPT = """
@@ -37,7 +38,7 @@ class AudioDataLoader:
         """Load audio file and return samples with sample rate"""
         try:
             audio_data, sr = librosa.load(str(file_path), sr=target_sr, mono=True)
-            return audio_data.astype(np.float32), sr
+            return audio_data, sr
         except Exception as e:
             raise ValueError(f"Failed to load audio file {file_path}: {str(e)}")
     
@@ -58,12 +59,6 @@ class AudioDataLoader:
                 chunks.append(chunk)
         
         return chunks
-    
-    @staticmethod
-    def audio_to_pcm_bytes(audio_data: np.ndarray, sample_rate: int = 16000) -> bytes:
-        """Convert audio samples to PCM bytes (16-bit, mono)"""
-        audio_int16 = (audio_data * 32767).astype(np.int16)
-        return audio_int16.tobytes()
     
     @staticmethod
     def get_audio_duration(file_path: Path) -> float:
@@ -108,6 +103,13 @@ def test_audio_dir():
     return audio_dir
 
 @pytest.fixture(scope="session")
+def test_transcript_dir():
+    """Test transcript file"""
+    transcript_file = Path("D:\\medsync\\primock57\\output\\joined_transcripts")
+    return transcript_file
+
+
+@pytest.fixture(scope="session")
 def debug_dir():
     """Debug output directory for test results"""
     debug_path = Path(TEST_CONFIG["DEBUG_PATH"])
@@ -126,20 +128,20 @@ def temp_dir():
         yield Path(temp_path)
 
 # Real service fixtures (no mocking)
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="session")
 def audio_service():
     """Real audio service instance"""
     return AudioService()
 
-@pytest.fixture(scope="session")  # Changed to session scope
+@pytest.fixture(scope="session")
 def transcription_config():
     """Transcription configuration optimized for testing"""
     return TranscriptionConfig(
         backend="whisper_onnx",
-        model_size="small",  # Fastest model for testing
+        model_size="small",
         language="en",
         enable_speaker_adaptation=False,
-        enable_medical_postprocessing=True,
+        enable_medical_postprocessing=False,
         enable_word_timing=True,
         use_gpu=False,  # Use CPU for consistent test environment
         confidence_threshold=0.5  # Lower threshold for test audio
@@ -155,7 +157,7 @@ def function_transcription_config():
     """Function-scoped transcription config for tests that need to modify it"""
     return TranscriptionConfig(
         backend="whisper_transformers",
-        model_size="tiny",
+        model_size="small",
         language="en",
         enable_speaker_adaptation=False,
         enable_medical_postprocessing=True,
@@ -164,16 +166,16 @@ def function_transcription_config():
         confidence_threshold=0.5
     )
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="session")
 def transcription_service(audio_service, speech_processor):
     """Real transcription service instance"""
     # Use the session-scoped config for consistency
     config = TranscriptionConfig(
         backend="whisper_transformers",
-        model_size="tiny",
+        model_size="small",
         language="en",
         enable_speaker_adaptation=False,
-        enable_medical_postprocessing=True,
+        enable_medical_postprocessing=False,
         enable_word_timing=True,
         use_gpu=False,
         confidence_threshold=0.5
@@ -235,7 +237,6 @@ def sample_audio_data(default_audio_file, audio_loader):
             "audio_data": audio_data,
             "sample_rate": sr,
             "duration": len(audio_data) / sr,
-            "pcm_bytes": audio_loader.audio_to_pcm_bytes(audio_data, sr)
         }
     else:
         pytest.skip(f"Sample audio file not found: {default_audio_file}")
@@ -250,12 +251,11 @@ def consultation_audio_data(test_audio_file, audio_loader):
             "audio_data": audio_data,
             "sample_rate": sr,
             "duration": len(audio_data) / sr,
-            "pcm_bytes": audio_loader.audio_to_pcm_bytes(audio_data, sr)
         }
     else:
         pytest.skip(f"Consultation audio file not found: {test_audio_file}")
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="session")
 def short_audio_segment(sample_audio_data, audio_loader):
     """Extract a short segment (first 3 seconds) for quick tests"""
     audio_data = sample_audio_data["audio_data"]
@@ -269,10 +269,9 @@ def short_audio_segment(sample_audio_data, audio_loader):
         "audio_data": short_segment,
         "sample_rate": sr,
         "duration": len(short_segment) / sr,
-        "pcm_bytes": audio_loader.audio_to_pcm_bytes(short_segment, sr)
     }
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="session")
 def audio_chunks_1sec(sample_audio_data, audio_loader):
     """Split sample audio into 1-second chunks"""
     return audio_loader.load_audio_as_chunks(
@@ -280,7 +279,7 @@ def audio_chunks_1sec(sample_audio_data, audio_loader):
         chunk_size_ms=1000
     )
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="session")
 def audio_chunks_500ms(sample_audio_data, audio_loader):
     """Split sample audio into 500ms chunks for streaming tests"""
     return audio_loader.load_audio_as_chunks(
@@ -288,24 +287,15 @@ def audio_chunks_500ms(sample_audio_data, audio_loader):
         chunk_size_ms=500
     )
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="session")
 def streaming_audio_chunks(consultation_audio_data, audio_loader):
     """Create streaming chunks from consultation audio"""
     return audio_loader.load_audio_as_chunks(
         consultation_audio_data["file_path"],
-        chunk_size_ms=750  # 750ms chunks for realistic streaming
+        chunk_size_ms=1500  # 1500ms chunks for realistic streaming
     )
 
-@pytest.fixture(scope="function")
-def pcm_byte_chunks(streaming_audio_chunks, audio_loader):
-    """Convert streaming chunks to PCM bytes"""
-    pcm_chunks = []
-    for chunk in streaming_audio_chunks:
-        pcm_bytes = audio_loader.audio_to_pcm_bytes(chunk)
-        pcm_chunks.append(pcm_bytes)
-    return pcm_chunks
-
-@pytest.fixture(scope="function", params=["1sec", "3sec", "5sec"])
+@pytest.fixture(scope="session", params=["1sec", "3sec", "5sec"])
 def variable_length_audio(request, sample_audio_data, audio_loader):
     """Create audio segments of different lengths for testing"""
     duration_map = {"1sec": 1, "3sec": 3, "5sec": 5}
@@ -322,20 +312,10 @@ def variable_length_audio(request, sample_audio_data, audio_loader):
         "audio_data": segment,
         "sample_rate": sr,
         "duration": len(segment) / sr,
-        "pcm_bytes": audio_loader.audio_to_pcm_bytes(segment, sr),
         "label": request.param
     }
 
-@pytest.fixture(scope="function")
-def pcm_byte_chunks(streaming_audio_chunks, audio_loader):
-    """Convert streaming chunks to PCM bytes"""
-    pcm_chunks = []
-    for chunk in streaming_audio_chunks:
-        pcm_bytes = audio_loader.audio_to_pcm_bytes(chunk)
-        pcm_chunks.append(pcm_bytes)
-    return pcm_chunks
-
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="session")
 def multiple_audio_files(available_audio_files, audio_loader):
     """Load multiple audio files for batch testing"""
     audio_data_list = []
@@ -349,7 +329,6 @@ def multiple_audio_files(available_audio_files, audio_loader):
                 "audio_data": audio_data,
                 "sample_rate": sr,
                 "duration": len(audio_data) / sr,
-                "pcm_bytes": audio_loader.audio_to_pcm_bytes(audio_data, sr)
             })
         except Exception as e:
             print(f"Warning: Could not load {audio_file}: {e}")
@@ -383,25 +362,8 @@ def audio_file_catalog(test_audio_dir, audio_loader):
     
     return catalog
 
-@pytest.fixture(scope="function")
-def expected_transcriptions():
-    """Expected transcription results for known audio files"""
-    return {
-        "test_30sec.wav": {
-            "expected_keywords": ["sore throat", "scratchy", "swallowing", "uncomfortable"],
-            "min_word_count": 15,
-            "expected_speakers": ["patient", "doctor"],
-            "approximate_duration": 30.0
-        },
-        "day1_consultation03.wav": {
-            "expected_keywords": [],
-            "min_word_count": 50,
-            "expected_speakers": ["patient", "doctor"],
-            "approximate_duration": None
-        }
-    }
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="session")
 def transcription_benchmark():
     """Benchmark data for transcription performance"""
     return {
@@ -411,7 +373,7 @@ def transcription_benchmark():
         "expected_word_error_rate": 0.2
     }
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="session")
 def audio_validation_helpers():
     """Helper functions for validating audio processing results"""
     

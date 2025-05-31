@@ -77,7 +77,7 @@ class AudioService:
         """Reset only the current buffer, keeping session history intact"""
         self.current_buffer = bytearray()
     
-    def get_wave_data(self, use_session_buffer: bool = False) -> np.ndarray:
+    def get_wave_data(self, use_session_buffer: bool = True) -> np.ndarray:
         """
         Convert buffer to normalized float32 samples [-1.0, 1.0]
         
@@ -130,7 +130,7 @@ class AudioService:
         return len(self.current_buffer) >= min_bytes
     
     def detect_silence(self, frame_duration_ms: int = 20, 
-                      silence_ratio_threshold: float = 0.7,
+                      silence_ratio_threshold: float = 0.5,
                       sample_rate: int = DEFAULT_SAMPLE_RATE) -> bool:
         """
         Detect silence using adaptive threshold based on energy levels
@@ -171,21 +171,26 @@ class AudioService:
         if len(self._energy_history) > self._history_size:
             self._energy_history.pop(0)
             
-        # Calculate adaptive noise floor and threshold
         if len(self._energy_history) >= 3:
-            self._noise_floor = np.percentile(self._energy_history, 10)
-            self._adaptive_threshold = self._noise_floor * 1.5
+            self._noise_floor = np.percentile(self._energy_history, 3)  # 3rd percentile
+            self._adaptive_threshold = self._noise_floor * 4.0          # 4x multiplier
         else:
-            self._adaptive_threshold = 100  # Default threshold
-            
-        # Count frames below threshold
+            self._adaptive_threshold = 25  # Lower default for quiet speech
+        
+        # Very conservative silence detection
         silent_count = sum(1 for energy in energies if energy < self._adaptive_threshold)
         ratio = silent_count / len(energies)
         
         is_silent = ratio > silence_ratio_threshold
+        
+        # Additional check: if any frame has significant energy, don't skip
+        max_energy = max(energies) if energies else 0
+        if max_energy > self._adaptive_threshold * 2:  # Any frame with 2x threshold energy
+            is_silent = False
+        
         if is_silent:
-            logger.debug(f"Silence detected: {ratio:.2f} of frames below threshold {self._adaptive_threshold:.2f}")
-            
+            logger.debug(f"Silence detected: {ratio:.2f} ratio, max_energy: {max_energy:.2f}, threshold: {self._adaptive_threshold:.2f}")
+        
         return is_silent
     
     def get_audio_statistics(self) -> Dict[str, Any]:

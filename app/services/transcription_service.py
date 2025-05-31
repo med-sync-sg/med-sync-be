@@ -87,7 +87,7 @@ class TranscriptionService:
                 return None
             
             # Check for silence
-            if not self.audio_service.detect_silence():
+            if self.audio_service.detect_silence():
                 return None
             
             logger.info(f"Processing segment for user {user_id}, note {note_id}")

@@ -613,8 +613,8 @@ class SpeechProcessor:
             result = self.backend.transcribe(audio_samples, sample_rate)
         
         # Post-process if enabled
-        if self.config.enable_medical_postprocessing:
-            result = self.medical_processor.process(result)
+        # if self.config.enable_medical_postprocessing:
+        #     result = self.medical_processor.process(result)
         
         # Return string for backward compatibility when timing not requested
         if not with_timing:
