@@ -1,2 +1,0 @@
-file,wer,cer,substitutions,deletions,insertions,correct_words,reference_length,duration,diarization_used,doctor_segments,patient_segments
-day1_consultation01.wav,0.4244415243101183,0.3531801447251492,195,389,62,938,1522,457.92,True,99,73

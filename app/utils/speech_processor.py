@@ -7,7 +7,9 @@ from typing import Optional, Dict, Any, List, Tuple, Union
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 import json
+import librosa
 
+from optimum.onnxruntime import ORTModelForSpeechSeq2Seq
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
 from sqlalchemy.orm import Session
 
@@ -53,7 +55,8 @@ class TranscriptionResult:
 @dataclass
 class TranscriptionConfig:
     """Configuration for transcription"""
-    backend: str = "whisper_transformers"  # or "whisper_onnx"
+    backend: str = "whisper_onnx"  # or "whisper_onnx"
+    model_path: str = f"./training/whisper_onnx"
     model_size: str = "small"
     language: str = "en"
     task: str = "transcribe"
@@ -329,85 +332,181 @@ class WhisperTransformersBackend(TranscriptionBackend):
         }
 
 class WhisperONNXBackend(TranscriptionBackend):
-    """Whisper backend using ONNX Runtime for improved performance"""
+    """Whisper backend using ONNX Runtime for improved performance via optimum library"""
     
     def __init__(self, config: TranscriptionConfig):
         self.config = config
         
-        # Import ONNX runtime
+        # Import required libraries
         try:
-            import onnxruntime as ort
-            self.ort = ort
-        except ImportError:
-            raise ImportError("Please install onnxruntime: pip install onnxruntime-gpu")
+
+            self.WhisperProcessor = WhisperProcessor
+            self.ORTModelForSpeechSeq2Seq = ORTModelForSpeechSeq2Seq
+        except ImportError as e:
+            raise ImportError(
+                "Please install required packages: "
+                "pip install transformers optimum[onnxruntime] onnxruntime-gpu"
+            ) from e
         
         # Load ONNX model
         self._load_onnx_model()
         
     def _load_onnx_model(self):
-        """Load ONNX model and create inference session"""
-        # Model paths - these would need to be configured
-        model_path = f"models/whisper-{self.config.model_size}.onnx"
+        """Load ONNX model and processor from exported directory"""
+        # Determine model path
+        if self.config.model_path:
+            model_path = self.config.model_path
+        else:
+            # Default path structure from whisper_to_onnx.py
+            model_path = f"./training/whisper_onnx"
         
-        # Create inference session
-        providers = ['CUDAExecutionProvider'] if self.config.use_gpu else ['CPUExecutionProvider']
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(
+                f"ONNX model not found at {model_path}. "
+                f"Please run whisper_to_onnx.py first to export the model."
+            )
         
-        session_options = self.ort.SessionOptions()
-        session_options.graph_optimization_level = self.ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        # Load processor
+        processor_path = os.path.join(model_path, "processor")
+        if os.path.exists(processor_path):
+            self.processor = self.WhisperProcessor.from_pretrained(processor_path)
+        else:
+            # Fallback to loading from main directory
+            self.processor = self.WhisperProcessor.from_pretrained(model_path)
         
-        self.session = self.ort.InferenceSession(
-            model_path,
-            sess_options=session_options,
-            providers=providers
+        # Load ONNX model with optimum
+        providers = (
+            "CPUExecutionProvider" 
+            if self.config.use_gpu 
+            else "CPUExecutionProvider"
         )
         
-        # Load processor for preprocessing
-        model_id = f"openai/whisper-{self.config.model_size}"
-        from transformers import WhisperProcessor
-        self.processor = WhisperProcessor.from_pretrained(model_id)
+        self.model = self.ORTModelForSpeechSeq2Seq.from_pretrained(
+            model_path,
+            provider=providers
+        )
+        
+        print(f"Loaded ONNX Whisper model from: {model_path}")
+        print(f"Using providers: {self.model.providers}")
         
     def transcribe(self, audio_samples: np.ndarray, sample_rate: int = 16000) -> TranscriptionResult:
-        """Transcribe using ONNX"""
+        """Transcribe using ONNX model via optimum library"""
+        # Ensure audio is in the right format
+        if sample_rate != 16000:
+            audio_samples = librosa.resample(audio_samples, orig_sr=sample_rate, target_sr=16000)
+            sample_rate = 16000
+        
         # Preprocess audio
         inputs = self.processor(
             audio_samples,
             sampling_rate=sample_rate,
-            return_tensors="np"
+            return_tensors="pt"
         )
+        
+        # Set generation parameters
+        generation_kwargs = {
+            "max_length": 448,
+            "num_beams": 1,
+            "do_sample": False,
+        }
+        
+        # Add language if specified
+        if self.config.language:
+            generation_kwargs["language"] = self.config.language
         
         # Run inference
-        outputs = self.session.run(
-            None,
-            {self.session.get_inputs()[0].name: inputs.input_features}
-        )
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                inputs.input_features,
+                **generation_kwargs
+            )
         
-        # Process outputs
-        # This is simplified - actual implementation would need proper decoding
-        text = self._decode_outputs(outputs)
+        # Decode to text
+        transcription = self.processor.batch_decode(
+            generated_ids, 
+            skip_special_tokens=True
+        )[0]
         
         return TranscriptionResult(
-            text=text,
+            text=transcription,
             duration=len(audio_samples) / sample_rate,
             language=self.config.language
         )
     
     def transcribe_with_timing(self, audio_samples: np.ndarray, sample_rate: int = 16000) -> TranscriptionResult:
-        """ONNX transcription with timing - would need custom implementation"""
-        # For now, fallback to regular transcription
-        return self.transcribe(audio_samples, sample_rate)
+        """ONNX transcription with word-level timestamps"""
+        # Ensure audio is in the right format
+        if sample_rate != 16000:
+            audio_samples = librosa.resample(audio_samples, orig_sr=sample_rate, target_sr=16000)
+            sample_rate = 16000
+        
+        # Preprocess audio
+        inputs = self.processor(
+            audio_samples,
+            sampling_rate=sample_rate,
+            return_tensors="pt"
+        )
+        
+        # Set generation parameters with timestamps
+        generation_kwargs = {
+            "max_length": 448,
+            "num_beams": 1,
+            "do_sample": False,
+            "return_timestamps": True,
+        }
+        
+        # Add language if specified
+        if self.config.language:
+            generation_kwargs["language"] = self.config.language
+        
+        # Run inference
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                inputs.input_features,
+                **generation_kwargs
+            )
+        
+        # Decode with timestamps
+        transcription = self.processor.batch_decode(
+            generated_ids, 
+            skip_special_tokens=True,
+            decode_with_timestamps=True
+        )[0]
+        
+        # Parse segments if timestamps are available
+        segments = self._parse_segments(transcription) if isinstance(transcription, dict) else None
+        text = transcription.get('text', transcription) if isinstance(transcription, dict) else transcription
+        
+        return TranscriptionResult(
+            text=text,
+            duration=len(audio_samples) / sample_rate,
+            language=self.config.language,
+            segments=segments
+        )
     
-    def _decode_outputs(self, outputs):
-        """Decode ONNX outputs to text"""
-        # Simplified - actual implementation would use beam search
-        return "ONNX transcription output"
+    def _parse_segments(self, transcription_result):
+        """Parse segment information from transcription result"""
+        # This would need to be implemented based on the actual format
+        # returned by the processor when timestamps are enabled
+        if isinstance(transcription_result, dict) and 'segments' in transcription_result:
+            return transcription_result['segments']
+        return None
     
     def get_model_info(self) -> Dict[str, Any]:
         """Get model information"""
         return {
             "backend": "whisper_onnx",
-            "model_size": self.config.model_size,
-            "providers": self.session.get_providers()
+            "model_size": getattr(self.config, 'model_size', 'unknown'),
+            "providers": self.model.providers if hasattr(self.model, 'providers') else [],
+            "model_path": getattr(self.config, 'model_path', 'default'),
+            "language": self.config.language,
+            "use_gpu": self.config.use_gpu
         }
+    
+    def cleanup(self):
+        """Clean up resources"""
+        # ONNX Runtime handles cleanup automatically
+        pass
 
 class MedicalPostProcessor:
     """Post-processor for medical transcriptions"""

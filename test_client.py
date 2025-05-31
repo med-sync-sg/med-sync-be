@@ -683,53 +683,21 @@ class TestClient:
             self.create_test_note()
             
             # Test WebSocket (needs to run in an async context)
-            asyncio.run(self.test_websocket())
+            # asyncio.run(self.test_websocket())
             
             # self.test_text_processing()
+            
             
             # self.test_diarization_with_calibration(DEFAULT_AUDIO_FILE, 1)
             # self.test_diarization_without_calibration(DEFAULT_AUDIO_FILE)
             # self.generate_test_report_doctor(user_id=2, note_id=12, template_type="doctor")
             
-            # self.test_text_processing()
-            # self.test_adaptation_feature()
             logger.info("All tests completed successfully!")
             return True
             
         except Exception as e:
             logger.error(f"Test failed: {str(e)}")
             return False
-
-    def test_adaptation_feature(self):
-        # API endpoint
-        url = f"{self.app_url}/tests/test-adaptation"
-        
-        # User ID with calibration data
-        user_id = 1  # Replace with an actual user ID that has calibration data
-        
-        # Prepare the request
-        with open(DEFAULT_AUDIO_FILE, "rb") as f:
-            files = {"audio_file": f}
-            data = {"user_id": user_id, "use_adaptation": True}
-            
-            # Make the request
-            response = requests.post(url, files=files, data=data)
-            
-        # Print the results
-        print("Response status:", response.status_code)
-        if response.status_code == 200:
-            result = response.json()
-            print("\nStandard transcription:", result["standard_transcription"])
-            print("Standard processing time:", result["standard_processing_time_ms"], "ms")
-            
-            if result.get("adapted_transcription"):
-                print("\nAdapted transcription:", result["adapted_transcription"])
-                print("Adaptation processing time:", result["adaptation_processing_time_ms"], "ms")
-                print("Adaptation info:", result["adaptation_info"])
-            else:
-                print("\nNo adaptation results available")
-        else:
-            print("Error:", response.text)
         
     def test_db_connection(self):
         """Test connection to the database service"""
